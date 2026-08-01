@@ -447,6 +447,21 @@ fn read_bounded<R: Read + Send + 'static>(
     })
 }
 
+#[cfg(unix)]
+macro_rules! set_limit {
+    ($resource:expr, $value:expr) => {{
+        let limit = libc::rlimit {
+            rlim_cur: $value as libc::rlim_t,
+            rlim_max: $value as libc::rlim_t,
+        };
+        if libc::setrlimit($resource, &limit) == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }};
+}
+
 fn apply_limits(cmd: &mut Command, config: &ProgramConfig) {
     #[cfg(unix)]
     unsafe {
@@ -461,26 +476,13 @@ fn apply_limits(cmd: &mut Command, config: &ProgramConfig) {
                 return Err(std::io::Error::last_os_error());
             }
             libc::umask(0o077);
-            set_limit(libc::RLIMIT_CPU, cpu)?;
-            set_limit(libc::RLIMIT_AS, address)?;
-            set_limit(libc::RLIMIT_NOFILE, files)?;
+            set_limit!(libc::RLIMIT_CPU, cpu)?;
+            set_limit!(libc::RLIMIT_AS, address)?;
+            set_limit!(libc::RLIMIT_NOFILE, files)?;
             #[cfg(target_os = "linux")]
-            set_limit(libc::RLIMIT_NPROC, children)?;
+            set_limit!(libc::RLIMIT_NPROC, children)?;
             Ok(())
         });
-    }
-}
-
-#[cfg(unix)]
-fn set_limit(resource: libc::__rlimit_resource_t, value: u64) -> std::io::Result<()> {
-    let limit = libc::rlimit {
-        rlim_cur: value as libc::rlim_t,
-        rlim_max: value as libc::rlim_t,
-    };
-    if unsafe { libc::setrlimit(resource, &limit) } == -1 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
     }
 }
 

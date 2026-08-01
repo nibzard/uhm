@@ -12,7 +12,7 @@ fn configured(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
     fs::write(config_dir.join("config.yaml"), yaml).unwrap();
     let data_dir = home.join("data/uhm");
     fs::create_dir_all(&data_dir).unwrap();
-    fs::write(data_dir.join("notice-revision"), "1").unwrap();
+    fs::write(data_dir.join("notice-revision"), "2").unwrap();
     Command::new(binary())
         .args(arguments)
         .env("HOME", home)
