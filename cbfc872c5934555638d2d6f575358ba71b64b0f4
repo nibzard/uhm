@@ -1,0 +1,20 @@
+# ADR: Bounded Python microprogram route
+
+## Status
+Accepted
+
+## Context
+Short shell commands remain the fastest path, but structured data, statistics, and multifile transformations become hard to generate and inspect as pipelines. The product must finish bounded terminal jobs without becoming a coding agent.
+
+## Decision
+Add one strict python3 action using the OpenAI Responses function-tool contract. Execute one standard-library program directly with -I -S, a cleared environment, private workspace, resource/output limits, explicit manifests, and staged artifact commits. Treat every control as an operational guardrail and state clearly that the local process is not sandboxed. Preserve the shared ceiling of two model calls, action candidates, and executions.
+
+## Alternatives Considered
+- Shell-only pipelines: retained for simple jobs; rejected as the only route because complex transformations become brittle and opaque.
+- Bash or JavaScript program runtimes: deferred because they expand compatibility and policy surface without corpus evidence.
+- Cloudflare Dynamic Workers: rejected as a required hosted dependency for a local CLI.
+- Pydantic Monty: deferred while experimental and incomplete for the representative corpus.
+- Custom transformation DSL: rejected until real task clustering justifies a versioned IR.
+
+## Consequences
+Users gain result-first local data processing and local-only piped input. Python still has the user account access of its caller, artifact commits are independent rather than transactional, unmanaged effects cannot be undone, and Python 3 availability is now disclosed for routing. See plans/04-jit-microprograms.md and tests/fixtures/program-routing-v1.json.
