@@ -1,0 +1,19 @@
+# ADR: Optional typed parent-shell integration
+
+## Status
+Accepted
+
+## Context
+A normal uhm child cannot persist cd, environment, or source effects in its caller. Returning success from the child would be false, while arbitrary generated shell source evaluated by a wrapper would create an unnecessarily broad execution boundary.
+
+## Decision
+Offer an explicitly installed, static Bash/Zsh/Fish wrapper. The model may propose exactly one typed change-directory, set-environment, unset-environment, or source-file action. A nonce-bound owner-only control directory transports the action through fixed filenames; the binary opens control paths without following links and performs fixed-name operations relative to a validated directory descriptor. Only local audited renderers produce shell builtins. Parent outcome is unknown until a matching wrapper acknowledgement updates the queued enum-only telemetry candidate and optional local history.
+
+## Alternatives Considered
+- Print commands only: truthful but does not deliver the requested parent-shell result.
+- Evaluate model-written shell source: more flexible but violates the narrow typed boundary and compound-action limit.
+- Prompt hooks or a resident agent: broader context but conflicts with invocation-only operation and the product boundary.
+- Universal undo: unsupported because sourced code and arbitrary shell state are not transactionally reversible.
+
+## Consequences
+The integration is optional, auditable, removable, and keeps normal stdout/stderr byte-clean. It supports only four single actions and three shells. Sourced code retains full user authority and can terminate the shell before acknowledgement or cleanup, so those outcomes remain honestly unknown.
