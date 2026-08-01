@@ -44,12 +44,12 @@ After the first intent word, every argument is opaque user text. A dictated prom
 |---|---|
 | `uhm -- <intent>` | Answer, clarify, or perform one local action |
 | `uhm run -- <intent>` | Require an executable local action |
-| `uhm ask -- <question>` | Answer only; never execute |
-| `uhm explain -- <command>` | Explain only; never execute |
-| `uhm history [n]` | Show optional local execution history |
+| `uhm ask -- <question>` | Request a prose-valued terminal/CLI result |
+| `uhm explain -- <command>` | Request an explanation through the same typed action contract |
+| `uhm history status|clear` | Inspect or clear bounded metadata receipts |
 | `uhm config show` | Show resolved values and sources |
 | `uhm config check` | Strictly parse and validate configuration |
-| `uhm context` | Show the machine context used for proposals |
+| `uhm context show [mode]` | Show the exact structured context shape used for proposals |
 | `uhm doctor` | Check paths, configuration, and credentials |
 
 Execution options:
@@ -75,10 +75,13 @@ Styling never reconstructs a command. The bytes shown in review and supplied to 
 Copy [config.example.yaml](config.example.yaml) to the platform path shown by `uhm config show`. Every key is optional, but unknown keys, bad types, invalid values, unreadable files, and unsafe relative XDG roots are errors.
 
 ```yaml
-model: gpt-5.6-luna
+model: gpt-5.6-terra
 shell: auto
 stream: true
-include_history: false
+context_mode: standard
+
+history:
+  enabled: true
 
 aliases:
   gst: git status -sb
@@ -90,7 +93,6 @@ Environment overrides:
 |---|---|
 | `OPENAI_API_KEY` | API credential |
 | `OPENAI_MODEL` | Model ID |
-| `OPENAI_BASE_URL` | API base URL |
 | `UHM_PLAIN` | Disable terminal presentation features |
 | `NO_COLOR` | Disable color |
 
@@ -98,9 +100,11 @@ The optional private secrets file is `<data-dir>/uhm/secrets` and contains `OPEN
 
 ## Data and trust
 
-By default, the request and a bounded terminal context are sent to the configured OpenAI endpoint because platform and project state materially improve commands. Context includes platform, shell, working directory, Git state, and optionally a short directory listing (`include_ls: false` disables the listing). Set `context_mode: request_only` to send only the request. Static application rules remain in the trusted system message; requests, filenames, Git metadata, piped input, and context are sent once as untrusted JSON input.
+All model calls go to OpenAI's official `POST /v1/responses` endpoint with provider storage disabled. `standard` context is sent by default: bounded OS/architecture, target shell, common-tool presence booleans, a normalized working directory, bounded Git state, and at most 40 entry names. `minimal` sends only the intent and explicitly piped stdin; `full` adds identifying machine fields and bounded versions. Inspect the exact shape with `uhm context show`, or select a mode with `--context minimal` / `context_mode: minimal`. Environment values, API keys, file contents, Git remotes/diffs, history, and secret files are never added automatically.
 
-Command history is off by default because commands can contain secrets. The proposal cache contains model proposals, not execution results, and is keyed by model, endpoint/API family, schema/policy versions, generation parameters, context, and request.
+Metadata receipts are on by default and bounded to 500 records/30 days. They contain coarse route/effect/outcome categories and timing buckets—not intent, command, cwd, context, answers, feedback, stdout, stderr, or diagnostics. Disable them with `history.enabled: false`. The proposal cache contains validated model proposals, not execution results.
+
+Piped stdin is spooled as bounded exact bytes. Valid UTF-8 may be sent as explicit request data; non-UTF-8 sends only presence and byte-count metadata, then is replayed unchanged when the action requests original stdin. Child processes never receive the OpenAI key or private `uhm` control variables. This is not a sandbox.
 
 uhm deliberately does not promise sandboxing, command safety, transactions, or rollback. You remain responsible for commands you authorize.
 

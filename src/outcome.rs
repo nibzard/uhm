@@ -7,6 +7,7 @@ pub const MODEL: i32 = 10;
 pub const NOT_EXECUTED: i32 = 11;
 pub const CLARIFICATION: i32 = 12;
 pub const CONFIG: i32 = 13;
+pub const UNAVAILABLE: i32 = 14;
 
 #[derive(Serialize)]
 pub struct Outcome<'a> {

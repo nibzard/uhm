@@ -23,10 +23,6 @@ pub fn preview(command: &str, summary: &str, tier: Tier, effects: &[Effect], rea
     }
 }
 
-pub fn confirmation_hint() {
-    eprint!("{}", ansi::bold("Run this command? [y/N] "));
-}
-
 fn dedup(reasons: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for reason in reasons {

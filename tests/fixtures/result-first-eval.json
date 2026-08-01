@@ -1,0 +1,8 @@
+[
+  {"id":"read-largest","mode":"run","prompt":"list the five largest files in this directory","expected":"dry_run"},
+  {"id":"search-todos","mode":"run","prompt":"find TODO comments in Rust files and include line numbers","expected":"dry_run"},
+  {"id":"voice-dictation","mode":"run","prompt":"um, show me, like, the current git branch and whether it has changes","expected":"dry_run"},
+  {"id":"explanation","mode":"ask","prompt":"what does git log -p do","expected":"answer"},
+  {"id":"bounded-write","mode":"run","prompt":"create an empty file named plan-two-smoke.tmp","expected":"dry_run"},
+  {"id":"consequential","mode":"run","prompt":"delete plan-two-smoke.tmp","expected":"dry_run"}
+]

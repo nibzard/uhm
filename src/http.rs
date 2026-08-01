@@ -10,11 +10,14 @@ pub struct Response {
 /// POST `body` (JSON) with bearer auth. Returns a streaming reader on 2xx,
 /// or an error message (with the server's message if we can parse it) on 4xx/5xx.
 pub fn post_stream(url: &str, auth: &str, body: &str) -> Result<Response, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(10))
-        .timeout_write(Duration::from_secs(30))
-        .timeout_read(Duration::from_secs(120))
-        .build();
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    let agent = AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(10))
+            .timeout_write(Duration::from_secs(30))
+            .timeout_read(Duration::from_secs(120))
+            .build()
+    });
     let res = agent
         .post(url)
         .set("Authorization", auth)

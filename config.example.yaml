@@ -1,18 +1,27 @@
 # uhm configuration — copy to the path shown by `uhm config show`
 # Every key is optional; uncomment to override a default.
 
-# model: gpt-5.6-luna
-# base_url: https://api.openai.com/v1
+# model: gpt-5.6-terra
 # max_completion_tokens: 1024
 # reasoning_effort: low          # none | minimal | low | medium | high | xhigh
 # stream: true
 
 # shell: auto                    # auto | bash | zsh | fish | pwsh
-# include_ls: true
-# context_mode: full             # full | request_only
-# include_history: false         # persist executed commands; off by default
-# history_lines: 15              # default count shown by `uhm history`
-# context_timeout_ms: 800
+# context_mode: standard         # minimal | standard | full
+# context_timeout_ms: 150        # one shared context-probe deadline
+# stdin_max_bytes: 8388608       # exact stdin spool limit
+# request_max_bytes: 262144      # complete untrusted model-input JSON
+# response_max_bytes: 2097152    # streamed or buffered API response
+
+# history:                       # metadata only; never intent/command/output
+#   enabled: true
+#   max_records: 500
+#   max_age_days: 30
+
+# execution:
+#   timeout_secs: 300
+#   diagnostic_bytes: 65536      # tail per redirected stream
+#   deny_env: []                 # additional names removed from child env
 
 # cache_enabled: true            # caches the RESPONSE only, never the prompt
 # cache_ttl_secs: 86400

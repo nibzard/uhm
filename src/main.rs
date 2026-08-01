@@ -11,7 +11,9 @@ mod context;
 mod dirs;
 mod history;
 mod http;
+mod input;
 mod outcome;
+mod parent_shell;
 mod prompt;
 mod render;
 mod safety;
@@ -20,41 +22,18 @@ mod shell;
 mod sse;
 mod tty;
 
-use std::io::{IsTerminal, Read, Write};
-
-use context::Provider as _;
-use render::{ansi, markdown, spinner, sync};
-
+use render::ansi;
+use std::io::Write;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
 fn main() {
-    std::process::exit(run(std::env::args().collect()));
-}
-
-#[derive(Clone, Copy)]
-enum Mode {
-    Auto,
-    Run,
-    Ask,
-    Explain,
-    Manage,
-}
-
-fn resolve_mode(args: &args::Args) -> Mode {
-    match args.subcommand.as_deref() {
-        Some("run") => Mode::Run,
-        Some("ask") => Mode::Ask,
-        Some("explain") => Mode::Explain,
-        Some("history" | "config" | "context" | "doctor") => Mode::Manage,
-        _ => Mode::Auto,
-    }
+    std::process::exit(run(std::env::args().collect()))
 }
 
 fn run(argv: Vec<String>) -> i32 {
     let args = match args::parse_from(argv) {
-        Ok(args) => args,
-        Err(error) => {
-            eprintln!("uhm: {}", error);
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("uhm: {}", e);
             return outcome::USAGE;
         }
     };
@@ -67,230 +46,183 @@ fn run(argv: Vec<String>) -> i32 {
         println!("uhm {}", VERSION);
         return 0;
     }
-
     let config = match config::load(args.model.as_deref()) {
-        Ok(config) => config,
-        Err(error) => {
-            return application_error(&args, outcome::CONFIG, "configuration_error", &error);
-        }
+        Ok(v) => v,
+        Err(e) => return app_error(&args, outcome::CONFIG, "configuration_error", &e),
     };
-    let mode = resolve_mode(&args);
-    if matches!(mode, Mode::Manage) {
-        return run_management(
-            args.subcommand.as_deref().unwrap_or_default(),
-            &args,
-            &config,
-        );
+    if matches!(
+        args.subcommand.as_deref(),
+        Some("history" | "config" | "context" | "doctor")
+    ) {
+        return management(&args, &config);
     }
-
-    let user = match input_text(&args) {
-        Ok(text) if !text.trim().is_empty() => text,
-        Ok(_) if std::io::stdin().is_terminal() => {
-            eprint!(
-                "{}",
-                if ansi::plain_enabled() {
-                    "uhm> "
-                } else {
-                    "uhm› "
-                }
-            );
-            let _ = std::io::stderr().flush();
-            match tty::read_line_cooked() {
-                Some(text) if !text.trim().is_empty() => text,
-                _ => return outcome::USAGE,
+    let stdin = match input::Spool::read(config.stdin_max_bytes) {
+        Ok(v) => v,
+        Err(e) => return app_error(&args, outcome::USAGE, "input_error", &e),
+    };
+    let request = if !args.prompt.trim().is_empty() {
+        args.prompt.clone()
+    } else {
+        eprint!("uhm› What result do you need? ");
+        let _ = std::io::stderr().flush();
+        match tty::read_line_cooked() {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => {
+                return app_error(
+                    &args,
+                    outcome::USAGE,
+                    "input_error",
+                    "an intent is required (piped bytes are input, not the intent)",
+                )
             }
         }
-        Ok(_) => {
-            eprintln!("uhm: empty input");
-            return outcome::USAGE;
-        }
-        Err(error) => {
-            return application_error(&args, outcome::USAGE, "input_error", &error);
-        }
     };
-
-    let local_alias = matches!(mode, Mode::Auto | Mode::Run)
-        && config
-            .aliases
-            .iter()
-            .any(|(name, _)| name.trim() == user.trim());
+    let alias = config
+        .aliases
+        .iter()
+        .any(|(name, _)| name.trim() == request.trim());
     let key = match secret::resolve_key() {
-        Ok(key) => key,
-        Err(_) if local_alias => String::new(),
-        Err(error) => {
-            return application_error(&args, outcome::CONFIG, "credential_error", &error);
-        }
+        Ok(v) => v,
+        Err(_) if alias => String::new(),
+        Err(e) => return app_error(&args, outcome::CONFIG, "credential_error", &e),
     };
     if args.verbose && !key.is_empty() {
         eprintln!("uhm: using key {}", secret::mask(&key));
     }
-    let api_config = make_api_config(&config, key);
-    match mode {
-        Mode::Ask => prose_mode(
-            &api_config,
-            &config,
-            &args,
-            prompt::answer_system(),
-            &user,
-            false,
-        ),
-        Mode::Explain => prose_mode(
-            &api_config,
-            &config,
-            &args,
-            prompt::explain_system(),
-            &user,
-            true,
-        ),
-        Mode::Run | Mode::Auto => command::handle(
-            &args,
-            &config,
-            &api_config,
-            &user,
-            matches!(mode, Mode::Run),
-        ),
-        Mode::Manage => unreachable!(),
-    }
-}
-
-fn make_api_config(config: &config::Config, key: String) -> api::ApiConfig {
-    api::ApiConfig {
-        base_url: config.base_url.clone(),
+    let api = api::ApiConfig {
         model: config.model.clone(),
         key,
         max_tokens: config.max_completion_tokens,
         reasoning_effort: config.reasoning_effort.clone(),
-    }
-}
-
-fn input_text(args: &args::Args) -> Result<String, String> {
-    let piped = if !std::io::stdin().is_terminal() {
-        let mut text = String::new();
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|error| format!("read stdin: {}", error))?;
-        text
-    } else {
-        String::new()
+        request_max_bytes: config.request_max_bytes,
+        response_max_bytes: config.response_max_bytes,
     };
-    Ok(combine_input(&args.prompt, &piped))
+    let route = match args.subcommand.as_deref() {
+        Some("run") => "run",
+        Some("ask") => "ask",
+        Some("explain") => "explain",
+        _ => "auto",
+    };
+    command::handle(&args, &config, &api, &request, route, &stdin)
 }
 
-fn combine_input(prompt: &str, piped: &str) -> String {
-    match (prompt.trim().is_empty(), piped.trim().is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => prompt.to_string(),
-        (true, false) => piped.to_string(),
-        (false, false) => format!("{}\n\nContext from stdin:\n{}", prompt, piped),
-    }
-}
-
-fn prose_mode(
-    api_config: &api::ApiConfig,
-    config: &config::Config,
-    args: &args::Args,
-    system: &str,
-    user: &str,
-    render_markdown: bool,
-) -> i32 {
-    if args.json || args.no_stream || !config.stream || render_markdown {
-        let mut spinner = spinner::Spinner::start("thinking");
-        let result = api::collect_answer(
-            api_config,
-            system,
-            user,
-            None,
-            config.stream && !args.no_stream && !args.json,
-            |_| {},
-        );
-        spinner.stop();
-        return match result {
-            Ok(text) if args.json => {
-                println!(
-                    "{}",
-                    outcome::Outcome {
-                        namespace: "uhm",
-                        outcome: "answer",
-                        exit_code: 0,
-                        executed: false,
-                        command: None,
-                        message: Some(&text),
-                    }
-                    .json()
+fn management(args: &args::Args, config: &config::Config) -> i32 {
+    match args.subcommand.as_deref().unwrap_or("") {
+        "config" => {
+            let op = args.prompt.split_whitespace().next().unwrap_or("show");
+            if op == "check" {
+                println!("config OK: {}", config.paths.config_file.display());
+                return 0;
+            }
+            if op != "show" && !op.is_empty() {
+                return app_error(
+                    args,
+                    outcome::USAGE,
+                    "usage_error",
+                    "usage: uhm config [show|check]",
                 );
-                0
             }
-            Ok(text) => {
-                let safe = ansi::sanitize_untrusted(&text);
-                if render_markdown && std::io::stdout().is_terminal() && !ansi::plain_enabled() {
-                    print!("{}", sync::wrap(&markdown::render(&safe)));
-                } else {
-                    print!("{}", safe);
-                }
-                if !text.ends_with('\n') {
-                    println!();
-                }
-                0
-            }
-            Err(error) => {
-                if args.json {
-                    println!(
-                        "{}",
-                        outcome::Outcome {
-                            namespace: "uhm",
-                            outcome: "model_error",
-                            exit_code: outcome::MODEL,
-                            executed: false,
-                            command: None,
-                            message: Some(&error),
-                        }
-                        .json()
-                    );
-                } else {
-                    eprintln!("uhm: {}", error);
-                }
-                outcome::MODEL
-            }
-        };
-    }
-
-    let mut first = true;
-    let mut progress = spinner::Spinner::start("thinking");
-    let result = api::stream_answer(api_config, system, user, |token| {
-        if first {
-            first = false;
-            progress.stop();
-        }
-        print!("{}", ansi::sanitize_untrusted(token));
-        let _ = std::io::stdout().flush();
-    });
-    progress.stop();
-    println!();
-    match result {
-        Ok(()) => 0,
-        Err(error) => {
             if args.json {
                 println!(
                     "{}",
-                    outcome::Outcome {
-                        namespace: "uhm",
-                        outcome: "model_error",
-                        exit_code: outcome::MODEL,
-                        executed: false,
-                        command: None,
-                        message: Some(&error),
-                    }
-                    .json()
-                );
+                    serde_json::json!({"namespace":"uhm","outcome":"config","exit_code":0,"data":{"values":config}})
+                )
             } else {
-                eprintln!("uhm: {}", error);
+                println!("config: {}", config.paths.config_file.display());
+                for (k, v, s) in config.show_lines() {
+                    println!("{:<28} {:<24} ({})", k, v, s)
+                }
             }
-            outcome::MODEL
+            0
         }
+        "history" => {
+            let op = args.prompt.split_whitespace().next().unwrap_or("status");
+            match op {
+                "status" | "" => {
+                    let records =
+                        history::recent(&config.paths.data_dir, config.history.max_records);
+                    let value = serde_json::json!({"enabled":config.history.enabled,"records":records.len(),"max_records":config.history.max_records,"max_age_days":config.history.max_age_days,"path":config.paths.data_dir.join("history.jsonl")});
+                    if args.json {
+                        println!("{}", value)
+                    } else {
+                        println!(
+                            "history {}: {} metadata receipts (max {}, {} days)",
+                            if config.history.enabled {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            },
+                            records.len(),
+                            config.history.max_records,
+                            config.history.max_age_days
+                        )
+                    }
+                    0
+                }
+                "clear" => match history::clear(&config.paths.data_dir) {
+                    Ok(()) => {
+                        if args.json {
+                            println!(
+                                "{}",
+                                serde_json::json!({"namespace":"uhm","outcome":"history_cleared","exit_code":0})
+                            )
+                        } else {
+                            println!("history cleared")
+                        };
+                        0
+                    }
+                    Err(e) => app_error(args, outcome::CONFIG, "history_error", &e),
+                },
+                _ => app_error(
+                    args,
+                    outcome::USAGE,
+                    "usage_error",
+                    "usage: uhm history [status|clear]",
+                ),
+            }
+        }
+        "context" => {
+            let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+            let mode_text = match words.as_slice() {
+                [] | ["show"] => args.context.as_deref().unwrap_or(&config.context_mode),
+                ["show", mode] => mode,
+                _ => {
+                    return app_error(
+                        args,
+                        outcome::USAGE,
+                        "usage_error",
+                        "usage: uhm context show [minimal|standard|full]",
+                    )
+                }
+            };
+            let mode = match context::Mode::parse(mode_text) {
+                Ok(v) => v,
+                Err(e) => return app_error(args, outcome::USAGE, "usage_error", &e),
+            };
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+            let snapshot = context::gather(mode, &shell, config.context_timeout_ms);
+            let value = serde_json::json!({"prompt":"<user intent>","stdin":{"present":"<depends on invocation>"},"context":snapshot,"disclosure":context::disclosure_payload()});
+            println!("{}", serde_json::to_string_pretty(&value).unwrap());
+            0
+        }
+        "doctor" => {
+            println!("config      OK  {}", config.paths.config_file.display());
+            println!("data dir    OK  {}", config.paths.data_dir.display());
+            println!("Responses   OK  {}", api::ENDPOINT);
+            println!(
+                "API key     {}",
+                if secret::resolve_key().is_ok() {
+                    "OK"
+                } else {
+                    "missing"
+                }
+            );
+            0
+        }
+        _ => outcome::USAGE,
     }
 }
-
-fn application_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
+fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     if args.json {
         println!(
             "{}",
@@ -300,191 +232,15 @@ fn application_error(args: &args::Args, code: i32, name: &str, message: &str) ->
                 exit_code: code,
                 executed: false,
                 command: None,
-                message: Some(message),
+                message: Some(message)
             }
             .json()
-        );
+        )
     } else {
-        eprintln!("uhm: {}", message);
+        eprintln!("uhm: {}", message)
     }
     code
 }
-
-fn run_management(verb: &str, args: &args::Args, config: &config::Config) -> i32 {
-    if args.json {
-        return run_management_json(verb, args, config);
-    }
-    match verb {
-        "config" => {
-            let operation = args.prompt.split_whitespace().next().unwrap_or("show");
-            match operation {
-                "check" => {
-                    println!("config OK: {}", config.paths.config_file.display());
-                    0
-                }
-                "show" | "" => {
-                    println!("config: {}", config.paths.config_file.display());
-                    for (key, value, source) in config.show_lines() {
-                        println!("{:<24} {:<28} ({})", key, value, source);
-                    }
-                    0
-                }
-                _ => {
-                    eprintln!("uhm: usage: uhm config [show|check]");
-                    outcome::USAGE
-                }
-            }
-        }
-        "history" => {
-            let count = args
-                .prompt
-                .split_whitespace()
-                .next()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(config.history_lines)
-                .min(200);
-            let entries = history::recent(&config.paths.data_dir, count);
-            for entry in entries {
-                let command = entry["command"].as_str().unwrap_or("");
-                let exit = entry["exit"].as_i64().unwrap_or_default();
-                println!(
-                    "[exit {}] {}",
-                    exit,
-                    ansi::sanitize_untrusted_inline(command)
-                );
-            }
-            0
-        }
-        "context" => {
-            if config.context_mode == "request_only" {
-                println!("context_mode=request_only\n(no machine context is sent)");
-                return 0;
-            }
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-            println!(
-                "{}",
-                context::SystemProvider
-                    .gather(&shell, config.include_ls, config.context_timeout_ms)
-                    .render()
-            );
-            0
-        }
-        "doctor" => {
-            println!("config      OK  {}", config.paths.config_file.display());
-            println!("data dir    OK  {}", config.paths.data_dir.display());
-            println!("cache dir   OK  {}", config.paths.cache_dir.display());
-            match secret::resolve_key() {
-                Ok(_) => println!("API key     OK"),
-                Err(error) => println!("API key     missing ({})", error),
-            }
-            0
-        }
-        _ => outcome::USAGE,
-    }
-}
-
-fn run_management_json(verb: &str, args: &args::Args, config: &config::Config) -> i32 {
-    let (outcome_name, data) = match verb {
-        "config" => {
-            let operation = args.prompt.split_whitespace().next().unwrap_or("show");
-            if !matches!(operation, "" | "show" | "check") {
-                return application_error(
-                    args,
-                    outcome::USAGE,
-                    "usage_error",
-                    "usage: uhm config [show|check]",
-                );
-            }
-            (
-                if operation == "check" {
-                    "config_valid"
-                } else {
-                    "config"
-                },
-                serde_json::json!({
-                    "path": config.paths.config_file,
-                    "values": config,
-                    "sources": config.show_lines().into_iter().map(|(key, _, source)| (key, source)).collect::<std::collections::BTreeMap<_, _>>()
-                }),
-            )
-        }
-        "history" => {
-            let count = args
-                .prompt
-                .split_whitespace()
-                .next()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(config.history_lines)
-                .min(200);
-            (
-                "history",
-                serde_json::Value::Array(history::recent(&config.paths.data_dir, count)),
-            )
-        }
-        "context" => {
-            let value = if config.context_mode == "request_only" {
-                String::new()
-            } else {
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-                context::SystemProvider
-                    .gather(&shell, config.include_ls, config.context_timeout_ms)
-                    .render()
-            };
-            (
-                "context",
-                serde_json::json!({"mode": config.context_mode, "value": value}),
-            )
-        }
-        "doctor" => (
-            "doctor",
-            serde_json::json!({
-                "config_path": config.paths.config_file,
-                "data_dir": config.paths.data_dir,
-                "cache_dir": config.paths.cache_dir,
-                "api_key": if secret::resolve_key().is_ok() { "configured" } else { "missing" }
-            }),
-        ),
-        _ => {
-            return application_error(
-                args,
-                outcome::USAGE,
-                "usage_error",
-                "unknown management command",
-            )
-        }
-    };
-    println!(
-        "{}",
-        serde_json::json!({
-            "namespace": "uhm",
-            "outcome": outcome_name,
-            "exit_code": 0,
-            "executed": false,
-            "data": data
-        })
-    );
-    0
-}
-
 fn print_help() {
-    println!(
-        "uhm — say what you need; get the result\n\n\
-Usage:\n  uhm [options] -- <intent>\n  uhm run [options] -- <intent>\n  uhm ask [options] -- <question>\n  uhm explain [options] -- <command>\n  uhm history [n]\n  uhm config [show|check]\n  uhm context\n  uhm doctor\n\n\
-Execution:\n  ordinary requests run immediately when no consequential effects are detected\n  --review    always show the proposal and ask before running\n  --dry-run   print the exact command without running it\n  --force     run after warnings without confirmation\n  --plain     disable styling, animation, and terminal control sequences\n  --json      emit a namespaced machine-readable outcome\n\n\
-Options:\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\n\
-Everything after the first intent word is user text. Put -- before intent that starts with '-'."
-    );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn combines_prompt_and_piped_context_without_trimming_payload() {
-        assert_eq!(
-            combine_input("summarize", "  document\n"),
-            "summarize\n\nContext from stdin:\n  document\n"
-        );
-    }
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] -- <intent>\n  uhm run|ask|explain [options] -- <intent>\n  uhm context show [minimal|standard|full]\n  uhm history [status|clear]\n  uhm config [show|check]\n  uhm doctor\n\nExecution:\n  ordinary actions run and return their result\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     proceed after warnings without confirmation\n  --context <minimal|standard|full>\n  --plain     disable styling and animation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. Put -- before intent that starts with '-'.")
 }

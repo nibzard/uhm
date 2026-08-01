@@ -1,4 +1,4 @@
-//! Typed boundary between model proposals, local policy, and execution.
+//! Typed boundary between OpenAI function calls, local policy, and execution.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,111 +44,108 @@ impl Effect {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StdinMode {
+    None,
+    Original,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalMetadata {
-    #[serde(default)]
     pub summary: String,
-    #[serde(default)]
     pub assumptions: Vec<String>,
-    #[serde(default)]
     pub effects: Vec<Effect>,
-    #[serde(default)]
     pub requirements: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProposedAction {
     Answer {
         text: String,
+    },
+    Shell {
+        command: String,
+        metadata: ProposalMetadata,
+        stdin_mode: StdinMode,
+    },
+    ParentShell {
+        command: String,
         metadata: ProposalMetadata,
     },
-    Shell(ShellAction),
-    ParentShell(ParentShellAction),
     Clarification {
         question: String,
-        metadata: ProposalMetadata,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShellAction {
-    pub command: String,
-    pub metadata: ProposalMetadata,
-}
+impl ProposedAction {
+    pub fn validate(self) -> Result<Self, String> {
+        const MAX_COMMAND: usize = 32 * 1024;
+        const MAX_TEXT: usize = 64 * 1024;
+        const MAX_ITEMS: usize = 32;
+        const MAX_ITEM: usize = 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParentShellAction {
-    pub command: String,
-    pub metadata: ProposalMetadata,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct WireProposal {
-    pub kind: String,
-    pub command: Option<String>,
-    pub text: Option<String>,
-    pub question: Option<String>,
-    pub summary: String,
-    pub assumptions: Vec<String>,
-    pub effects: Vec<Effect>,
-    pub requirements: Vec<String>,
-}
-
-impl TryFrom<WireProposal> for ProposedAction {
-    type Error = String;
-
-    fn try_from(value: WireProposal) -> Result<Self, Self::Error> {
-        fn checked_command(command: String) -> Result<String, String> {
-            if command.trim().is_empty() {
-                return Err("model returned an empty command".into());
+        fn text(value: &str, label: &str, max: usize) -> Result<(), String> {
+            if value.trim().is_empty() {
+                return Err(format!("{} is empty", label));
             }
-            if command
+            if value.len() > max {
+                return Err(format!("{} exceeds {} bytes", label, max));
+            }
+            if value
                 .chars()
                 .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
             {
-                return Err("model returned a command containing unsafe control bytes".into());
+                return Err(format!("{} contains unsafe control bytes", label));
             }
-            Ok(command)
+            Ok(())
+        }
+        fn metadata(value: &ProposalMetadata) -> Result<(), String> {
+            text(&value.summary, "summary", MAX_ITEM)?;
+            for (label, items) in [
+                ("assumptions", &value.assumptions),
+                ("requirements", &value.requirements),
+            ] {
+                if items.len() > MAX_ITEMS {
+                    return Err(format!("{} contains too many items", label));
+                }
+                for item in items {
+                    text(item, label, MAX_ITEM)?;
+                }
+            }
+            if value.effects.len() > MAX_ITEMS {
+                return Err("effects contains too many items".into());
+            }
+            for requirement in &value.requirements {
+                if requirement.contains('/')
+                    || requirement.chars().any(char::is_whitespace)
+                    || requirement.starts_with('-')
+                {
+                    return Err(format!("invalid executable requirement '{}'", requirement));
+                }
+            }
+            Ok(())
         }
 
-        let metadata = ProposalMetadata {
-            summary: value.summary,
-            assumptions: value.assumptions,
-            effects: value.effects,
-            requirements: value.requirements,
-        };
-        match value.kind.as_str() {
-            "answer" => Ok(Self::Answer {
-                text: value.text.ok_or("answer proposal is missing text")?,
-                metadata,
-            }),
-            "shell" => Ok(Self::Shell(ShellAction {
-                command: checked_command(
-                    value.command.ok_or("shell proposal is missing command")?,
-                )?,
-                metadata,
-            })),
-            "parent_shell" => Ok(Self::ParentShell(ParentShellAction {
-                command: checked_command(
-                    value
-                        .command
-                        .ok_or("parent-shell proposal is missing command")?,
-                )?,
-                metadata,
-            })),
-            "clarification" => Ok(Self::Clarification {
-                question: value
-                    .question
-                    .ok_or("clarification proposal is missing question")?,
-                metadata,
-            }),
-            other => Err(format!(
-                "model returned unsupported action kind '{}'",
-                other
-            )),
+        match &self {
+            Self::Answer { text: value } => text(value, "answer", MAX_TEXT)?,
+            Self::Clarification { question } => text(question, "clarification", MAX_ITEM)?,
+            Self::Shell {
+                command,
+                metadata: value,
+                ..
+            }
+            | Self::ParentShell {
+                command,
+                metadata: value,
+            } => {
+                text(command, "command", MAX_COMMAND)?;
+                metadata(value)?;
+            }
         }
+        Ok(self)
     }
 }
 
@@ -157,17 +154,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_terminal_control_bytes_in_commands() {
-        let wire = WireProposal {
-            kind: "shell".into(),
-            command: Some("printf '\u{1b}[2J'".into()),
-            text: None,
-            question: None,
-            summary: String::new(),
-            assumptions: vec![],
-            effects: vec![],
-            requirements: vec![],
+    fn rejects_terminal_control_bytes_and_invalid_requirements() {
+        let action = ProposedAction::Shell {
+            command: "printf '\u{1b}[2J'".into(),
+            metadata: ProposalMetadata {
+                summary: "print".into(),
+                requirements: vec!["/bin/printf".into()],
+                ..ProposalMetadata::default()
+            },
+            stdin_mode: StdinMode::None,
         };
-        assert!(ProposedAction::try_from(wire).is_err());
+        assert!(action.validate().is_err());
     }
 }

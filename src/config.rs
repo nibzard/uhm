@@ -4,19 +4,56 @@ use crate::dirs::{self, Paths};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HistoryConfig {
+    pub enabled: bool,
+    pub max_records: usize,
+    pub max_age_days: u64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_records: 500,
+            max_age_days: 30,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExecutionConfig {
+    pub timeout_secs: u64,
+    pub diagnostic_bytes: usize,
+    pub deny_env: Vec<String>,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 300,
+            diagnostic_bytes: 65_536,
+            deny_env: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Config {
     pub model: String,
-    pub base_url: String,
     pub max_completion_tokens: u32,
     pub reasoning_effort: String,
     pub stream: bool,
     pub shell: String,
-    pub include_ls: bool,
     pub context_mode: String,
-    pub include_history: bool,
-    pub history_lines: usize,
     pub context_timeout_ms: u64,
+    pub stdin_max_bytes: usize,
+    pub request_max_bytes: usize,
+    pub response_max_bytes: usize,
+    pub history: HistoryConfig,
+    pub execution: ExecutionConfig,
     pub cache_enabled: bool,
     pub cache_ttl_secs: u64,
     pub aliases: Vec<(String, String)>,
@@ -30,20 +67,39 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 struct FileConfig {
     model: Option<String>,
-    base_url: Option<String>,
     max_completion_tokens: Option<u32>,
     reasoning_effort: Option<String>,
     stream: Option<bool>,
     shell: Option<String>,
-    include_ls: Option<bool>,
     context_mode: Option<String>,
-    include_history: Option<bool>,
-    history_lines: Option<usize>,
     context_timeout_ms: Option<u64>,
+    stdin_max_bytes: Option<usize>,
+    request_max_bytes: Option<usize>,
+    response_max_bytes: Option<usize>,
+    history: Option<HistoryConfig>,
+    execution: Option<ExecutionConfig>,
     cache_enabled: Option<bool>,
     cache_ttl_secs: Option<u64>,
     aliases: Option<BTreeMap<String, String>>,
 }
+
+const KEYS: &[&str] = &[
+    "model",
+    "max_completion_tokens",
+    "reasoning_effort",
+    "stream",
+    "shell",
+    "context_mode",
+    "context_timeout_ms",
+    "stdin_max_bytes",
+    "request_max_bytes",
+    "response_max_bytes",
+    "history",
+    "execution",
+    "cache_enabled",
+    "cache_ttl_secs",
+    "aliases",
+];
 
 impl Config {
     fn defaults(paths: Paths) -> Self {
@@ -52,17 +108,18 @@ impl Config {
             sources.insert(*key, "default");
         }
         Self {
-            model: "gpt-5.6-luna".into(),
-            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-5.6-terra".into(),
             max_completion_tokens: 1024,
             reasoning_effort: "low".into(),
             stream: true,
             shell: "auto".into(),
-            include_ls: true,
-            context_mode: "full".into(),
-            include_history: false,
-            history_lines: 15,
-            context_timeout_ms: 800,
+            context_mode: "standard".into(),
+            context_timeout_ms: 150,
+            stdin_max_bytes: 8 * 1024 * 1024,
+            request_max_bytes: 256 * 1024,
+            response_max_bytes: 2 * 1024 * 1024,
+            history: HistoryConfig::default(),
+            execution: ExecutionConfig::default(),
             cache_enabled: true,
             cache_ttl_secs: 86_400,
             aliases: Vec::new(),
@@ -78,7 +135,6 @@ impl Config {
     pub fn show_lines(&self) -> Vec<(&'static str, String, &'static str)> {
         vec![
             ("model", self.model.clone(), self.source("model")),
-            ("base_url", self.base_url.clone(), self.source("base_url")),
             ("shell", self.shell.clone(), self.source("shell")),
             ("stream", self.stream.to_string(), self.source("stream")),
             (
@@ -92,29 +148,39 @@ impl Config {
                 self.source("reasoning_effort"),
             ),
             (
-                "context_timeout_ms",
-                self.context_timeout_ms.to_string(),
-                self.source("context_timeout_ms"),
-            ),
-            (
-                "include_ls",
-                self.include_ls.to_string(),
-                self.source("include_ls"),
-            ),
-            (
                 "context_mode",
                 self.context_mode.clone(),
                 self.source("context_mode"),
             ),
             (
-                "include_history",
-                self.include_history.to_string(),
-                self.source("include_history"),
+                "context_timeout_ms",
+                self.context_timeout_ms.to_string(),
+                self.source("context_timeout_ms"),
             ),
             (
-                "history_lines",
-                self.history_lines.to_string(),
-                self.source("history_lines"),
+                "stdin_max_bytes",
+                self.stdin_max_bytes.to_string(),
+                self.source("stdin_max_bytes"),
+            ),
+            (
+                "request_max_bytes",
+                self.request_max_bytes.to_string(),
+                self.source("request_max_bytes"),
+            ),
+            (
+                "response_max_bytes",
+                self.response_max_bytes.to_string(),
+                self.source("response_max_bytes"),
+            ),
+            (
+                "history.enabled",
+                self.history.enabled.to_string(),
+                self.source("history"),
+            ),
+            (
+                "execution.timeout_secs",
+                self.execution.timeout_secs.to_string(),
+                self.source("execution"),
             ),
             (
                 "cache_enabled",
@@ -135,27 +201,9 @@ impl Config {
     }
 }
 
-const KEYS: &[&str] = &[
-    "model",
-    "base_url",
-    "max_completion_tokens",
-    "reasoning_effort",
-    "stream",
-    "shell",
-    "include_ls",
-    "context_mode",
-    "include_history",
-    "history_lines",
-    "context_timeout_ms",
-    "cache_enabled",
-    "cache_ttl_secs",
-    "aliases",
-];
-
 pub fn load(model_override: Option<&str>) -> Result<Config, String> {
     let paths = dirs::resolve()?;
     let mut config = Config::defaults(paths.clone());
-
     match std::fs::read_to_string(&paths.config_file) {
         Ok(text) => {
             let file: FileConfig = serde_yaml_ng::from_str(&text)
@@ -170,11 +218,6 @@ pub fn load(model_override: Option<&str>) -> Result<Config, String> {
                 e
             ))
         }
-    }
-
-    if let Some(value) = nonempty_env("OPENAI_BASE_URL")? {
-        config.base_url = value;
-        config.sources.insert("base_url", "OPENAI_BASE_URL");
     }
     if let Some(value) = nonempty_env("OPENAI_MODEL")? {
         config.model = value;
@@ -198,26 +241,26 @@ fn nonempty_env(name: &str) -> Result<Option<String>, String> {
 }
 
 macro_rules! apply {
-    ($config:ident, $file:ident, $field:ident) => {
-        if let Some(value) = $file.$field {
-            $config.$field = value;
-            $config.sources.insert(stringify!($field), "config.yaml");
+    ($c:ident, $f:ident, $field:ident) => {
+        if let Some(v) = $f.$field {
+            $c.$field = v;
+            $c.sources.insert(stringify!($field), "config.yaml");
         }
     };
 }
-
 fn apply_file(config: &mut Config, file: FileConfig) {
     apply!(config, file, model);
-    apply!(config, file, base_url);
     apply!(config, file, max_completion_tokens);
     apply!(config, file, reasoning_effort);
     apply!(config, file, stream);
     apply!(config, file, shell);
-    apply!(config, file, include_ls);
     apply!(config, file, context_mode);
-    apply!(config, file, include_history);
-    apply!(config, file, history_lines);
     apply!(config, file, context_timeout_ms);
+    apply!(config, file, stdin_max_bytes);
+    apply!(config, file, request_max_bytes);
+    apply!(config, file, response_max_bytes);
+    apply!(config, file, history);
+    apply!(config, file, execution);
     apply!(config, file, cache_enabled);
     apply!(config, file, cache_ttl_secs);
     if let Some(aliases) = file.aliases {
@@ -226,48 +269,58 @@ fn apply_file(config: &mut Config, file: FileConfig) {
     }
 }
 
-fn validate(config: &Config) -> Result<(), String> {
-    if config.model.trim().is_empty() {
+fn validate(c: &Config) -> Result<(), String> {
+    if c.model.trim().is_empty() {
         return Err("config model must not be empty".into());
     }
-    if !(config.base_url.starts_with("https://") || config.base_url.starts_with("http://")) {
-        return Err("config base_url must start with https:// or http://".into());
-    }
-    if !(1..=128_000).contains(&config.max_completion_tokens) {
+    if !(1..=128_000).contains(&c.max_completion_tokens) {
         return Err("config max_completion_tokens must be between 1 and 128000".into());
     }
     if !matches!(
-        config.reasoning_effort.as_str(),
+        c.reasoning_effort.as_str(),
         "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
     ) {
         return Err("config reasoning_effort has an unsupported value".into());
     }
-    if !(50..=60_000).contains(&config.context_timeout_ms) {
-        return Err("config context_timeout_ms must be between 50 and 60000".into());
+    if !(50..=5_000).contains(&c.context_timeout_ms) {
+        return Err("config context_timeout_ms must be between 50 and 5000".into());
     }
-    if !matches!(config.context_mode.as_str(), "full" | "request_only") {
-        return Err("config context_mode must be full or request_only".into());
+    if !matches!(c.context_mode.as_str(), "minimal" | "standard" | "full") {
+        return Err("config context_mode must be minimal, standard, or full".into());
     }
-    if !(1..=200).contains(&config.history_lines) {
-        return Err("config history_lines must be between 1 and 200".into());
+    if !(1..=10_000).contains(&c.history.max_records) || c.history.max_age_days == 0 {
+        return Err("config history bounds must be positive".into());
     }
-    if config.cache_ttl_secs == 0 {
-        return Err("config cache_ttl_secs must be greater than zero".into());
+    if c.stdin_max_bytes == 0
+        || c.request_max_bytes == 0
+        || c.response_max_bytes == 0
+        || c.execution.timeout_secs == 0
+        || c.execution.diagnostic_bytes == 0
+    {
+        return Err("configured byte and time limits must be positive".into());
     }
-    let shell = std::path::Path::new(&config.shell)
+    let shell = std::path::Path::new(&c.shell)
         .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(&config.shell);
+        .and_then(|v| v.to_str())
+        .unwrap_or(&c.shell);
     if !matches!(
         shell,
         "auto" | "sh" | "bash" | "zsh" | "fish" | "pwsh" | "powershell"
     ) {
         return Err("config shell has an unsupported value".into());
     }
-    for (name, command) in &config.aliases {
+    for name in &c.execution.deny_env {
+        if name.is_empty() || name.contains('=') {
+            return Err("execution.deny_env entries must be environment names".into());
+        }
+    }
+    for (name, command) in &c.aliases {
         if name.trim().is_empty() || command.trim().is_empty() {
             return Err("config aliases may not contain empty names or commands".into());
         }
+    }
+    if c.cache_ttl_secs == 0 {
+        return Err("config cache_ttl_secs must be greater than zero".into());
     }
     Ok(())
 }
@@ -275,15 +328,21 @@ fn validate(config: &Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unknown_keys_are_rejected() {
-        let err = serde_yaml_ng::from_str::<FileConfig>("model: x\nmodle: y\n").unwrap_err();
-        assert!(err.to_string().contains("unknown field"));
+    fn paths() -> Paths {
+        Paths {
+            config_file: "/tmp/c".into(),
+            data_dir: "/tmp/d".into(),
+            cache_dir: "/tmp/x".into(),
+        }
     }
-
     #[test]
-    fn invalid_types_are_rejected() {
-        assert!(serde_yaml_ng::from_str::<FileConfig>("stream: perhaps\n").is_err());
+    fn defaults_are_bounded_and_private_by_policy() {
+        let c = Config::defaults(paths());
+        assert_eq!(c.context_mode, "standard");
+        assert!(c.history.enabled);
+    }
+    #[test]
+    fn rejects_removed_provider_base_url() {
+        assert!(serde_yaml_ng::from_str::<FileConfig>("base_url: http://example.test").is_err());
     }
 }

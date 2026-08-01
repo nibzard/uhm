@@ -10,7 +10,6 @@ use std::path::Path;
 struct Provenance<'a> {
     api_family: &'static str,
     model: &'a str,
-    base_url: &'a str,
     shell: &'a str,
     prompt_version: u32,
     policy_version: u32,
@@ -36,7 +35,6 @@ fn now() -> u64 {
 #[allow(clippy::too_many_arguments)]
 pub fn key_hash(
     model: &str,
-    base_url: &str,
     shell: &str,
     max_tokens: u32,
     reasoning_effort: &str,
@@ -45,13 +43,12 @@ pub fn key_hash(
     request: &str,
 ) -> String {
     let value = Provenance {
-        api_family: "chat_completions",
+        api_family: crate::api::API_FAMILY,
         model,
-        base_url,
         shell,
         prompt_version: crate::prompt::PROMPT_VERSION,
         policy_version: crate::safety::DENY_VERSION,
-        context_policy_version: 1,
+        context_policy_version: crate::context::POLICY_VERSION,
         context_mode,
         max_tokens,
         reasoning_effort,
@@ -118,40 +115,21 @@ mod tests {
 
     #[test]
     fn cache_key_changes_with_semantic_inputs() {
-        let a = key_hash("m", "url", "sh", 10, "low", "full", "ctx", "request");
-        let b = key_hash("m", "url", "sh", 11, "low", "full", "ctx", "request");
+        let a = key_hash("m", "sh", 10, "low", "full", "ctx", "request");
+        let b = key_hash("m", "sh", 11, "low", "full", "ctx", "request");
         assert_ne!(a, b);
-        let c = key_hash(
-            "m",
-            "url",
-            "sh",
-            10,
-            "low",
-            "request_only",
-            "ctx",
-            "request",
-        );
+        let c = key_hash("m", "sh", 10, "low", "minimal", "ctx", "request");
         assert_ne!(a, c);
         assert_ne!(
             a,
-            key_hash("other", "url", "sh", 10, "low", "full", "ctx", "request")
+            key_hash("other", "sh", 10, "low", "full", "ctx", "request")
         );
+        assert_ne!(a, key_hash("m", "sh", 10, "high", "full", "ctx", "request"));
         assert_ne!(
             a,
-            key_hash("m", "other-url", "sh", 10, "low", "full", "ctx", "request")
+            key_hash("m", "sh", 10, "low", "full", "other", "request")
         );
-        assert_ne!(
-            a,
-            key_hash("m", "url", "sh", 10, "high", "full", "ctx", "request")
-        );
-        assert_ne!(
-            a,
-            key_hash("m", "url", "sh", 10, "low", "full", "other", "request")
-        );
-        assert_ne!(
-            a,
-            key_hash("m", "url", "sh", 10, "low", "full", "ctx", "other")
-        );
+        assert_ne!(a, key_hash("m", "sh", 10, "low", "full", "ctx", "other"));
     }
 
     #[cfg(unix)]

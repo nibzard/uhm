@@ -1,69 +1,105 @@
-//! Server-Sent Events reader: splits curl/ureq stdout into whole JSON frames.
-//! Each `data: {...}` line is a complete JSON object, so we never parse fragments.
+//! Bounded semantic-event parser for streamed Responses API results.
 
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Read};
 
-pub fn read_stream<R: Read, F: FnMut(&str)>(reader: R, mut on_token: F) -> Result<(), String> {
-    let mut br = BufReader::new(reader);
+const MAX_EVENT_LINE: usize = 256 * 1024;
+const MAX_ARGUMENTS: usize = 64 * 1024;
+
+pub fn read_responses_stream<R: Read>(reader: R, max_stream: usize) -> Result<String, String> {
+    let mut reader = BufReader::new(reader);
     let mut line = String::new();
-    let mut completed = false;
+    let mut total = 0usize;
+    let mut argument_bytes = 0usize;
+
     loop {
         line.clear();
-        let n = br
+        let count = reader
             .read_line(&mut line)
-            .map_err(|e| format!("read: {}", e))?;
-        if n == 0 {
-            break;
+            .map_err(|e| format!("read Responses stream: {}", e))?;
+        if count == 0 {
+            return Err("Responses stream ended before response.completed".into());
         }
-        let l = line.trim_end_matches(['\n', '\r']);
-        if l.is_empty() {
+        total = total.saturating_add(count);
+        if count > MAX_EVENT_LINE || total > max_stream {
+            return Err("Responses stream exceeded the configured size limit".into());
+        }
+        let Some(data) = line
+            .trim_end_matches(['\n', '\r'])
+            .strip_prefix("data:")
+            .map(str::trim)
+        else {
             continue;
-        }
-        let data = if let Some(d) = l.strip_prefix("data: ") {
-            d
-        } else if let Some(d) = l.strip_prefix("data:") {
-            d
-        } else {
-            continue; // ignore event:/id:/comment lines
         };
-        let data = data.trim();
         if data.is_empty() {
             continue;
         }
-        if data == "[DONE]" {
-            completed = true;
-            break;
-        }
-        let j: serde_json::Value =
-            serde_json::from_str(data).map_err(|e| format!("invalid SSE data: {}", e))?;
-        if let Some(message) = j
-            .get("error")
-            .and_then(|e| e.get("message"))
-            .and_then(|m| m.as_str())
-        {
-            return Err(format!(
-                "API stream error: {}",
-                crate::render::ansi::sanitize_untrusted(message)
-            ));
-        }
-        if let Some(content) = j
-            .get("choices")
-            .and_then(|c| c.as_array())
-            .and_then(|a| a.first())
-            .and_then(|ch| ch.get("delta"))
-            .and_then(|d| d.get("content"))
-            .and_then(|c| c.as_str())
-        {
-            if !content.is_empty() {
-                on_token(content);
+        let event: Value = serde_json::from_str(data)
+            .map_err(|e| format!("invalid Responses stream event: {}", e))?;
+        let kind = event["type"].as_str().unwrap_or("");
+        match kind {
+            "response.created"
+            | "response.in_progress"
+            | "response.output_item.added"
+            | "response.content_part.added"
+            | "response.content_part.done" => {}
+            "response.function_call_arguments.delta" => {
+                argument_bytes =
+                    argument_bytes.saturating_add(event["delta"].as_str().unwrap_or("").len());
+                if argument_bytes > MAX_ARGUMENTS {
+                    return Err("streamed function arguments exceeded 65536 bytes".into());
+                }
             }
+            "response.function_call_arguments.done" => {
+                if event["arguments"].as_str().unwrap_or("").len() > MAX_ARGUMENTS {
+                    return Err("completed function arguments exceeded 65536 bytes".into());
+                }
+            }
+            "response.output_item.done" => {
+                if event["item"]["type"] == "function_call"
+                    && event["item"]["arguments"].as_str().unwrap_or("").len() > MAX_ARGUMENTS
+                {
+                    return Err("function-call output item exceeded 65536 bytes".into());
+                }
+            }
+            "response.refusal.delta" | "response.refusal.done" => {
+                return Err("model refused the requested typed action".into())
+            }
+            "response.incomplete" => {
+                return Err(format!(
+                    "OpenAI response was incomplete: {}",
+                    event["response"]["incomplete_details"]
+                ))
+            }
+            "response.failed" => {
+                return Err(api_error(
+                    &event["response"]["error"],
+                    "OpenAI response failed",
+                ))
+            }
+            "error" => return Err(api_error(&event, "OpenAI stream error")),
+            "response.completed" => {
+                let response = event
+                    .get("response")
+                    .ok_or("response.completed did not include a response")?;
+                return serde_json::to_string(response)
+                    .map_err(|e| format!("serialize completed response: {}", e));
+            }
+            other if other.starts_with("response.output_text") => {
+                return Err("plain-text model output is not a valid uhm action".into())
+            }
+            _ => {}
         }
     }
-    if completed {
-        Ok(())
-    } else {
-        Err("API stream ended before [DONE]".into())
-    }
+}
+
+fn api_error(value: &Value, prefix: &str) -> String {
+    let message = value["message"].as_str().unwrap_or("unknown API error");
+    format!(
+        "{}: {}",
+        prefix,
+        crate::render::ansi::sanitize_untrusted(message)
+    )
 }
 
 #[cfg(test)]
@@ -71,20 +107,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_tokens_until_done() {
-        let input = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n";
-        let mut out = String::new();
-        read_stream(&input[..], |token| out.push_str(token)).unwrap();
-        assert_eq!(out, "hi");
+    fn returns_only_completed_response() {
+        let stream = concat!(
+            "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+            "event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{}\"}\n\n",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n"
+        );
+        let result = read_responses_stream(stream.as_bytes(), 2 * 1024 * 1024).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&result).unwrap()["status"],
+            "completed"
+        );
     }
 
     #[test]
-    fn rejects_truncated_malformed_and_error_streams() {
-        assert!(read_stream(&b"data: {}\n"[..], |_| {}).is_err());
-        assert!(read_stream(&b"data: nope\n\ndata: [DONE]\n"[..], |_| {}).is_err());
-        let error = b"data: {\"error\":{\"message\":\"bad request\"}}\n\ndata: [DONE]\n";
-        assert!(read_stream(&error[..], |_| {})
-            .unwrap_err()
-            .contains("bad request"));
+    fn rejects_failure_refusal_interruption_and_oversize() {
+        assert!(read_responses_stream(
+            b"data: {\"type\":\"response.refusal.done\"}\n".as_slice(),
+            2 * 1024 * 1024,
+        )
+        .unwrap_err()
+        .contains("refused"));
+        assert!(read_responses_stream(
+            b"data: {\"type\":\"response.created\"}\n".as_slice(),
+            2 * 1024 * 1024,
+        )
+        .unwrap_err()
+        .contains("ended"));
+        let oversized = format!(
+            "data: {{\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{}\"}}\n",
+            "x".repeat(MAX_ARGUMENTS + 1)
+        );
+        assert!(read_responses_stream(oversized.as_bytes(), 2 * 1024 * 1024).is_err());
     }
 }

@@ -7,6 +7,7 @@ pub struct Args {
     pub prompt: String,
     pub model: Option<String>,
     pub shell: Option<String>,
+    pub context: Option<String>,
     pub review: bool,
     pub dry_run: bool,
     pub force: bool,
@@ -61,11 +62,18 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
                 i += 1;
                 out.shell = Some(argv.get(i).ok_or("--shell needs a value")?.clone());
             }
+            "--context" => {
+                i += 1;
+                out.context = Some(argv.get(i).ok_or("--context needs a value")?.clone());
+            }
             _ if arg.starts_with("--model=") => {
                 out.model = Some(arg[8..].to_string());
             }
             _ if arg.starts_with("--shell=") => {
                 out.shell = Some(arg[8..].to_string());
+            }
+            _ if arg.starts_with("--context=") => {
+                out.context = Some(arg[10..].to_string());
             }
             _ if out.subcommand.is_none() && VERBS.contains(&arg.as_str()) => {
                 out.subcommand = Some(arg.clone());

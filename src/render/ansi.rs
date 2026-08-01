@@ -81,9 +81,6 @@ pub fn dim(s: &str) -> String {
 pub fn bold(s: &str) -> String {
     wrap("\x1b[1m", s, "\x1b[22m")
 }
-pub fn accent(s: &str) -> String {
-    wrap("\x1b[36m", s, "\x1b[39m")
-} // cyan
 pub fn green(s: &str) -> String {
     wrap("\x1b[32m", s, "\x1b[39m")
 }
@@ -101,16 +98,6 @@ pub fn undercurl(s: &str) -> String {
         format!("\x1b[4:3m{}\x1b[4:0m", s)
     } else {
         s.to_string()
-    }
-}
-
-/// OSC 8 hyperlink: the terminal renders `text` and opens `url` on click.
-/// Falls back to plain text where OSC 8 isn't supported.
-pub fn link(url: &str, text: &str) -> String {
-    if capability::supports_hyperlinks() {
-        format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, text)
-    } else {
-        text.to_string()
     }
 }
 
