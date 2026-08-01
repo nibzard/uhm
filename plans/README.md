@@ -1,6 +1,6 @@
 # `uhm` implementation roadmap
 
-This roadmap turns the product research and code audit into seven phased implementation plans. The first three plans are sequential and produce the first public release. After v0.1, Plans 4–6 are evidence-driven tracks that may be prioritized independently; Plan 7 depends on Plans 4 and 5.
+This roadmap turns the product research and code audit into a phased implementation plan set. Plans 1–3 are sequential and produce the first public release; Plan 8 is a lightweight, independent demo asset that can ship at any time and feeds Plan 3's README rewrite. After v0.1, Plans 4–6 are evidence-driven tracks that may be prioritized independently; Plan 7 depends on Plans 4 and 5.
 
 ## North star
 
@@ -19,6 +19,7 @@ The unit of value is a resolved job, not a generated command. The hard product b
 | [Plan 5 — Add inspectable local history](./05-local-history.md) | Full decision receipts, inspection, replay, and feedback | Plan 2 | Post-release capability |
 | [Plan 6 — Add parent-shell integration](./06-parent-shell-integration.md) | Persistent shell-state actions and opt-in last-command context | Plan 3 | Post-release capability |
 | [Plan 7 — Add bounded recovery](./07-bounded-recovery.md) | Verified managed restores and clearly labeled inverse proposals | Plans 4–5 | Post-release capability |
+| [Plan 8 — Record an asciinema demo and embed it in the README](./08-asciinema-demo.md) | A seconds-long inline demo of `uhm`'s value | Nothing (independent) | Embedded in-README demo |
 
 Plans 1 and 3 contain work that can be developed in parallel, especially release automation, telemetry infrastructure, documentation, and terminal test fixtures. Their completion gates remain sequential. After the public release, numbering expresses a recommended reading order, not a requirement to finish Plan 4 before beginning Plans 5 or 6.
 
