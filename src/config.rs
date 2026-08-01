@@ -36,6 +36,42 @@ pub struct TelemetryConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProgramConfig {
+    pub enabled: bool,
+    pub source_max_bytes: usize,
+    pub input_max_paths: usize,
+    pub output_max_paths: usize,
+    pub workspace_max_bytes: u64,
+    pub timeout_secs: u64,
+    pub cpu_secs: u64,
+    pub address_space_bytes: u64,
+    pub open_files: u64,
+    pub child_processes: u64,
+    pub output_max_bytes: usize,
+    pub diagnostic_bytes: usize,
+}
+
+impl Default for ProgramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            source_max_bytes: 64 * 1024,
+            input_max_paths: 64,
+            output_max_paths: 16,
+            workspace_max_bytes: 64 * 1024 * 1024,
+            timeout_secs: 10,
+            cpu_secs: 5,
+            address_space_bytes: 256 * 1024 * 1024,
+            open_files: 64,
+            child_processes: 16,
+            output_max_bytes: 16 * 1024 * 1024,
+            diagnostic_bytes: 1024 * 1024,
+        }
+    }
+}
+
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self { enabled: true }
@@ -67,6 +103,7 @@ pub struct Config {
     pub history: HistoryConfig,
     pub execution: ExecutionConfig,
     pub telemetry: TelemetryConfig,
+    pub program: ProgramConfig,
     pub cache_enabled: bool,
     pub cache_ttl_secs: u64,
     pub aliases: Vec<(String, String)>,
@@ -92,6 +129,7 @@ struct FileConfig {
     history: Option<HistoryConfig>,
     execution: Option<ExecutionConfig>,
     telemetry: Option<TelemetryConfig>,
+    program: Option<ProgramConfig>,
     cache_enabled: Option<bool>,
     cache_ttl_secs: Option<u64>,
     aliases: Option<BTreeMap<String, String>>,
@@ -111,6 +149,7 @@ const KEYS: &[&str] = &[
     "history",
     "execution",
     "telemetry",
+    "program",
     "cache_enabled",
     "cache_ttl_secs",
     "aliases",
@@ -124,18 +163,19 @@ impl Config {
         }
         Self {
             model: "gpt-5.6-terra".into(),
-            max_completion_tokens: 1024,
+            max_completion_tokens: 8192,
             reasoning_effort: "low".into(),
             stream: true,
             shell: "auto".into(),
             context_mode: "standard".into(),
             context_timeout_ms: 150,
-            stdin_max_bytes: 8 * 1024 * 1024,
+            stdin_max_bytes: 16 * 1024 * 1024,
             request_max_bytes: 256 * 1024,
             response_max_bytes: 2 * 1024 * 1024,
             history: HistoryConfig::default(),
             execution: ExecutionConfig::default(),
             telemetry: TelemetryConfig::default(),
+            program: ProgramConfig::default(),
             cache_enabled: true,
             cache_ttl_secs: 86_400,
             aliases: Vec::new(),
@@ -207,6 +247,21 @@ impl Config {
                 "telemetry.enabled",
                 self.telemetry.enabled.to_string(),
                 self.source("telemetry"),
+            ),
+            (
+                "program.enabled",
+                self.program.enabled.to_string(),
+                self.source("program"),
+            ),
+            (
+                "program.timeout_secs",
+                self.program.timeout_secs.to_string(),
+                self.source("program"),
+            ),
+            (
+                "program.output_max_bytes",
+                self.program.output_max_bytes.to_string(),
+                self.source("program"),
             ),
             (
                 "cache_enabled",
@@ -288,6 +343,7 @@ fn apply_file(config: &mut Config, file: FileConfig) {
     apply!(config, file, history);
     apply!(config, file, execution);
     apply!(config, file, telemetry);
+    apply!(config, file, program);
     apply!(config, file, cache_enabled);
     apply!(config, file, cache_ttl_secs);
     if let Some(aliases) = file.aliases {
@@ -325,6 +381,28 @@ fn validate(c: &Config) -> Result<(), String> {
         || c.execution.diagnostic_bytes == 0
     {
         return Err("configured byte and time limits must be positive".into());
+    }
+    if c.program.source_max_bytes == 0
+        || c.program.input_max_paths == 0
+        || c.program.output_max_paths == 0
+        || c.program.workspace_max_bytes == 0
+        || c.program.timeout_secs == 0
+        || c.program.cpu_secs == 0
+        || c.program.address_space_bytes == 0
+        || c.program.open_files < 16
+        || c.program.child_processes == 0
+        || c.program.output_max_bytes == 0
+        || c.program.diagnostic_bytes == 0
+    {
+        return Err(
+            "configured program limits must be positive and open_files must be at least 16".into(),
+        );
+    }
+    if c.program.source_max_bytes > 64 * 1024
+        || c.program.input_max_paths > 64
+        || c.program.output_max_paths > 16
+    {
+        return Err("configured program manifest limits exceed the supported schema".into());
     }
     let shell = std::path::Path::new(&c.shell)
         .file_name()

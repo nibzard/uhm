@@ -1,6 +1,6 @@
 # Privacy
 
-This document describes `uhm` v0.1.0. The short version: terminal work goes to OpenAI only when it is part of the model request; product telemetry contains fixed categories and no content or stable identity.
+This document describes the current `uhm` data contract. The short version: terminal work goes to OpenAI only when it is part of the model request; product telemetry contains fixed categories and no content or stable identity.
 
 ## OpenAI requests
 
@@ -13,7 +13,9 @@ A request contains:
 - the selected bounded context object;
 - fixed instructions and strict tool schemas needed to return a typed action.
 
-`standard` context is the default. It contains OS and architecture, the target shell, common-tool presence booleans, a normalized working directory, bounded Git state, and up to 40 directory entry names. `minimal` contains no machine fields. `full` adds bounded host, user, shell-version, and tool-version fields.
+With `--local-input`, the piped body is omitted and replaced by presence, byte count, UTF-8 status, and an optional user-declared format label. The generated local program can read the private spooled bytes. The flag requires piped input.
+
+`standard` context is the default. It contains OS and architecture, the target shell, common-tool presence booleans, a normalized working directory, bounded Git state, and up to 40 directory entry names. `minimal` contains no general machine fields. All modes contain resolved Python 3 path/version and isolated/no-site availability so the model does not propose an unavailable runtime. `full` adds bounded host, user, shell-version, and tool-version fields.
 
 Use `uhm context show minimal|standard|full` before a request to inspect the exact shape. Select `minimal` with `--context minimal` or in `config.yaml`.
 
@@ -45,7 +47,7 @@ An interaction summary has exactly these fields:
   "latency": "1s_2s",
   "cache": "miss",
   "interactive": true,
-  "notice_revision": 1
+  "notice_revision": 2
 }
 ```
 
@@ -89,7 +91,7 @@ You can also set `telemetry.enabled: false` in `config.yaml`. Every opt-out is c
 
 ## Local storage
 
-Metadata receipts are enabled by default and stored under the platform data directory reported by `uhm history status`. They are capped at 500 records and 30 days. Receipts contain categorical execution metadata, never terminal content. `uhm history clear` removes them. Set `history.enabled: false` to stop recording new receipts.
+Metadata receipts are enabled by default and stored under the platform data directory reported by `uhm history status`. They are capped at 500 records and 30 days. Receipts contain categorical execution metadata, including only coarse program route/runtime/outcome, never intent, commands, program source, manifests, paths, terminal content, or diagnostics. `uhm history clear` removes them. Set `history.enabled: false` to stop recording new receipts.
 
 The same private data directory contains the disclosure revision, optional secrets file, telemetry opt-out marker, and short-lived telemetry queue. The cache directory contains validated model proposals. Unix directories and files created by `uhm` use modes `0700` and `0600`.
 

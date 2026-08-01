@@ -1,6 +1,6 @@
 //! Structured local diagnostics with an opt-in OpenAI reachability check.
 
-use crate::{api, config::Config, render::ansi, secret, telemetry};
+use crate::{api, config::Config, render::ansi, runtime, secret, telemetry};
 use serde::Serialize;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -71,6 +71,7 @@ pub fn gather(config: &Config, network: bool, telemetry_policy: &telemetry::Poli
             next: Some("inspect: uhm telemetry status; preview: uhm telemetry preview".into()),
         },
         shell_check(),
+        python_check(config.program.enabled),
         clipboard_check(),
     ];
     if network {
@@ -86,6 +87,29 @@ pub fn gather(config: &Config, network: bool, telemetry_policy: &telemetry::Poli
         });
     }
     Report { supported, checks }
+}
+
+fn python_check(enabled: bool) -> Check {
+    if !enabled {
+        return Check {
+            name: "Python runtime",
+            status: "off",
+            detail: "microprogram execution disabled by configuration".into(),
+            next: None,
+        };
+    }
+    let inventory = runtime::inventory();
+    Check {
+        name: "Python runtime",
+        status: if inventory.available { "ok" } else { "missing" },
+        detail: match (inventory.resolved_path, inventory.version) {
+            (Some(path), Some(version)) => format!("{} ({}, isolated/no-site)", path, version),
+            _ => "python3 -I -S unavailable".into(),
+        },
+        next: (!inventory.available).then(|| {
+            "install Python 3 or disable program execution; shell actions remain available".into()
+        }),
+    }
 }
 
 pub fn render(report: &Report) {

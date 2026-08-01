@@ -26,15 +26,23 @@ harmless commands in reproductions.
 The latest release and the current default branch receive security fixes.
 Older releases may be asked to upgrade rather than receive a backport.
 
-The most sensitive areas are command classification, confirmation and auto-run
-logic, terminal escape handling, temporary files, local secret storage, API
-response parsing, and the telemetry schema and queue.
+The most sensitive areas are command/program classification, confirmation and auto-run
+logic, terminal escape handling, program staging and temporary files, local secret
+storage, API response parsing, and the telemetry schema and queue.
 
 `uhm` executes model-generated shell commands. Its warnings are advisory, not a
 sandbox or safety boundary. A report that shows an unexpected command can run,
 a control sequence can reach a terminal, a secret can leave the device, or an
 opt-out can be bypassed is in scope. Model quality disputes without a boundary
 failure are not security vulnerabilities.
+
+`uhm` can also execute model-generated Python with the user's permissions. Its
+isolated/no-site flags, cleared environment, time/output/resource limits, and
+artifact staging are operational guardrails, not a sandbox. Python can still
+read user-accessible files, reach the network, spawn or detach work, and cause
+effects before termination. Reports about a concrete boundary bypass or secret
+inheritance are in scope; reports premised on Python being a hostile-code sandbox
+are not, because the product makes no such promise.
 
 The telemetry gateway accepts only the enum-only schema documented in
 [PRIVACY.md](PRIVACY.md). Do not put credentials, private prompts, commands,

@@ -16,8 +16,10 @@ mod http;
 mod input;
 mod outcome;
 mod parent_shell;
+mod program;
 mod prompt;
 mod render;
+mod runtime;
 mod safety;
 mod secret;
 mod shell;
@@ -371,5 +373,5 @@ fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     code
 }
 fn print_help() {
-    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] -- <intent>\n  uhm run|ask|explain [options] -- <intent>\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad\n  uhm history [status|clear]\n  uhm config [show|check]\n  uhm doctor [network]\n\nExecution:\n  ordinary actions run and return their result\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     proceed after warnings without confirmation\n  --context <minimal|standard|full>\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. Put -- before intent that starts with '-'.")
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] -- <intent>\n  uhm run|ask|explain [options] -- <intent>\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad\n  uhm history [status|clear]\n  uhm config [show|check]\n  uhm doctor [network]\n\nExecution:\n  ordinary actions run and return their result\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     proceed after warnings without confirmation\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. Put -- before intent that starts with '-'.")
 }

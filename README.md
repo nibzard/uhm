@@ -71,6 +71,14 @@ Use exact piped bytes as request data:
 git diff | uhm ask -- summarize this for a commit message
 ```
 
+Keep piped content on your machine while letting a generated program process it:
+
+```sh
+cat private-report.csv | uhm --local-input --input-format text/csv -- total the amount column
+```
+
+The model receives the intent, byte count, UTF-8 status, and optional format label, but not the piped bytes. If it chooses the bounded Python route, the program receives a private local input path.
+
 Ask for prose without allowing execution:
 
 ```sh
@@ -90,7 +98,7 @@ If one essential detail is missing, `uhm` can ask one question and revise the pr
 
 ## Data leaving your machine
 
-OpenAI receives your intent, explicitly piped UTF-8 input, and the selected context. `standard` context is the default: bounded OS and architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. It does not automatically include file contents, Git remotes or diffs, environment values, API keys, history, or cached results.
+OpenAI receives your intent, explicitly piped UTF-8 input unless `--local-input` is used, and the selected context. `standard` context is the default: bounded OS and architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. All modes also disclose the resolved Python 3 path/version and whether `-I -S` works so the model can choose an available route. It does not automatically include file contents, Git remotes or diffs, environment values, API keys, history, or cached results.
 
 Use `uhm context show` to inspect the exact shape. Use `--context minimal` or `context_mode: minimal` to send only the intent and explicitly piped input. OpenAI requests use the Responses API with `store: false`, which disables Responses application-state storage. OpenAI's default abuse-monitoring logs may still retain API content for up to 30 days unless your organization has approved data-retention controls. See [OpenAI's data controls](https://developers.openai.com/api/docs/guides/your-data#data-retention-controls-for-abuse-monitoring).
 
@@ -107,7 +115,7 @@ uhm --no-telemetry -- ...   # this invocation only
 
 ## Local records
 
-Private metadata receipts are on by default. They contain bounded route, effect, process outcome, and timing categories, never the intent, command, cwd, input, output, or diagnostics. They live in the platform data directory shown by `uhm history status`, with a maximum of 500 records or 30 days.
+Private metadata receipts are on by default. They contain bounded route, coarse runtime (`python3` or `none`), effect, process outcome, and timing categories, never the intent, command, program source, manifest, cwd, input, output, or diagnostics. They live in the platform data directory shown by `uhm history status`, with a maximum of 500 records or 30 days.
 
 ```sh
 uhm history status
@@ -117,13 +125,21 @@ uhm history clear
 
 The proposal cache holds validated model proposals, not execution results. Runtime directories and files use owner-only permissions on Unix.
 
+## Bounded Python microprograms
+
+When a short command or pipeline is the clearest solution, `uhm` still uses the shell. For structured data, statistics, or multifile logic that would become contorted, it may generate one standard-library Python 3 program. The program runs directly as `python3 -I -S <private-source-file>` with a stripped environment, a private workspace, a 10-second wall limit, a 5-second CPU limit, a 16 MiB combined output cap, and best-effort host resource limits. `uhm doctor` reports whether the runtime is available.
+
+This is not a sandbox. The program runs with your user permissions and can read files, use the network, start processes, or cause unmanaged effects if the generated source does so. Isolated/no-site mode and resource limits reduce ambient state and accidents; they do not contain hostile code or protect user-readable secret files. Review shows the exact source, manifest, detected effects, runtime, and limits. `--retain-program` keeps its private temporary workspace only when explicitly requested for debugging.
+
+Artifact programs receive collision-resistant sibling staging paths. After a zero exit, `uhm` verifies regular files, checks sizes, fsyncs, and renames each artifact into place independently. A failed program commits none of its declared staged artifacts, but unrelated side effects cannot be rolled back. Multifile commits are not transactional.
+
 ## Shell behavior and limits
 
 A child process cannot change the shell that launched it. For `cd`, `export`, activation, aliases, and similar requests, `uhm` returns the exact action without pretending it was applied. Copy or evaluate it in your current shell. Automatic parent-shell integration is deferred.
 
 Warnings for deletion, broad writes, privilege elevation, remote mutation, and process control are convenience signals. They are not a sandbox or a safety guarantee. Model output and the detector can both be wrong. Exit code zero proves only that the process exited zero, not that your intent was satisfied.
 
-Version 0.1 has no universal undo, transaction layer, background agent, native Windows build, shell completion, auto-updater, or generated standalone programs.
+The current development version has no universal undo, transaction layer, background agent, native Windows build, shell completion, auto-updater, package installation, JavaScript program runtime, or project-scale code generation.
 
 ## CLI reference
 
@@ -156,6 +172,11 @@ history:
 
 telemetry:
   enabled: true
+
+program:
+  enabled: true
+  timeout_secs: 10
+  output_max_bytes: 16777216
 ```
 
 ## Development

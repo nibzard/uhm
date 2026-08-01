@@ -16,6 +16,9 @@ pub struct Args {
     pub no_stream: bool,
     pub no_telemetry: bool,
     pub no_motion: bool,
+    pub local_input: bool,
+    pub input_format: Option<String>,
+    pub retain_program: bool,
     pub fresh: bool,
     pub verbose: bool,
     pub help: bool,
@@ -66,6 +69,8 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
             "--no-stream" => out.no_stream = true,
             "--no-telemetry" => out.no_telemetry = true,
             "--no-motion" => out.no_motion = true,
+            "--local-input" => out.local_input = true,
+            "--retain-program" => out.retain_program = true,
             "--fresh" | "--no-cache" => out.fresh = true,
             "-v" | "--verbose" => out.verbose = true,
             "-m" | "--model" => {
@@ -80,6 +85,10 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
                 i += 1;
                 out.context = Some(argv.get(i).ok_or("--context needs a value")?.clone());
             }
+            "--input-format" => {
+                i += 1;
+                out.input_format = Some(argv.get(i).ok_or("--input-format needs a value")?.clone());
+            }
             _ if arg.starts_with("--model=") => {
                 out.model = Some(arg[8..].to_string());
             }
@@ -88,6 +97,9 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
             }
             _ if arg.starts_with("--context=") => {
                 out.context = Some(arg[10..].to_string());
+            }
+            _ if arg.starts_with("--input-format=") => {
+                out.input_format = Some(arg[15..].to_string());
             }
             _ if out.subcommand.is_none() && VERBS.contains(&arg.as_str()) => {
                 out.subcommand = Some(arg.clone());
@@ -115,6 +127,16 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
     if out.dry_run && out.force {
         return Err("--dry-run and --force cannot be used together".into());
     }
+    if let Some(format) = &out.input_format {
+        if format.is_empty()
+            || format.len() > 64
+            || format
+                .chars()
+                .any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+' | '.' | '/')))
+        {
+            return Err("--input-format must be a 1-64 character format label".into());
+        }
+    }
     out.prompt = intent.join(" ");
     Ok(out)
 }
@@ -132,6 +154,27 @@ mod tests {
         let a = pv(&["uhm", "run", "find", "big", "files"]).unwrap();
         assert_eq!(a.subcommand.as_deref(), Some("run"));
         assert_eq!(a.prompt, "find big files");
+    }
+
+    #[test]
+    fn program_privacy_and_debug_flags_are_explicit() {
+        let args = parse_from(vec![
+            "uhm".into(),
+            "--local-input".into(),
+            "--input-format=text/csv".into(),
+            "--retain-program".into(),
+            "count".into(),
+        ])
+        .unwrap();
+        assert!(args.local_input);
+        assert!(args.retain_program);
+        assert_eq!(args.input_format.as_deref(), Some("text/csv"));
+        assert!(parse_from(vec![
+            "uhm".into(),
+            "--input-format=bad label".into(),
+            "count".into()
+        ])
+        .is_err());
     }
 
     #[test]

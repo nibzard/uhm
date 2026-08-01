@@ -25,6 +25,7 @@ const ROUTES: &[&str] = &[
     "unknown",
     "answer",
     "shell",
+    "program",
     "parent_shell",
     "clarification",
 ];
@@ -57,6 +58,7 @@ const EXECUTIONS: &[&str] = &[
     "signal",
     "timeout",
     "spawn_error",
+    "output_overflow",
 ];
 const FEEDBACK: &[&str] = &["unknown", "good", "bad"];
 const LATENCIES: &[&str] = &["lt_1s", "1s_2s", "2s_5s", "gte_5s"];

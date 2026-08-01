@@ -12,11 +12,11 @@ const ENUMS = Object.freeze({
   arch: ["x86_64", "aarch64", "other"],
   shell: ["sh", "bash", "zsh", "fish", "pwsh", "powershell", "other"],
   mode: ["auto", "run", "ask", "explain"],
-  route: ["unknown", "answer", "shell", "parent_shell", "clarification"],
+  route: ["unknown", "answer", "shell", "program", "parent_shell", "clarification"],
   decision: ["not_run", "ran", "returned", "dry_run", "cancelled", "needs_parent", "unavailable"],
   effects: ["none", "read_local", "write_local", "delete_local", "network_read", "remote_mutation", "privilege_elevation", "process_control", "shell_state", "unknown"],
   proposal_outcome: ["not_requested", "valid", "invalid", "refused", "incomplete"],
-  execution_outcome: ["not_run", "exit_zero", "exit_nonzero", "signal", "timeout", "spawn_error"],
+  execution_outcome: ["not_run", "exit_zero", "exit_nonzero", "signal", "timeout", "spawn_error", "output_overflow"],
   user_feedback: ["unknown", "good", "bad"],
   latency: ["lt_1s", "1s_2s", "2s_5s", "gte_5s"],
   cache: ["unknown", "miss", "hit", "disabled"],
@@ -26,7 +26,7 @@ export function validateEvent(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const keys = Object.keys(value).sort();
   if (keys.length !== KEYS.length || keys.some((key, index) => key !== [...KEYS].sort()[index])) return false;
-  if (value.v !== 1 || value.notice_revision !== 1 || typeof value.interactive !== "boolean") return false;
+  if (value.v !== 1 || ![1, 2].includes(value.notice_revision) || typeof value.interactive !== "boolean") return false;
   if (typeof value.release !== "string" || !/^\d+\.\d+$/.test(value.release)) return false;
   return Object.entries(ENUMS).every(([key, allowed]) =>
     typeof value[key] === "string" && allowed.includes(value[key]),

@@ -16,6 +16,8 @@ pub struct Receipt {
     pub mode: String,
     pub context_mode: String,
     pub route: String,
+    #[serde(default = "no_runtime")]
+    pub runtime: String,
     pub prompt_schema_version: u32,
     pub declared_effects: Vec<String>,
     pub detected_effects: Vec<String>,
@@ -32,6 +34,10 @@ pub struct Receipt {
 
 fn unknown_feedback() -> String {
     "unknown".into()
+}
+
+fn no_runtime() -> String {
+    "none".into()
 }
 
 pub fn run_id() -> String {
@@ -171,6 +177,7 @@ mod tests {
             mode: "auto".into(),
             context_mode: "minimal".into(),
             route: "run_shell".into(),
+            runtime: "none".into(),
             prompt_schema_version: 1,
             declared_effects: vec![],
             detected_effects: vec![],

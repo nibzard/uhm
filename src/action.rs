@@ -51,6 +51,46 @@ pub enum StdinMode {
     Original,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramRuntime {
+    Python3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramInputAccess {
+    ReadOnly,
+    Replace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProgramInput {
+    pub path: String,
+    pub access: ProgramInputAccess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramResultMode {
+    Stdout,
+    Artifacts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProgramProposal {
+    pub runtime: ProgramRuntime,
+    pub source: String,
+    pub summary: String,
+    pub assumptions: Vec<String>,
+    pub inputs: Vec<ProgramInput>,
+    pub outputs: Vec<String>,
+    pub effects: Vec<Effect>,
+    pub result_mode: ProgramResultMode,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalMetadata {
@@ -75,6 +115,9 @@ pub enum ProposedAction {
         command: String,
         metadata: ProposalMetadata,
     },
+    Program {
+        program: ProgramProposal,
+    },
     Clarification {
         question: String,
     },
@@ -86,6 +129,8 @@ impl ProposedAction {
         const MAX_TEXT: usize = 64 * 1024;
         const MAX_ITEMS: usize = 32;
         const MAX_ITEM: usize = 1024;
+        const MAX_SOURCE: usize = 64 * 1024;
+        const MAX_PATH: usize = 4096;
 
         fn text(value: &str, label: &str, max: usize) -> Result<(), String> {
             if value.trim().is_empty() {
@@ -128,6 +173,13 @@ impl ProposedAction {
             }
             Ok(())
         }
+        fn path(value: &str, label: &str) -> Result<(), String> {
+            text(value, label, MAX_PATH)?;
+            if value == "stdout" || value.contains('\0') {
+                return Err(format!("invalid {}", label));
+            }
+            Ok(())
+        }
 
         match &self {
             Self::Answer { text: value } => text(value, "answer", MAX_TEXT)?,
@@ -143,6 +195,72 @@ impl ProposedAction {
             } => {
                 text(command, "command", MAX_COMMAND)?;
                 metadata(value)?;
+            }
+            Self::Program { program } => {
+                text(&program.source, "program source", MAX_SOURCE)?;
+                text(&program.summary, "program summary", MAX_ITEM)?;
+                if program.assumptions.len() > MAX_ITEMS {
+                    return Err("program assumptions contains too many items".into());
+                }
+                for assumption in &program.assumptions {
+                    text(assumption, "program assumption", MAX_ITEM)?;
+                }
+                if program.inputs.len() > 64 {
+                    return Err("program inputs contains too many paths".into());
+                }
+                if program.outputs.len() > 16 {
+                    return Err("program outputs contains too many paths".into());
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for input in &program.inputs {
+                    path(&input.path, "program input path")?;
+                    if !seen.insert(format!("input:{}", input.path)) {
+                        return Err("program inputs contains a duplicate path".into());
+                    }
+                }
+                let mut output_seen = std::collections::BTreeSet::new();
+                for output in &program.outputs {
+                    path(output, "program output path")?;
+                    if output == "stdin" {
+                        return Err("stdin is a special input path, not an artifact output".into());
+                    }
+                    if !output_seen.insert(output) {
+                        return Err("program outputs contains a duplicate path".into());
+                    }
+                }
+                if program.effects.len() > MAX_ITEMS {
+                    return Err("program effects contains too many items".into());
+                }
+                match program.result_mode {
+                    ProgramResultMode::Stdout if !program.outputs.is_empty() => {
+                        return Err("stdout programs must not declare artifact outputs".into())
+                    }
+                    ProgramResultMode::Artifacts if program.outputs.is_empty() => {
+                        return Err("artifact programs must declare at least one output".into())
+                    }
+                    _ => {}
+                }
+                for input in &program.inputs {
+                    if input.access == ProgramInputAccess::Replace
+                        && !program.outputs.contains(&input.path)
+                    {
+                        return Err(format!(
+                            "replacement input '{}' must also be a declared output",
+                            input.path
+                        ));
+                    }
+                }
+                for manifest_path in program
+                    .inputs
+                    .iter()
+                    .map(|input| input.path.as_str())
+                    .chain(program.outputs.iter().map(String::as_str))
+                    .filter(|value| *value != "stdin")
+                {
+                    if program.source.contains(manifest_path) {
+                        return Err("program source must receive manifest paths through UHM_PROGRAM_INPUTS/UHM_PROGRAM_OUTPUTS, not embed them".into());
+                    }
+                }
             }
         }
         Ok(self)
@@ -165,5 +283,43 @@ mod tests {
             stdin_mode: StdinMode::None,
         };
         assert!(action.validate().is_err());
+    }
+
+    #[test]
+    fn program_manifest_is_bounded_and_paths_are_not_interpolated() {
+        let valid = ProposedAction::Program {
+            program: ProgramProposal {
+                runtime: ProgramRuntime::Python3,
+                source: "import os, json\nprint(len(json.loads(os.environ['UHM_PROGRAM_INPUTS'])))"
+                    .into(),
+                summary: "Count declared inputs.".into(),
+                assumptions: vec![],
+                inputs: vec![ProgramInput {
+                    path: "stdin".into(),
+                    access: ProgramInputAccess::ReadOnly,
+                }],
+                outputs: vec![],
+                effects: vec![Effect::ReadLocal],
+                result_mode: ProgramResultMode::Stdout,
+            },
+        };
+        assert!(valid.validate().is_ok());
+
+        let embedded = ProposedAction::Program {
+            program: ProgramProposal {
+                runtime: ProgramRuntime::Python3,
+                source: "open('private.txt').read()".into(),
+                summary: "Read a file.".into(),
+                assumptions: vec![],
+                inputs: vec![ProgramInput {
+                    path: "private.txt".into(),
+                    access: ProgramInputAccess::ReadOnly,
+                }],
+                outputs: vec![],
+                effects: vec![Effect::ReadLocal],
+                result_mode: ProgramResultMode::Stdout,
+            },
+        };
+        assert!(embedded.validate().is_err());
     }
 }

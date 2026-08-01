@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const POLICY_VERSION: u32 = 2;
-pub const DISCLOSURE_VERSION: u32 = 1;
+pub const POLICY_VERSION: u32 = 3;
+pub const DISCLOSURE_VERSION: u32 = 2;
 pub const TOOL_CATALOG: &[&str] = &[
     "sh", "bash", "zsh", "fish", "git", "rg", "fd", "jq", "yq", "fzf", "gh", "python3", "node",
     "ruby", "go", "cargo", "make", "curl", "wget", "tar", "zip", "docker", "podman", "kubectl",
@@ -42,6 +42,7 @@ impl Mode {
 pub struct Snapshot {
     pub policy_version: u32,
     pub mode: String,
+    pub program_runtime: crate::runtime::PythonInventory,
     pub machine: Value,
 }
 
@@ -50,16 +51,19 @@ pub fn disclosure_payload() -> Value {
         "version": DISCLOSURE_VERSION,
         "default_mode":"standard",
         "leaves_device":true,
-        "groups":["OS and architecture","target shell","common tool presence","normalized working directory","bounded Git state","bounded directory entry names"],
+        "groups":["Python 3 runtime path/version/isolated-mode support","OS and architecture","target shell","common tool presence","normalized working directory","bounded Git state","bounded directory entry names"],
+        "local_input":"--local-input keeps piped content out of the model request",
         "inspect":"uhm context show", "minimize":"--context minimal", "config":"context_mode: minimal"
     })
 }
 
 pub fn gather(mode: Mode, shell: &str, timeout_ms: u64) -> Snapshot {
+    let program_runtime = crate::runtime::inventory();
     if mode == Mode::Minimal {
         return Snapshot {
             policy_version: POLICY_VERSION,
             mode: mode.as_str().into(),
+            program_runtime,
             machine: json!({}),
         };
     }
@@ -90,6 +94,7 @@ pub fn gather(mode: Mode, shell: &str, timeout_ms: u64) -> Snapshot {
     Snapshot {
         policy_version: POLICY_VERSION,
         mode: mode.as_str().into(),
+        program_runtime,
         machine,
     }
 }

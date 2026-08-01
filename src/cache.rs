@@ -18,6 +18,8 @@ struct Provenance<'a> {
     max_tokens: u32,
     reasoning_effort: &'a str,
     context_hash: &'a str,
+    route: &'a str,
+    input_hash: &'a str,
     request: &'a str,
 }
 
@@ -40,6 +42,8 @@ pub fn key_hash(
     reasoning_effort: &str,
     context_mode: &str,
     context_hash: &str,
+    route: &str,
+    input_hash: &str,
     request: &str,
 ) -> String {
     let value = Provenance {
@@ -53,6 +57,8 @@ pub fn key_hash(
         max_tokens,
         reasoning_effort,
         context_hash,
+        route,
+        input_hash,
         request,
     };
     let bytes = serde_json::to_vec(&value).expect("cache provenance is serializable");
@@ -115,21 +121,41 @@ mod tests {
 
     #[test]
     fn cache_key_changes_with_semantic_inputs() {
-        let a = key_hash("m", "sh", 10, "low", "full", "ctx", "request");
-        let b = key_hash("m", "sh", 11, "low", "full", "ctx", "request");
+        let a = key_hash(
+            "m", "sh", 10, "low", "full", "ctx", "auto", "input", "request",
+        );
+        let b = key_hash(
+            "m", "sh", 11, "low", "full", "ctx", "auto", "input", "request",
+        );
         assert_ne!(a, b);
-        let c = key_hash("m", "sh", 10, "low", "minimal", "ctx", "request");
+        let c = key_hash(
+            "m", "sh", 10, "low", "minimal", "ctx", "auto", "input", "request",
+        );
         assert_ne!(a, c);
         assert_ne!(
             a,
-            key_hash("other", "sh", 10, "low", "full", "ctx", "request")
+            key_hash("other", "sh", 10, "low", "full", "ctx", "auto", "input", "request")
         );
-        assert_ne!(a, key_hash("m", "sh", 10, "high", "full", "ctx", "request"));
         assert_ne!(
             a,
-            key_hash("m", "sh", 10, "low", "full", "other", "request")
+            key_hash("m", "sh", 10, "high", "full", "ctx", "auto", "input", "request")
         );
-        assert_ne!(a, key_hash("m", "sh", 10, "low", "full", "ctx", "other"));
+        assert_ne!(
+            a,
+            key_hash("m", "sh", 10, "low", "full", "other", "auto", "input", "request")
+        );
+        assert_ne!(
+            a,
+            key_hash("m", "sh", 10, "low", "full", "ctx", "auto", "input", "other")
+        );
+        assert_ne!(
+            a,
+            key_hash("m", "sh", 10, "low", "full", "ctx", "run", "input", "request")
+        );
+        assert_ne!(
+            a,
+            key_hash("m", "sh", 10, "low", "full", "ctx", "auto", "other", "request")
+        );
     }
 
     #[cfg(unix)]

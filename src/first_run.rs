@@ -3,8 +3,8 @@
 use crate::{config::Config, dirs, render::ansi};
 use std::io::Write;
 
-pub const NOTICE_REVISION: u8 = 1;
-pub const RENDERED_MARKER: &str = "first-use-notice-v1-rendered";
+pub const NOTICE_REVISION: u8 = 2;
+pub const RENDERED_MARKER: &str = "first-use-notice-v2-rendered";
 
 pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, String> {
     let marker = config.paths.data_dir.join("notice-revision");
@@ -31,6 +31,11 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
     writeln!(
         stderr,
         "  OpenAI receives your prompt, explicitly piped input, and selected context (standard by default)."
+    )
+    .map_err(|e| format!("render first-use notice: {}", e))?;
+    writeln!(
+        stderr,
+        "  Python 3 path/version support may be sent for program routing. Use --local-input to keep piped content local to the generated program."
     )
     .map_err(|e| format!("render first-use notice: {}", e))?;
     writeln!(

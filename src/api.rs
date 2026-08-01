@@ -1,6 +1,9 @@
-//! Official OpenAI Responses API client with four strict local proposal tools.
+//! Official OpenAI Responses API client with five strict local proposal tools.
 
-use crate::action::{Effect, ProposalMetadata, ProposedAction, StdinMode};
+use crate::action::{
+    Effect, ProgramInput, ProgramProposal, ProgramResultMode, ProgramRuntime, ProposalMetadata,
+    ProposedAction, StdinMode,
+};
 use crate::{http, prompt, sse};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -148,8 +151,8 @@ fn validate_returned_tools(response: &Value) -> Result<(), String> {
     let tools = response["tools"]
         .as_array()
         .ok_or("response omitted resolved strict tool metadata")?;
-    if tools.len() != 4 {
-        return Err("response did not resolve exactly four proposal tools".into());
+    if tools.len() != 5 {
+        return Err("response did not resolve exactly five proposal tools".into());
     }
     for tool in tools {
         if tool["type"] != "function" || tool["strict"] != true {
@@ -191,13 +194,26 @@ struct ClarificationArgs {
     question: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProgramArgs {
+    runtime: ProgramRuntime,
+    source: String,
+    summary: String,
+    assumptions: Vec<String>,
+    inputs: Vec<ProgramInput>,
+    outputs: Vec<String>,
+    effects: Vec<Effect>,
+    result_mode: ProgramResultMode,
+}
+
 fn parse_call(item: &Value) -> Result<ProposedAction, String> {
     let name = item["name"].as_str().ok_or("function call omitted name")?;
     let arguments = item["arguments"]
         .as_str()
         .ok_or("function call omitted string arguments")?;
-    if arguments.len() > 64 * 1024 {
-        return Err("function arguments exceeded 65536 bytes".into());
+    if arguments.len() > 96 * 1024 {
+        return Err("function arguments exceeded 98304 bytes".into());
     }
     match name {
         "return_answer" => {
@@ -233,6 +249,21 @@ fn parse_call(item: &Value) -> Result<ProposedAction, String> {
             let args: ClarificationArgs = parse_args(arguments, name)?;
             Ok(ProposedAction::Clarification {
                 question: args.question,
+            })
+        }
+        "run_program" => {
+            let args: ProgramArgs = parse_args(arguments, name)?;
+            Ok(ProposedAction::Program {
+                program: ProgramProposal {
+                    runtime: args.runtime,
+                    source: args.source,
+                    summary: args.summary,
+                    assumptions: args.assumptions,
+                    inputs: args.inputs,
+                    outputs: args.outputs,
+                    effects: args.effects,
+                    result_mode: args.result_mode,
+                },
             })
         }
         other => Err(format!("unknown proposal function '{}'", other)),
@@ -280,7 +311,7 @@ mod tests {
         assert_eq!(value["tool_choice"], "required");
         assert_eq!(value["stream"], true);
         assert!(value.get("previous_response_id").is_none());
-        assert_eq!(value["tools"].as_array().unwrap().len(), 4);
+        assert_eq!(value["tools"].as_array().unwrap().len(), 5);
     }
 
     #[test]
@@ -307,6 +338,23 @@ mod tests {
         assert!(matches!(
             parse_response(&shell).unwrap(),
             ProposedAction::Shell { .. }
+        ));
+        let program = response(
+            "run_program",
+            json!({
+                "runtime":"python3",
+                "source":"print('ok')",
+                "summary":"Print a result.",
+                "assumptions":[],
+                "inputs":[],
+                "outputs":[],
+                "effects":[],
+                "result_mode":"stdout"
+            }),
+        );
+        assert!(matches!(
+            parse_response(&program).unwrap(),
+            ProposedAction::Program { .. }
         ));
     }
 

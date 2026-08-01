@@ -1,12 +1,13 @@
 //! Bounded result-first job: at most two proposals and, for explicit repair, two executions.
 
-use crate::action::{Effect, ProposalMetadata, ProposedAction, StdinMode};
+use crate::action::{Effect, ProgramResultMode, ProposalMetadata, ProposedAction, StdinMode};
 use crate::args::Args;
 use crate::config::Config;
 use crate::outcome::Outcome;
 use crate::render::{ansi, card, spinner};
 use crate::{
-    api, cache, context, history, outcome, parent_shell, prompt, safety, shell, telemetry, tty,
+    api, cache, context, history, outcome, parent_shell, program, prompt, safety, shell, telemetry,
+    tty,
 };
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Write};
@@ -78,6 +79,14 @@ pub fn handle(
     interaction: &mut telemetry::Interaction,
 ) -> i32 {
     let started = Instant::now();
+    if args.local_input && !stdin.is_piped() {
+        return app_error(
+            args,
+            outcome::USAGE,
+            "input_error",
+            "--local-input requires piped input",
+        );
+    }
     let shell_name = match target_shell(config, args.shell.as_deref()) {
         Ok(v) => v,
         Err(e) => return app_error(args, outcome::USAGE, "usage_error", &e),
@@ -125,7 +134,7 @@ pub fn handle(
             route,
             request,
             &snapshot,
-            stdin.model_value(),
+            stdin.model_value_for(args.local_input, args.input_format.as_deref()),
             None,
             &shell_name,
         ) {
@@ -219,7 +228,7 @@ pub fn handle(
                     route,
                     request,
                     &snapshot,
-                    stdin.model_value(),
+                    stdin.model_value_for(args.local_input, args.input_format.as_deref()),
                     Some(json!({"kind":"clarification","answer":answer})),
                     &shell_name,
                 ) {
@@ -267,12 +276,323 @@ pub fn handle(
                     "parent shell state cannot persist from the uhm child process",
                 );
             }
+            ProposedAction::Program {
+                program: mut proposal,
+            } => {
+                interaction.route("program");
+                let detected = program::detected_effects(&proposal.source);
+                let effects = merged_effects(&proposal.effects, &detected);
+                interaction.effects(&effects);
+                if !snapshot.program_runtime.available {
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::UNAVAILABLE,
+                        "runtime_unavailable",
+                        snapshot.program_runtime.version.as_deref().unwrap_or(
+                            "Python 3 is unavailable; install python3 or use a shell route",
+                        ),
+                    );
+                }
+                let consequential = proposal.result_mode == ProgramResultMode::Artifacts
+                    || effects.iter().any(Effect::requires_advisory_pause);
+                let review = args.review || consequential;
+                if args.dry_run {
+                    interaction.decision("dry_run");
+                    return dry_run(args, &proposal.source);
+                }
+                if review && !args.json {
+                    program_preview(&proposal, &snapshot, config);
+                }
+                if args.json && review && !args.force {
+                    return not_executed(
+                        args,
+                        &proposal.source,
+                        "program review is required; automation must use --force or --dry-run",
+                    );
+                }
+                if review && !args.force {
+                    if !tty_available() {
+                        return not_executed(
+                            args,
+                            &proposal.source,
+                            "program review is required, but no terminal is available; use --force or --dry-run",
+                        );
+                    }
+                    eprint!("Run, revise, edit, copy, cancel? [R/v/e/c/q] ");
+                    let _ = std::io::stderr().flush();
+                    match tty::read_line_cooked()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .as_str()
+                    {
+                        "" | "r" | "run" => {}
+                        "v" | "revise" if budget.can_replace() => {
+                            eprint!("Feedback: ");
+                            let _ = std::io::stderr().flush();
+                            let feedback = tty::read_line_cooked().unwrap_or_default();
+                            let _ = budget.replace_with_model(Replacement::Revision);
+                            action = match propose(
+                                args,
+                                config,
+                                api_config,
+                                route,
+                                request,
+                                &snapshot,
+                                stdin.model_value_for(
+                                    args.local_input,
+                                    args.input_format.as_deref(),
+                                ),
+                                Some(
+                                    json!({"kind":"revision","prior_action":{"kind":"program","program":proposal},"feedback":feedback}),
+                                ),
+                                &shell_name,
+                            ) {
+                                Ok((value, _)) => value,
+                                Err(error) => {
+                                    return app_error(args, outcome::MODEL, "model_error", &error)
+                                }
+                            };
+                            continue;
+                        }
+                        "e" | "edit" if budget.replacement.is_none() => {
+                            match edit(&proposal.source) {
+                                Ok(source) => {
+                                    proposal.source = source;
+                                    action = match (ProposedAction::Program { program: proposal })
+                                        .validate()
+                                    {
+                                        Ok(value) => value,
+                                        Err(error) => {
+                                            return app_error(
+                                                args,
+                                                outcome::NOT_EXECUTED,
+                                                "edit_error",
+                                                &error,
+                                            )
+                                        }
+                                    };
+                                    let _ = budget.replace_with_edit();
+                                    continue;
+                                }
+                                Err(error) => {
+                                    return app_error(
+                                        args,
+                                        outcome::NOT_EXECUTED,
+                                        "edit_error",
+                                        &error,
+                                    )
+                                }
+                            }
+                        }
+                        "c" | "copy" => {
+                            let _ = write_command(std::io::stdout(), &proposal.source);
+                            return outcome::NOT_EXECUTED;
+                        }
+                        _ => {
+                            interaction.decision("cancelled");
+                            return not_executed(args, &proposal.source, "cancelled by user");
+                        }
+                    }
+                } else if consequential && args.force && !args.json {
+                    eprintln!(
+                        "{}",
+                        ansi::warning("Proceeding because --force was supplied.")
+                    );
+                }
+                if !budget.execute() {
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "budget_exhausted",
+                        "execution budget exhausted",
+                    );
+                }
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let result = match program::execute(program::Request {
+                    proposal: &proposal,
+                    python: &snapshot.program_runtime,
+                    stdin: stdin.is_piped().then(|| stdin.bytes()),
+                    cwd: &cwd,
+                    config: &config.program,
+                    retain_workspace: args.retain_program,
+                }) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        interaction.execution("spawn_error");
+                        return app_error(args, outcome::NOT_EXECUTED, "program_error", &error);
+                    }
+                };
+                if result.code != 0
+                    && budget.can_replace()
+                    && budget.executions < 2
+                    && tty_available()
+                {
+                    let diagnostics =
+                        ansi::sanitize_untrusted(&String::from_utf8_lossy(&result.stderr_tail));
+                    eprintln!("uhm: program exited {} ({})", result.code, diagnostics);
+                    eprint!("Repair, edit, or stop? [r/e/N] ");
+                    let _ = std::io::stderr().flush();
+                    match tty::read_line_cooked()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .as_str()
+                    {
+                        "r" | "repair" | "y" | "yes" => {
+                            let _ = budget.replace_with_model(Replacement::Repair);
+                            action = match propose(
+                                args,
+                                config,
+                                api_config,
+                                route,
+                                request,
+                                &snapshot,
+                                stdin.model_value_for(
+                                    args.local_input,
+                                    args.input_format.as_deref(),
+                                ),
+                                Some(
+                                    json!({"kind":"repair","prior_action":{"kind":"program","program":proposal},"exit_code":result.code,"signal":result.signal,"stderr":diagnostics}),
+                                ),
+                                &shell_name,
+                            ) {
+                                Ok((value, _)) => value,
+                                Err(error) => {
+                                    return app_error(args, outcome::MODEL, "model_error", &error)
+                                }
+                            };
+                            continue;
+                        }
+                        "e" | "edit" => match edit(&proposal.source) {
+                            Ok(source) => {
+                                proposal.source = source;
+                                action = match (ProposedAction::Program { program: proposal })
+                                    .validate()
+                                {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        return app_error(
+                                            args,
+                                            outcome::NOT_EXECUTED,
+                                            "edit_error",
+                                            &error,
+                                        )
+                                    }
+                                };
+                                let _ = budget.replace_with_edit();
+                                continue;
+                            }
+                            Err(error) => {
+                                return app_error(args, outcome::NOT_EXECUTED, "edit_error", &error)
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+                if result.code == 0 {
+                    if proposal.result_mode == ProgramResultMode::Stdout {
+                        let _ = std::io::stdout().write_all(&result.stdout);
+                        let _ = std::io::stdout().flush();
+                    } else if !args.json {
+                        for artifact in &result.artifacts {
+                            println!("{}", artifact.display());
+                        }
+                    }
+                }
+                if let Some(path) = &result.retained_workspace {
+                    eprintln!(
+                        "uhm: retained private program workspace at {}",
+                        path.display()
+                    );
+                }
+                let decision = if result.timed_out {
+                    "timed_out"
+                } else if result.output_overflow {
+                    "output_overflow"
+                } else if result.code == 0 {
+                    "completed"
+                } else {
+                    "failed"
+                };
+                interaction.decision("ran");
+                interaction.execution(if result.timed_out {
+                    "timeout"
+                } else if result.output_overflow {
+                    "output_overflow"
+                } else if result.signal.is_some() {
+                    "signal"
+                } else if result.code == 0 {
+                    "exit_zero"
+                } else {
+                    "exit_nonzero"
+                });
+                receipt(
+                    config,
+                    &run_id,
+                    route,
+                    mode,
+                    "run_program",
+                    decision,
+                    true,
+                    result.code,
+                    result.signal,
+                    started.elapsed(),
+                    budget.second_used(),
+                    &proposal.effects,
+                    &detected,
+                );
+                if args.verbose {
+                    eprintln!(
+                        "uhm: program execution {} ms; stdout tail {} bytes; stderr tail {} bytes",
+                        result.duration.as_millis(),
+                        result.stdout_tail.len(),
+                        result.stderr_tail.len()
+                    );
+                }
+                if args.json {
+                    let message = if result.artifacts.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            result
+                                .artifacts
+                                .iter()
+                                .map(|v| v.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        )
+                    };
+                    eprintln!(
+                        "{}",
+                        Outcome {
+                            namespace: "uhm.child",
+                            outcome: decision,
+                            exit_code: result.code,
+                            executed: true,
+                            command: None,
+                            message: message.as_deref()
+                        }
+                        .json()
+                    );
+                }
+                return result.code;
+            }
             ProposedAction::Shell {
                 mut command,
                 metadata,
                 stdin_mode,
             } => {
                 interaction.route("shell");
+                if args.local_input && stdin_mode == StdinMode::Original {
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "local_input_route_error",
+                        "--local-input bytes may only be opened by a generated program; the model proposed passing them to a shell action",
+                    );
+                }
                 let missing = context::missing_requirements(&metadata.requirements);
                 if !missing.is_empty() {
                     interaction.effects(&metadata.effects);
@@ -289,7 +609,7 @@ pub fn handle(
                             route,
                             request,
                             &snapshot,
-                            stdin.model_value(),
+                            stdin.model_value_for(args.local_input, args.input_format.as_deref()),
                             Some(json!({"kind":"revision","prior_action":command,"feedback":msg})),
                             &shell_name,
                         ) {
@@ -366,7 +686,10 @@ pub fn handle(
                                 route,
                                 request,
                                 &snapshot,
-                                stdin.model_value(),
+                                stdin.model_value_for(
+                                    args.local_input,
+                                    args.input_format.as_deref(),
+                                ),
                                 Some(
                                     json!({"kind":"revision","prior_action":command,"feedback":feedback}),
                                 ),
@@ -458,7 +781,10 @@ pub fn handle(
                                 route,
                                 request,
                                 &snapshot,
-                                stdin.model_value(),
+                                stdin.model_value_for(
+                                    args.local_input,
+                                    args.input_format.as_deref(),
+                                ),
                                 Some(
                                     json!({"kind":"repair","prior_action":command,"exit_code":result.code,"signal":result.signal,"stderr":available}),
                                 ),
@@ -576,6 +902,9 @@ fn propose(
     let context_hash = blake3::hash(serde_json::to_string(&context_value).unwrap().as_bytes())
         .to_hex()
         .to_string();
+    let input_hash = blake3::hash(serde_json::to_string(&stdin).unwrap().as_bytes())
+        .to_hex()
+        .to_string();
     let key = cache::key_hash(
         &api_config.model,
         shell,
@@ -583,6 +912,8 @@ fn propose(
         &api_config.reasoning_effort,
         &snapshot.mode,
         &context_hash,
+        route,
+        &input_hash,
         request,
     );
     if follow_up.is_none() && !args.fresh {
@@ -682,6 +1013,12 @@ fn receipt(
         mode: mode.into(),
         context_mode: context_mode.as_str().into(),
         route: route.into(),
+        runtime: if route == "run_program" {
+            "python3"
+        } else {
+            "none"
+        }
+        .into(),
         prompt_schema_version: prompt::PROMPT_VERSION,
         declared_effects: declared.iter().map(|e| e.label().into()).collect(),
         detected_effects: detected.iter().map(|e| e.label().into()).collect(),
@@ -727,6 +1064,61 @@ fn merged_effects(a: &[Effect], b: &[Effect]) -> Vec<Effect> {
         }
     }
     out
+}
+fn program_preview(
+    proposal: &crate::action::ProgramProposal,
+    snapshot: &context::Snapshot,
+    config: &Config,
+) {
+    eprintln!("{}", ansi::primary("Proposed Python microprogram"));
+    eprintln!("{}", ansi::sanitize_untrusted(&proposal.source));
+    eprintln!("{}", ansi::sanitize_untrusted(&proposal.summary));
+    eprintln!(
+        "Runtime: {} -I -S\nWorking directory: private temporary directory\nResult: {:?}",
+        snapshot
+            .program_runtime
+            .resolved_path
+            .as_deref()
+            .unwrap_or("python3"),
+        proposal.result_mode
+    );
+    for input in &proposal.inputs {
+        eprintln!(
+            "Input ({:?}): {}",
+            input.access,
+            ansi::sanitize_untrusted_inline(&input.path)
+        );
+    }
+    for output in &proposal.outputs {
+        eprintln!(
+            "Output (staged, then renamed): {}",
+            ansi::sanitize_untrusted_inline(output)
+        );
+    }
+    for assumption in &proposal.assumptions {
+        eprintln!(
+            "Assumption: {}",
+            ansi::sanitize_untrusted_inline(assumption)
+        );
+    }
+    eprintln!(
+        "Limits: {}s wall, {}s CPU, {} MiB address space, {} MiB combined output, {} MiB workspace",
+        config.program.timeout_secs,
+        config.program.cpu_secs,
+        config.program.address_space_bytes / (1024 * 1024),
+        config.program.output_max_bytes / (1024 * 1024),
+        config.program.workspace_max_bytes / (1024 * 1024),
+    );
+    eprintln!(
+        "Host controls: CPU/address-space/open-files applied at spawn; child-process limit {} on {}.",
+        if cfg!(target_os = "linux") {
+            "applied"
+        } else {
+            "unavailable"
+        },
+        std::env::consts::OS
+    );
+    eprintln!("Not sandboxed: the program runs with your user permissions and can access data your user can access.");
 }
 fn dry_run(args: &Args, command: &str) -> i32 {
     if args.json {
