@@ -1,0 +1,10 @@
+# Context
+
+## Background
+The hosted macOS shell fixtures successfully changed directories but compared the lexical `$PWD` value under `/var/folders` with `canonicalize()`, which resolves the same path through macOS's `/private/var` alias.
+
+## Why This Way
+Canonicalize both the shell-observed path and the expected path before comparing. This keeps the tests focused on filesystem identity and shell persistence rather than platform-specific path spelling.
+
+## Gotchas
+Do not compare raw temporary-directory strings against canonical paths on macOS; `/var` and `/private/var` may identify the same directory.
