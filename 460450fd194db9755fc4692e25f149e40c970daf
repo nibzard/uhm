@@ -1,0 +1,1 @@
+CI follow-up: GitHub's hosted runner warned that checkout@v4 and setup-node@v4 use the deprecated Node 20 runtime. Updated the official actions to their current stable majors (checkout/setup-node/upload-artifact v7, download-artifact v8) and revalidated both workflows with actionlint before the v0.1.0 tag.
