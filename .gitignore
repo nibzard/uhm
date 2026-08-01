@@ -26,3 +26,4 @@ Thumbs.db
 *.log
 *.tmp
 /coverage/
+/telemetry-worker/node_modules/

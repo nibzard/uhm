@@ -30,6 +30,18 @@ pub struct ExecutionConfig {
     pub deny_env: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TelemetryConfig {
+    pub enabled: bool,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 impl Default for ExecutionConfig {
     fn default() -> Self {
         Self {
@@ -54,6 +66,7 @@ pub struct Config {
     pub response_max_bytes: usize,
     pub history: HistoryConfig,
     pub execution: ExecutionConfig,
+    pub telemetry: TelemetryConfig,
     pub cache_enabled: bool,
     pub cache_ttl_secs: u64,
     pub aliases: Vec<(String, String)>,
@@ -78,6 +91,7 @@ struct FileConfig {
     response_max_bytes: Option<usize>,
     history: Option<HistoryConfig>,
     execution: Option<ExecutionConfig>,
+    telemetry: Option<TelemetryConfig>,
     cache_enabled: Option<bool>,
     cache_ttl_secs: Option<u64>,
     aliases: Option<BTreeMap<String, String>>,
@@ -96,6 +110,7 @@ const KEYS: &[&str] = &[
     "response_max_bytes",
     "history",
     "execution",
+    "telemetry",
     "cache_enabled",
     "cache_ttl_secs",
     "aliases",
@@ -120,12 +135,18 @@ impl Config {
             response_max_bytes: 2 * 1024 * 1024,
             history: HistoryConfig::default(),
             execution: ExecutionConfig::default(),
+            telemetry: TelemetryConfig::default(),
             cache_enabled: true,
             cache_ttl_secs: 86_400,
             aliases: Vec::new(),
             paths,
             sources,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test(paths: Paths) -> Self {
+        Self::defaults(paths)
     }
 
     pub fn source(&self, key: &str) -> &'static str {
@@ -181,6 +202,11 @@ impl Config {
                 "execution.timeout_secs",
                 self.execution.timeout_secs.to_string(),
                 self.source("execution"),
+            ),
+            (
+                "telemetry.enabled",
+                self.telemetry.enabled.to_string(),
+                self.source("telemetry"),
             ),
             (
                 "cache_enabled",
@@ -261,6 +287,7 @@ fn apply_file(config: &mut Config, file: FileConfig) {
     apply!(config, file, response_max_bytes);
     apply!(config, file, history);
     apply!(config, file, execution);
+    apply!(config, file, telemetry);
     apply!(config, file, cache_enabled);
     apply!(config, file, cache_ttl_secs);
     if let Some(aliases) = file.aliases {
@@ -340,6 +367,7 @@ mod tests {
         let c = Config::defaults(paths());
         assert_eq!(c.context_mode, "standard");
         assert!(c.history.enabled);
+        assert!(c.telemetry.enabled);
     }
     #[test]
     fn rejects_removed_provider_base_url() {

@@ -27,8 +27,18 @@ The latest release and the current default branch receive security fixes.
 Older releases may be asked to upgrade rather than receive a backport.
 
 The most sensitive areas are command classification, confirmation and auto-run
-logic, terminal escape handling, temporary files, local secret storage, and API
-response parsing.
+logic, terminal escape handling, temporary files, local secret storage, API
+response parsing, and the telemetry schema and queue.
+
+`uhm` executes model-generated shell commands. Its warnings are advisory, not a
+sandbox or safety boundary. A report that shows an unexpected command can run,
+a control sequence can reach a terminal, a secret can leave the device, or an
+opt-out can be bypassed is in scope. Model quality disputes without a boundary
+failure are not security vulnerabilities.
+
+The telemetry gateway accepts only the enum-only schema documented in
+[PRIVACY.md](PRIVACY.md). Do not put credentials, private prompts, commands,
+outputs, paths, or identifying data in a vulnerability report.
 
 ## Disclosure
 

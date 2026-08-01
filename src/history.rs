@@ -26,6 +26,12 @@ pub struct Receipt {
     pub latency_bucket: String,
     pub cache_state: String,
     pub second_turn_used: bool,
+    #[serde(default = "unknown_feedback")]
+    pub user_feedback: String,
+}
+
+fn unknown_feedback() -> String {
+    "unknown".into()
 }
 
 pub fn run_id() -> String {
@@ -136,6 +142,23 @@ pub fn clear(data: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn set_latest_feedback(data: &Path, feedback: &str) -> Result<Receipt, String> {
+    if !matches!(feedback, "good" | "bad") {
+        return Err("feedback must be good or bad".into());
+    }
+    let _guard = lock(data)?;
+    let (path, _) = paths(data);
+    let mut records = read_valid(&path);
+    let latest = records
+        .last_mut()
+        .ok_or("no local interaction receipt is available")?;
+    latest["user_feedback"] = Value::String(feedback.into());
+    let receipt: Receipt = serde_json::from_value(latest.clone())
+        .map_err(|e| format!("read latest receipt: {}", e))?;
+    write_all(&path, &records)?;
+    Ok(receipt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +181,7 @@ mod tests {
             latency_bucket: "lt_1s".into(),
             cache_state: "miss".into(),
             second_turn_used: false,
+            user_feedback: "unknown".into(),
         }
     }
     #[test]
@@ -215,5 +239,14 @@ mod tests {
         assert_eq!(recent(&root, 20).len(), 8);
         clear(&root).unwrap();
         assert!(recent(&root, 20).is_empty());
+    }
+
+    #[test]
+    fn feedback_updates_only_the_allowed_enum() {
+        let d = tempfile::tempdir().unwrap();
+        append(d.path(), &receipt(), 10, 30).unwrap();
+        let updated = set_latest_feedback(d.path(), "good").unwrap();
+        assert_eq!(updated.user_feedback, "good");
+        assert!(set_latest_feedback(d.path(), "great job").is_err());
     }
 }

@@ -15,6 +15,8 @@ The action proposed by the model and the action passed to the child shell are th
 
 `--review`, `--dry-run`, and `--force` are mutually exclusive. Ask/explain accept the global rendering and model options, but execution controls do not grant them execution authority.
 
+The no-argument TTY path collects one intent, completes one bounded interaction, and exits. It is not a REPL. A clarification or failed-command repair may consume at most one second turn; they cannot both occur in the same interaction.
+
 ## Application statuses
 
 | Status | Meaning when no child executed |
@@ -32,6 +34,20 @@ If a child executes, its status wins unchanged; Unix signals use the conventiona
 ## Current-shell actions
 
 Commands such as `cd`, `export`, `unset`, `source`, activation, and `alias` cannot alter the shell that launched `uhm`. Typed parent-shell proposals and common locally recognized forms return status 11 with the exact not-applied command. Until shell integration is implemented, uhm never runs these in a child and pretends the state persisted. Obfuscated shell syntax remains outside the advisory detector's completeness claim.
+
+## First use and outbound work
+
+Before any OpenAI request or telemetry send, a fresh installation writes a versioned disclosure to stderr and flushes it. Only then does it atomically persist an owner-only notice marker. A changed outbound-data contract increments the revision and makes the notice appear once more.
+
+OpenAI receives the prompt, explicitly supplied UTF-8 stdin, and the selected context. `standard` context is the default. Aggregate telemetry is enabled by default but has only fixed, content-free categories. Its opt-outs are evaluated before an event or queue entry exists. [PRIVACY.md](../PRIVACY.md) is the normative field and retention description.
+
+Telemetry runs after useful output has been written. Its current-send budget is 100 ms. A model-bound invocation can spend another 200 ms flushing up to ten old entries. A telemetry error, timeout, quota response, or opt-out never changes result bytes or exit status. Local aliases and proposal-cache hits do not create telemetry.
+
+## Terminal modes
+
+`--plain`, `UHM_PLAIN=1`, and `TERM=dumb` select cooked ASCII-safe presentation. Plain output has no ANSI, OSC, cursor, alternate-screen, or animation sequences. `NO_COLOR` disables styling without forcing cooked input. `--no-motion` and `NO_MOTION=1` disable animation without disabling color or Unicode.
+
+Important state has a text label and never depends on color. Layout measures display cells rather than bytes, including wide CJK and emoji glyphs and zero-width combining marks. Ctrl-C cancels the current interaction; Ctrl-D exits an input session.
 
 ## One replacement slot
 

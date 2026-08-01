@@ -23,6 +23,9 @@
 #   diagnostic_bytes: 65536      # tail per redirected stream
 #   deny_env: []                 # additional names removed from child env
 
+# telemetry:
+#   enabled: true                # content-free aggregate outcomes; see `uhm telemetry preview`
+
 # cache_enabled: true            # caches the RESPONSE only, never the prompt
 # cache_ttl_secs: 86400
 

@@ -5,4 +5,5 @@ pub mod ansi;
 pub mod capability;
 pub mod card;
 pub mod highlight;
+pub mod layout;
 pub mod spinner;

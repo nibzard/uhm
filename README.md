@@ -2,125 +2,174 @@
 
 Say what you need. Get the result.
 
-`uhm` is a fast natural-language layer over terminal tools. It turns one intent into one typed proposal, runs ordinary work, and returns the command's actual output. It is not a coding agent, a chat session, or a background worker.
+`uhm` is a fast natural-language layer over terminal tools. Ask it to count paragraphs, find a large file, explain a command, or do one local job. It chooses a typed action, runs ordinary work, and gives you the real output.
 
-## Quick start
+It is deliberately smaller than a coding agent. One intent goes in. One bounded job comes out. Then `uhm` exits.
 
-You need Rust 1.82 or newer and an OpenAI API key:
+## Install
+
+Download the archive for your machine from the [v0.1.0 release](https://github.com/nibzard/uhm/releases/tag/v0.1.0):
+
+| System | Archive |
+|---|---|
+| Linux x86-64 | `uhm-v0.1.0-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `uhm-v0.1.0-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `uhm-v0.1.0-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `uhm-v0.1.0-aarch64-apple-darwin.tar.gz` |
+
+Verify the download before installing it:
 
 ```sh
-cargo install --path .
-export OPENAI_API_KEY=sk-...
+grep 'uhm-v0.1.0-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
+grep 'uhm-v0.1.0-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
+tar -xzf uhm-v0.1.0-<target>.tar.gz
+install -m 755 uhm-v0.1.0-<target>/uhm "$HOME/.local/bin/uhm"
+uhm --version
+```
+
+The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, inspect the downloaded file and approve it in System Settings. Do not bypass the warning for a file whose checksum does not match.
+
+Rust users can build the same binary from source:
+
+```sh
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.1.0 uhm-cli
+```
+
+The crates.io package is prepared but publication is deferred until ownership is ready. GitHub archives are the primary install path.
+
+## First run
+
+Give `uhm` an OpenAI API key through the environment or its private secrets file:
+
+```sh
+export OPENAI_API_KEY="your-key"
+uhm doctor
 uhm -- find the ten biggest files in this directory
 ```
 
-Ordinary actions run immediately. When uhm detects deletion, broad writes, elevated privileges, remote mutation, process control, or another hard-to-classify effect, it shows the exact command and asks first. Detection is a convenience warning, not a safety guarantee. `--force` remains the user's override.
+`uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and run `chmod 600 <path>` if you do not want the key in your shell environment. `uhm doctor network` makes a separate, explicit OpenAI reachability and authentication check.
 
-## Examples
+Before the first outbound request, `uhm` prints a short data notice to stderr. It records that the current notice revision was shown, then gets out of the way.
+
+## Things to try
+
+Get the answer produced by a local tool:
 
 ```sh
-# Require an executable action
-uhm run -- count the paragraphs in README.md
-
-# Ask without executing
-uhm ask -- what does git log -p mean
-
-# Explain command text without executing it
-uhm explain -- git log -p
-
-# Use piped input as request data
-git diff | uhm ask -- write a concise summary
-
-# Review every proposal, or print exact command bytes
-uhm run --review -- remove build artifacts
-uhm run --dry-run -- concatenate the markdown files
+uhm -- how many paragraphs are in README.md?
 ```
 
-After the first intent word, every argument is opaque user text. A dictated prompt containing `-y`, `--help`, or `--system` cannot change uhm's authority. Use the explicit `--` boundary when intent starts with a hyphen.
+Transform files and keep the result pipeable:
 
-## Commands
+```sh
+uhm run -- concatenate the markdown files in docs and write combined.md
+```
 
-| Command | Behavior |
-|---|---|
-| `uhm -- <intent>` | Answer, clarify, or perform one local action |
-| `uhm run -- <intent>` | Require an executable local action |
-| `uhm ask -- <question>` | Request a prose-valued terminal/CLI result |
-| `uhm explain -- <command>` | Request an explanation through the same typed action contract |
-| `uhm history status|clear` | Inspect or clear bounded metadata receipts |
-| `uhm config show` | Show resolved values and sources |
-| `uhm config check` | Strictly parse and validate configuration |
-| `uhm context show [mode]` | Show the exact structured context shape used for proposals |
-| `uhm doctor` | Check paths, configuration, and credentials |
+Use exact piped bytes as request data:
 
-Execution options:
+```sh
+git diff | uhm ask -- summarize this for a commit message
+```
+
+Ask for prose without allowing execution:
+
+```sh
+uhm explain -- git log --first-parent --oneline
+```
+
+Inspect a proposal without running it:
+
+```sh
+uhm run --dry-run -- count every occurrence of the word world in report.txt
+uhm run --review -- remove old build artifacts
+```
+
+Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. `--force` skips the advisory prompt for a detected consequential action, while still showing the warning.
+
+If one essential detail is missing, `uhm` can ask one question and revise the proposal. A failed command can get one bounded repair attempt in an interactive terminal. There is no open-ended chat loop.
+
+## Data leaving your machine
+
+OpenAI receives your intent, explicitly piped UTF-8 input, and the selected context. `standard` context is the default: bounded OS and architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. It does not automatically include file contents, Git remotes or diffs, environment values, API keys, history, or cached results.
+
+Use `uhm context show` to inspect the exact shape. Use `--context minimal` or `context_mode: minimal` to send only the intent and explicitly piped input. OpenAI requests use the Responses API with `store: false`, which disables Responses application-state storage. OpenAI's default abuse-monitoring logs may still retain API content for up to 30 days unless your organization has approved data-retention controls. See [OpenAI's data controls](https://developers.openai.com/api/docs/guides/your-data#data-retention-controls-for-abuse-monitoring).
+
+Content-free telemetry is on by default. A summary contains only fixed categories such as platform, shell, route, decision, effect, proposal outcome, process outcome, feedback, coarse latency, and cache state. It has no prompt, command, output, path, error text, exact timestamp, or stable ID. Cloudflare processes the HTTPS connection; the Worker does not persist connection metadata in application telemetry or logs. See [PRIVACY.md](PRIVACY.md) for the exact schema and retention.
+
+```sh
+uhm telemetry preview       # exact candidate payload for this invocation
+uhm telemetry status
+uhm telemetry off           # persistent opt-out and clear queued summaries
+uhm --no-telemetry -- ...   # this invocation only
+```
+
+`UHM_TELEMETRY=off` and `DO_NOT_TRACK=1` are also honored. Telemetry is best effort and lossy. It runs after result bytes are written, never on local alias or cache hits, and never changes a job's exit status.
+
+## Local records
+
+Private metadata receipts are on by default. They contain bounded route, effect, process outcome, and timing categories, never the intent, command, cwd, input, output, or diagnostics. They live in the platform data directory shown by `uhm history status`, with a maximum of 500 records or 30 days.
+
+```sh
+uhm history status
+uhm feedback good           # attaches one enum to the latest receipt
+uhm history clear
+```
+
+The proposal cache holds validated model proposals, not execution results. Runtime directories and files use owner-only permissions on Unix.
+
+## Shell behavior and limits
+
+A child process cannot change the shell that launched it. For `cd`, `export`, activation, aliases, and similar requests, `uhm` returns the exact action without pretending it was applied. Copy or evaluate it in your current shell. Automatic parent-shell integration is deferred.
+
+Warnings for deletion, broad writes, privilege elevation, remote mutation, and process control are convenience signals. They are not a sandbox or a safety guarantee. Model output and the detector can both be wrong. Exit code zero proves only that the process exited zero, not that your intent was satisfied.
+
+Version 0.1 has no universal undo, transaction layer, background agent, native Windows build, shell completion, auto-updater, or generated standalone programs.
+
+## CLI reference
 
 ```text
---review    always show the exact proposal and ask before execution
---dry-run   emit exact command bytes and execute nothing
---force     skip advisory confirmation after showing warnings
---plain     disable styling, animation, and terminal controls
---json      emit namespaced machine-readable outcomes
+uhm [options] -- <intent>
+uhm run|ask|explain [options] -- <intent>
+uhm context show [minimal|standard|full]
+uhm telemetry [status|preview|on|off]
+uhm feedback good|bad
+uhm history [status|clear]
+uhm config [show|check]
+uhm doctor [network]
 ```
 
-`--review`, `--dry-run`, and `--force` are mutually exclusive. See the full [behavior and exit-status contract](docs/behavior-contract.md).
+After the first intent word, every argument is opaque user text. A dictated prompt containing `-y`, `--help`, or `--system` cannot change authority. Put `--` before an intent that starts with a hyphen.
 
-## Output contract
-
-The requested result stays on stdout and composes with pipes. Progress, review UI, warnings, and executed-child JSON receipts go to stderr. If a child executes, uhm returns its exit status unchanged. A proposal that was not executed returns a distinct nonzero application status.
-
-Styling never reconstructs a command. The bytes shown in review and supplied to the child shell are the model's validated command bytes. Redirected output, `--plain`, `NO_COLOR`, and `TERM=dumb` do not emit terminal control sequences.
+`--plain` uses a cooked, ASCII-safe interface with no terminal controls or animation. `--no-motion` keeps color and Unicode but disables animation. `UHM_PLAIN=1`, `NO_COLOR`, `NO_MOTION=1`, and `TERM=dumb` are supported. Requested result data stays on stdout; progress, warnings, and review UI go to stderr. See the [behavior contract](docs/behavior-contract.md) for exit statuses and stream rules.
 
 ## Configuration
 
-Copy [config.example.yaml](config.example.yaml) to the platform path shown by `uhm config show`. Every key is optional, but unknown keys, bad types, invalid values, unreadable files, and unsafe relative XDG roots are errors.
+Copy [config.example.yaml](config.example.yaml) to the path shown by `uhm config show`. Unknown keys and invalid values are errors.
 
 ```yaml
 model: gpt-5.6-terra
 shell: auto
-stream: true
 context_mode: standard
 
 history:
   enabled: true
 
-aliases:
-  gst: git status -sb
+telemetry:
+  enabled: true
 ```
 
-Environment overrides:
-
-| Variable | Purpose |
-|---|---|
-| `OPENAI_API_KEY` | API credential |
-| `OPENAI_MODEL` | Model ID |
-| `UHM_PLAIN` | Disable terminal presentation features |
-| `NO_COLOR` | Disable color |
-
-The optional private secrets file is `<data-dir>/uhm/secrets` and contains `OPENAI_API_KEY=...`. On Unix, uhm requires private file permissions. Runtime directories and files are created as `0700` and `0600` respectively.
-
-## Data and trust
-
-All model calls go to OpenAI's official `POST /v1/responses` endpoint with provider storage disabled. `standard` context is sent by default: bounded OS/architecture, target shell, common-tool presence booleans, a normalized working directory, bounded Git state, and at most 40 entry names. `minimal` sends only the intent and explicitly piped stdin; `full` adds identifying machine fields and bounded versions. Inspect the exact shape with `uhm context show`, or select a mode with `--context minimal` / `context_mode: minimal`. Environment values, API keys, file contents, Git remotes/diffs, history, and secret files are never added automatically.
-
-Metadata receipts are on by default and bounded to 500 records/30 days. They contain coarse route/effect/outcome categories and timing buckets—not intent, command, cwd, context, answers, feedback, stdout, stderr, or diagnostics. Disable them with `history.enabled: false`. The proposal cache contains validated model proposals, not execution results.
-
-Piped stdin is spooled as bounded exact bytes. Valid UTF-8 may be sent as explicit request data; non-UTF-8 sends only presence and byte-count metadata, then is replayed unchanged when the action requests original stdin. Child processes never receive the OpenAI key or private `uhm` control variables. This is not a sandbox.
-
-uhm deliberately does not promise sandboxing, command safety, transactions, or rollback. You remain responsible for commands you authorize.
-
-## Build and test
+## Development
 
 ```sh
 cargo fmt -- --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --all-targets --locked
 cargo build --release --locked
+(cd telemetry-worker && npm ci && npm test)
 ```
 
-Stable CI covers Linux and macOS; a separate job checks Rust 1.82. Dependency rationale lives in [ADR 0001](docs/architecture/0001-core-dependencies-and-msrv.md).
+CI covers stable Rust on Linux and macOS, Rust 1.82, a static Linux build, the packaged crate, and the telemetry gateway. Release tags build and smoke-test four archives, generate SHA-256 checksums, and attach GitHub provenance attestations.
 
-## Contributing and license
-
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AI_POLICY.md](AI_POLICY.md). Security reports follow [SECURITY.md](SECURITY.md).
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), [AI_POLICY.md](AI_POLICY.md), and [SECURITY.md](SECURITY.md).
 
 MIT. See [LICENSE](LICENSE).

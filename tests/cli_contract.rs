@@ -10,6 +10,24 @@ fn configured(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
     let config_dir = home.join("config/uhm");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(config_dir.join("config.yaml"), yaml).unwrap();
+    let data_dir = home.join("data/uhm");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(data_dir.join("notice-revision"), "1").unwrap();
+    Command::new(binary())
+        .args(arguments)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("TERM", "dumb")
+        .output()
+        .unwrap()
+}
+
+fn configured_fresh(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
+    let config_dir = home.join("config/uhm");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(config_dir.join("config.yaml"), yaml).unwrap();
     Command::new(binary())
         .args(arguments)
         .env("HOME", home)
@@ -169,4 +187,33 @@ fn removed_short_authority_flag_is_a_usage_error() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown option"));
+}
+
+#[test]
+fn first_use_notice_precedes_work_and_is_rendered_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = configured_fresh(
+        temp.path(),
+        "aliases:\n  notice-noop: true\n",
+        &["--plain", "notice-noop"],
+    );
+    assert_eq!(first.status.code(), Some(0));
+    let notice = String::from_utf8_lossy(&first.stderr);
+    assert!(notice.contains("OpenAI receives"));
+    assert!(notice.contains("uhm telemetry off"));
+    assert!(notice.contains("not a safety guarantee"));
+
+    let second = configured(
+        temp.path(),
+        "aliases:\n  notice-noop: true\n",
+        &["--plain", "notice-noop"],
+    );
+    assert!(!String::from_utf8_lossy(&second.stderr).contains("OpenAI receives"));
+}
+
+#[test]
+fn plain_first_use_notice_contains_no_terminal_controls() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = configured_fresh(temp.path(), "", &["--plain", "config", "show"]);
+    assert!(!output.stderr.contains(&0x1b));
 }

@@ -13,7 +13,7 @@ pub struct Spinner {
 
 impl Spinner {
     pub fn start(msg: &str) -> Spinner {
-        if !std::io::stderr().is_terminal() || crate::render::ansi::plain_enabled() {
+        if !std::io::stderr().is_terminal() || !crate::render::ansi::motion_enabled() {
             return Spinner {
                 stop: Arc::new(AtomicBool::new(true)),
                 handle: None,

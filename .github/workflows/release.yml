@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate tag and release tree
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Match tag to Cargo version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt -- --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --all-targets --locked
+      - run: cargo package --locked
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native musl compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build release binary
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Archive release
+        shell: bash
+        run: |
+          name="uhm-v${{ needs.validate.outputs.version }}-${{ matrix.target }}"
+          mkdir -p "target/package/${name}"
+          cp "target/${{ matrix.target }}/release/uhm" "target/package/${name}/uhm"
+          cp LICENSE README.md "target/package/${name}/"
+          tar -C target/package -czf "target/package/${name}.tar.gz" "${name}"
+          mkdir -p target/smoke
+          tar -C target/smoke -xzf "target/package/${name}.tar.gz"
+          "target/smoke/${name}/uhm" --version | grep -Fx "uhm ${{ needs.validate.outputs.version }}"
+      - name: Attest archive provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: target/package/*.tar.gz
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: target/package/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish immutable-ready GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify release asset set
+        shell: bash
+        run: |
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' -type f | wc -l)" -eq 4
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS && sha256sum --check SHA256SUMS)
+      - name: Attest checksum manifest
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/SHA256SUMS
+      - name: Create, validate, and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --draft --verify-tag \
+            --title "${GITHUB_REF_NAME}" --notes-file "docs/releases/v${{ needs.validate.outputs.version }}.md"
+          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          test "$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets | length')" -eq 5
+          gh release edit "${GITHUB_REF_NAME}" --draft=false --latest

@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "uhm-telemetry",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-01",
+  "workers_dev": true,
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "analytics_engine_datasets": [
+    {
+      "binding": "EVENTS",
+      "dataset": "uhm_cli_v1"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    }
+  ],
+  "vars": {
+    "ENABLED": "true"
+  }
+}

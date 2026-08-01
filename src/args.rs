@@ -14,6 +14,8 @@ pub struct Args {
     pub plain: bool,
     pub json: bool,
     pub no_stream: bool,
+    pub no_telemetry: bool,
+    pub no_motion: bool,
     pub fresh: bool,
     pub verbose: bool,
     pub help: bool,
@@ -21,7 +23,17 @@ pub struct Args {
 }
 
 const VERBS: &[&str] = &[
-    "run", "ask", "explain", "history", "config", "context", "doctor", "help", "version",
+    "run",
+    "ask",
+    "explain",
+    "history",
+    "config",
+    "context",
+    "telemetry",
+    "feedback",
+    "doctor",
+    "help",
+    "version",
 ];
 
 pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
@@ -52,6 +64,8 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
             "--plain" => out.plain = true,
             "--json" => out.json = true,
             "--no-stream" => out.no_stream = true,
+            "--no-telemetry" => out.no_telemetry = true,
+            "--no-motion" => out.no_motion = true,
             "--fresh" | "--no-cache" => out.fresh = true,
             "-v" | "--verbose" => out.verbose = true,
             "-m" | "--model" => {

@@ -37,6 +37,37 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
+      - name: Smoke-test installed binary
+        run: |
+          cargo install --path . --locked --root target/installed
+          target/installed/bin/uhm --version
+
+      - name: Package crate
+        run: cargo package --locked
+
+  telemetry-worker:
+    name: Telemetry Worker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: telemetry-worker/package-lock.json
+
+      - name: Install Worker dependencies
+        run: npm ci
+        working-directory: telemetry-worker
+
+      - name: Test strict ingestion gateway
+        run: npm test
+        working-directory: telemetry-worker
+
   msrv:
     name: MSRV / Rust 1.82
     runs-on: ubuntu-latest

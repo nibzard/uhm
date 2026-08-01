@@ -7,15 +7,31 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::render::capability;
 
 static PLAIN: AtomicBool = AtomicBool::new(false);
+static NO_MOTION: AtomicBool = AtomicBool::new(false);
 
 pub fn set_plain(plain: bool) {
     PLAIN.store(plain, Ordering::Relaxed);
 }
 
+pub fn set_no_motion(no_motion: bool) {
+    NO_MOTION.store(no_motion, Ordering::Relaxed);
+}
+
+fn enabled_env(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "on"))
+}
+
 pub fn plain_enabled() -> bool {
     PLAIN.load(Ordering::Relaxed)
-        || std::env::var_os("UHM_PLAIN").is_some_and(|v| !v.is_empty())
+        || enabled_env("UHM_PLAIN")
         || std::env::var("TERM").is_ok_and(|term| term == "dumb")
+}
+
+pub fn motion_enabled() -> bool {
+    !plain_enabled()
+        && !NO_MOTION.load(Ordering::Relaxed)
+        && !enabled_env("UHM_NO_MOTION")
+        && !enabled_env("NO_MOTION")
 }
 
 pub fn color_enabled() -> bool {
@@ -89,6 +105,33 @@ pub fn yellow(s: &str) -> String {
 }
 pub fn magenta(s: &str) -> String {
     wrap("\x1b[35m", s, "\x1b[39m")
+}
+
+pub fn red(s: &str) -> String {
+    wrap("\x1b[31m", s, "\x1b[39m")
+}
+
+// Semantic tokens. Product copy should use these instead of choosing colors.
+pub fn primary(s: &str) -> String {
+    bold(s)
+}
+pub fn muted(s: &str) -> String {
+    dim(s)
+}
+pub fn success(s: &str) -> String {
+    green(s)
+}
+pub fn warning(s: &str) -> String {
+    yellow(s)
+}
+pub fn critical(s: &str) -> String {
+    red(s)
+}
+pub fn info(s: &str) -> String {
+    magenta(s)
+}
+pub fn focus(s: &str) -> String {
+    undercurl(s)
 }
 
 /// Squiggly underline (SGR `4:3`). Emits codes only on terminals that speak the

@@ -5,7 +5,9 @@ use crate::args::Args;
 use crate::config::Config;
 use crate::outcome::Outcome;
 use crate::render::{ansi, card, spinner};
-use crate::{api, cache, context, history, outcome, parent_shell, prompt, safety, shell, tty};
+use crate::{
+    api, cache, context, history, outcome, parent_shell, prompt, safety, shell, telemetry, tty,
+};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
@@ -64,6 +66,7 @@ impl Budget {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle(
     args: &Args,
     config: &Config,
@@ -71,12 +74,18 @@ pub fn handle(
     request: &str,
     route: &str,
     stdin: &crate::input::Spool,
+    disclosure_marker: &str,
+    interaction: &mut telemetry::Interaction,
 ) -> i32 {
     let started = Instant::now();
     let shell_name = match target_shell(config, args.shell.as_deref()) {
         Ok(v) => v,
         Err(e) => return app_error(args, outcome::USAGE, "usage_error", &e),
     };
+    interaction.shell(&shell_name);
+    if let Err(e) = ensure_disclosure(Some(disclosure_marker)) {
+        return app_error(args, outcome::CONFIG, "notice_error", &e);
+    }
     let mode_text = args.context.as_deref().unwrap_or(&config.context_mode);
     let mode = match context::Mode::parse(mode_text) {
         Ok(v) => v,
@@ -96,6 +105,7 @@ pub fn handle(
             stdin_mode: StdinMode::None,
         });
     let snapshot = if alias.is_some() {
+        interaction.suppress();
         context::gather(
             context::Mode::Minimal,
             &shell_name,
@@ -105,7 +115,7 @@ pub fn handle(
         context::gather(mode, &shell_name, config.context_timeout_ms)
     };
     let mut budget = Budget::default();
-    let run_id = history::run_id();
+    let run_id = interaction.run_id.clone();
     let mut action = match alias {
         Some(v) => v,
         None => match propose(
@@ -119,11 +129,15 @@ pub fn handle(
             None,
             &shell_name,
         ) {
-            Ok((v, _)) => {
+            Ok((v, cache_hit)) => {
                 budget.initial_model();
+                interaction.proposal(true, cache_hit);
                 v
             }
-            Err(e) => return app_error(args, outcome::MODEL, "model_error", &e),
+            Err(e) => {
+                interaction.proposal(false, false);
+                return app_error(args, outcome::MODEL, "model_error", &e);
+            }
         },
     };
     loop {
@@ -140,7 +154,10 @@ pub fn handle(
         }
         match action {
             ProposedAction::Answer { text } => {
+                interaction.route("answer");
+                interaction.decision("returned");
                 if route == "run" {
+                    interaction.decision("unavailable");
                     return app_error(
                         args,
                         outcome::NOT_EXECUTED,
@@ -182,6 +199,8 @@ pub fn handle(
                 return 0;
             }
             ProposedAction::Clarification { question } => {
+                interaction.route("clarification");
+                interaction.decision("not_run");
                 if !budget.can_replace() || !tty_available() {
                     return clarification(args, &question);
                 }
@@ -189,6 +208,7 @@ pub fn handle(
                 eprint!("uhm› ");
                 let _ = std::io::stderr().flush();
                 let Some(answer) = tty::read_line_cooked() else {
+                    interaction.decision("cancelled");
                     return outcome::CLARIFICATION;
                 };
                 let _ = budget.replace_with_model(Replacement::Clarification);
@@ -209,9 +229,13 @@ pub fn handle(
                 continue;
             }
             ProposedAction::ParentShell { command, metadata } => {
+                interaction.route("parent_shell");
+                interaction.effects(&metadata.effects);
                 if args.dry_run {
+                    interaction.decision("dry_run");
                     return dry_run(args, &command);
                 }
+                interaction.decision("needs_parent");
                 if !args.json {
                     card::preview(
                         &command,
@@ -248,8 +272,10 @@ pub fn handle(
                 metadata,
                 stdin_mode,
             } => {
+                interaction.route("shell");
                 let missing = context::missing_requirements(&metadata.requirements);
                 if !missing.is_empty() {
+                    interaction.effects(&metadata.effects);
                     let msg = format!("required executable(s) unavailable: {}", missing.join(", "));
                     if budget.can_replace()
                         && tty_available()
@@ -272,15 +298,18 @@ pub fn handle(
                         };
                         continue;
                     }
+                    interaction.decision("unavailable");
                     return app_error(args, outcome::UNAVAILABLE, "requirement_unavailable", &msg);
                 }
                 let classification = safety::classify(&command);
                 let effects = merged_effects(&classification.effects, &metadata.effects);
+                interaction.effects(&effects);
                 let consequential = classification.tier.severity()
                     >= safety::Tier::Destructive.severity()
                     || effects.iter().any(Effect::requires_advisory_pause);
                 let review = args.review || consequential;
                 if args.dry_run {
+                    interaction.decision("dry_run");
                     return dry_run(args, &command);
                 }
                 if review && !args.json {
@@ -363,16 +392,20 @@ pub fn handle(
                             let _ = write_command(std::io::stdout(), &command);
                             return outcome::NOT_EXECUTED;
                         }
-                        _ => return not_executed(args, &command, "cancelled by user"),
+                        _ => {
+                            interaction.decision("cancelled");
+                            return not_executed(args, &command, "cancelled by user");
+                        }
                     }
                 } else if consequential && args.force && !args.json {
                     eprintln!(
                         "{}",
-                        ansi::yellow("Proceeding because --force was supplied.")
+                        ansi::warning("Proceeding because --force was supplied.")
                     );
                 }
                 let child_stdin = (stdin_mode == StdinMode::Original).then(|| stdin.bytes());
                 if !budget.execute() {
+                    interaction.decision("unavailable");
                     return app_error(
                         args,
                         outcome::NOT_EXECUTED,
@@ -389,7 +422,10 @@ pub fn handle(
                     deny_env: &config.execution.deny_env,
                 }) {
                     Ok(v) => v,
-                    Err(e) => return app_error(args, outcome::NOT_EXECUTED, "spawn_error", &e),
+                    Err(e) => {
+                        interaction.execution("spawn_error");
+                        return app_error(args, outcome::NOT_EXECUTED, "spawn_error", &e);
+                    }
                 };
                 let detected = classification.effects.clone();
                 if result.code != 0
@@ -459,6 +495,16 @@ pub fn handle(
                 } else {
                     "failed"
                 };
+                interaction.decision("ran");
+                interaction.execution(if result.timed_out {
+                    "timeout"
+                } else if result.signal.is_some() {
+                    "signal"
+                } else if result.code == 0 {
+                    "exit_zero"
+                } else {
+                    "exit_nonzero"
+                });
                 receipt(
                     config,
                     &run_id,
@@ -526,7 +572,6 @@ fn propose(
     follow_up: Option<Value>,
     shell: &str,
 ) -> Result<(ProposedAction, bool), String> {
-    ensure_disclosure(Some(context::DISCLOSURE_MARKER))?;
     let context_value = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
     let context_hash = blake3::hash(serde_json::to_string(&context_value).unwrap().as_bytes())
         .to_hex()
@@ -573,7 +618,7 @@ fn propose(
     Ok((action, false))
 }
 pub fn ensure_disclosure(marker: Option<&str>) -> Result<(), String> {
-    if marker == Some(context::DISCLOSURE_MARKER) {
+    if marker == Some(crate::first_run::RENDERED_MARKER) {
         Ok(())
     } else {
         Err("context disclosure was not rendered; outbound request blocked".into())
@@ -663,6 +708,7 @@ fn receipt(
         .into(),
         cache_state: "unknown".into(),
         second_turn_used: second,
+        user_feedback: "unknown".into(),
     };
     if let Err(e) = history::append(
         &config.paths.data_dir,
@@ -795,7 +841,7 @@ mod tests {
     #[test]
     fn gate_blocks_missing_marker() {
         assert!(ensure_disclosure(None).is_err());
-        assert!(ensure_disclosure(Some(context::DISCLOSURE_MARKER)).is_ok());
+        assert!(ensure_disclosure(Some(crate::first_run::RENDERED_MARKER)).is_ok());
     }
     #[test]
     fn shell_normalization() {

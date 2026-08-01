@@ -9,7 +9,7 @@ pub fn resolve_key() -> Result<String, String> {
             return Ok(k.trim().to_string());
         }
     }
-    let p = dirs::resolve()?.data_dir.join("secrets");
+    let p = file_path()?;
     if p.exists() {
         #[cfg(unix)]
         {
@@ -40,9 +40,14 @@ pub fn resolve_key() -> Result<String, String> {
         }
     }
     Err(format!(
-        "No API key found. Set $OPENAI_API_KEY or create a 0600 secrets file at {}",
-        p.display()
+        "No API key found. Set OPENAI_API_KEY, or run `install -m 600 /dev/null '{}'` and add OPENAI_API_KEY=... with a private editor. Config: {}",
+        p.display(),
+        dirs::resolve()?.config_file.display()
     ))
+}
+
+pub fn file_path() -> Result<std::path::PathBuf, String> {
+    Ok(dirs::resolve()?.data_dir.join("secrets"))
 }
 
 pub fn mask(k: &str) -> String {

@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 pub const POLICY_VERSION: u32 = 2;
 pub const DISCLOSURE_VERSION: u32 = 1;
-pub const DISCLOSURE_MARKER: &str = "context-disclosure-v1-rendered";
 pub const TOOL_CATALOG: &[&str] = &[
     "sh", "bash", "zsh", "fish", "git", "rg", "fd", "jq", "yq", "fzf", "gh", "python3", "node",
     "ruby", "go", "cargo", "make", "curl", "wget", "tar", "zip", "docker", "podman", "kubectl",
