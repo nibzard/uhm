@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a concrete improvement to uhm
+title: "[feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Start with the user problem rather than a proposed implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: What do you do today?
+      description: A command or short example is useful.
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like uhm to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Safety, privacy, or compatibility concerns
+      description: Note any effect on command execution, API data, shells, or terminals.

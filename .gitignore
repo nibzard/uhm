@@ -1,0 +1,28 @@
+# Rust build output
+/target/
+**/*.rs.bk
+*.profraw
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+/config.yaml
+/secrets
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local agent state
+.claude/*.local.md
+
+# Logs and temporary output
+*.log
+*.tmp
+/coverage/

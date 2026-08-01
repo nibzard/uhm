@@ -1,0 +1,16 @@
+# Human-readable reference for uhm's advisory local effect detector.
+# The authoritative logic lives in src/safety.rs. Detection is incomplete and
+# does not authorize execution or prove an unmatched command safe.
+# Bump safety::DENY_VERSION whenever behavior changes (invalidates the cache).
+
+# delete/write local data
+#   rm/rmdir/unlink, find -delete, redirects, cp/mv/tee, sed/perl -i
+#   dd of=*, mkfs, shred, fdisk, parted, SQL DROP/TRUNCATE
+
+# remote mutation / network reads
+#   git push/fetch/pull/clone, rsync --delete, curl/wget/ssh/scp
+#   package install/removal commands
+
+# privilege/process/dynamic or unknown effects
+#   sudo/doas, kill/killall/pkill, eval/source, shell -c/-lc,
+#   language -c/-e, command substitutions, excessive compound segments

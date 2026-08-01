@@ -1,0 +1,53 @@
+name: Bug report
+description: Tell us about behavior that is wrong or surprising
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not put credentials, private data, or exploitable security details here.
+        Follow SECURITY.md for vulnerabilities.
+
+  - type: input
+    id: version
+    attributes:
+      label: uhm version
+      description: Run `uhm --version`.
+      placeholder: uhm 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and shell
+      placeholder: Ubuntu 24.04, bash 5.2
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include the command you ran and the output, with secrets removed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use harmless commands and temporary files where possible.
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Relevant config, terminal details, or logs with sensitive values removed.
