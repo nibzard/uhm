@@ -1,0 +1,10 @@
+# Context
+
+## Background
+The libc crate exposes setrlimit resource arguments with platform-specific public types. The glibc-private __rlimit_resource_t alias is absent on macOS and musl.
+
+## Why This Way
+A local macro lets each RLIMIT_* constant flow directly into the platform setrlimit signature, avoiding a guessed cross-platform alias while keeping the same limits. Integration fixtures now seed disclosure revision 2 so a clean CI build does not emit the expected first-use notice into unrelated stream assertions.
+
+## Gotchas
+Use a clean Cargo target when verifying integration binaries locally: cargo package/install jobs can overwrite target/debug/uhm with a packaged-source build while Cargo fingerprints remain fresh.
