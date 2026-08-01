@@ -467,6 +467,7 @@ fn apply_limits(cmd: &mut Command, config: &ProgramConfig) {
     unsafe {
         use std::os::unix::process::CommandExt;
         let cpu = config.cpu_secs;
+        #[cfg(not(target_os = "macos"))]
         let address = config.address_space_bytes;
         let files = config.open_files;
         #[cfg(target_os = "linux")]
@@ -477,6 +478,7 @@ fn apply_limits(cmd: &mut Command, config: &ProgramConfig) {
             }
             libc::umask(0o077);
             set_limit!(libc::RLIMIT_CPU, cpu)?;
+            #[cfg(not(target_os = "macos"))]
             set_limit!(libc::RLIMIT_AS, address)?;
             set_limit!(libc::RLIMIT_NOFILE, files)?;
             #[cfg(target_os = "linux")]

@@ -1110,7 +1110,12 @@ fn program_preview(
         config.program.workspace_max_bytes / (1024 * 1024),
     );
     eprintln!(
-        "Host controls: CPU/address-space/open-files applied at spawn; child-process limit {} on {}.",
+        "Host controls: CPU/open-files applied at spawn; address-space {}; child-process limit {} on {}.",
+        if cfg!(target_os = "macos") {
+            "unavailable"
+        } else {
+            "applied"
+        },
         if cfg!(target_os = "linux") {
             "applied"
         } else {
