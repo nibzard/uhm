@@ -881,8 +881,10 @@ esac
             .unwrap();
         assert!(output.status.success());
         assert_eq!(
-            String::from_utf8(output.stdout).unwrap(),
-            path.canonicalize().unwrap().to_string_lossy()
+            PathBuf::from(String::from_utf8(output.stdout).unwrap())
+                .canonicalize()
+                .unwrap(),
+            path.canonicalize().unwrap()
         );
     }
     #[test]
@@ -932,8 +934,10 @@ esac
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_eq!(
-                String::from_utf8(output.stdout).unwrap(),
-                path.canonicalize().unwrap().to_string_lossy()
+                PathBuf::from(String::from_utf8(output.stdout).unwrap())
+                    .canonicalize()
+                    .unwrap(),
+                path.canonicalize().unwrap()
             );
         }
     }
@@ -1029,8 +1033,10 @@ esac
             .stderr(std::process::Stdio::null())
             .status();
         assert_eq!(
-            std::fs::read_to_string(output_path).unwrap(),
-            path.canonicalize().unwrap().to_string_lossy()
+            PathBuf::from(std::fs::read_to_string(output_path).unwrap())
+                .canonicalize()
+                .unwrap(),
+            path.canonicalize().unwrap()
         );
     }
     #[test]
