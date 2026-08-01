@@ -1,0 +1,18 @@
+# ADR: Establish the result-first core contract
+
+## Status
+Accepted
+
+## Context
+The prototype mixed natural-language parsing, model confidence, terminal presentation, and execution authority. Before public release, the project needed an explicit one-action contract with exact output and deterministic local policy.
+
+## Decision
+Adopt the Plan 1 contract: opaque intent parsing, typed proposals and effects, default execution with advisory pauses, byte-exact command handling, strict configuration and paths, static trusted instructions, and replaceable runtime seams. Rust 1.82 is the MSRV.
+
+## Alternatives Considered
+- Preserve the prototype flags and compatibility: rejected because there are no public users and the old grammar could change authority from prompt text.
+- Keep hand-written JSON/YAML parsers: rejected because correctness at the execution boundary matters more than dependency count.
+- Treat the detector as a safety gate: rejected because incomplete shell classification cannot justify a safety promise.
+
+## Consequences
+The initial public history starts from a deliberately breaking but tested foundation. The Responses API, bounded repair loop, context modes, metadata receipts, telemetry, and release packaging remain staged in later plans.
