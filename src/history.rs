@@ -56,6 +56,7 @@ pub enum EventKind {
     ArtifactRecorded,
     JobFinished,
     MigratedReceipt,
+    ParentActionAcknowledged,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -993,6 +994,33 @@ pub fn set_feedback(
     let _guard = lock(data)?;
     append_locked(data, event)?;
     Ok(coarse_from_event(final_event, feedback))
+}
+
+pub fn record_parent_ack(
+    data: &Path,
+    cfg: &HistoryConfig,
+    run: &str,
+    status: &str,
+) -> Result<(), String> {
+    if !cfg.enabled {
+        return Ok(());
+    }
+    if !matches!(status, "applied" | "failed") {
+        return Err("parent acknowledgement must be applied or failed".into());
+    }
+    let events = events_for(data, run)?;
+    let last = events.last().ok_or("history run is unavailable")?;
+    let event = base_event(
+        run,
+        &last.route,
+        &last.mode,
+        &last.context_mode,
+        EventKind::ParentActionAcknowledged,
+        json!({"status":status}),
+        last.related_run_id.as_deref(),
+    );
+    let _guard = lock(data)?;
+    append_locked(data, event)
 }
 
 fn coarse_from_event(event: &Event, feedback: &str) -> CoarseReceipt {

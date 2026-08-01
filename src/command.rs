@@ -79,6 +79,8 @@ pub fn handle(
     interaction: &mut telemetry::Interaction,
     preset_action: Option<ProposedAction>,
     related_run_id: Option<&str>,
+    integration: Option<&crate::shell_integration::Session>,
+    approved_history: Option<&str>,
 ) -> i32 {
     let started = Instant::now();
     if args.local_input && !stdin.is_piped() {
@@ -119,7 +121,7 @@ pub fn handle(
                 stdin_mode: StdinMode::None,
             })
     };
-    let snapshot = if alias.is_some() {
+    let mut snapshot = if alias.is_some() {
         interaction.suppress();
         context::gather(
             context::Mode::Minimal,
@@ -129,6 +131,9 @@ pub fn handle(
     } else {
         context::gather(mode, &shell_name, config.context_timeout_ms)
     };
+    if let Some(session) = integration {
+        context::add_shell_invocation(&mut snapshot, session, approved_history);
+    }
     let mut budget = Budget::default();
     let run_id = interaction.run_id.clone();
     if let Err(e) = history::record_request(
@@ -182,17 +187,6 @@ pub fn handle(
         },
     };
     loop {
-        if let ProposedAction::Shell {
-            command, metadata, ..
-        } = &action
-        {
-            if parent_shell::required(command) {
-                action = ProposedAction::ParentShell {
-                    command: command.clone(),
-                    metadata: metadata.clone(),
-                };
-            }
-        }
         if let Err(e) = history::record_proposal(
             &config.paths.data_dir,
             &config.history,
@@ -281,44 +275,115 @@ pub fn handle(
                 };
                 continue;
             }
-            ProposedAction::ParentShell { command, metadata } => {
+            ProposedAction::ParentShell {
+                action: parent_action,
+                metadata,
+            } => {
                 interaction.route("parent_shell");
-                interaction.effects(&metadata.effects);
+                let effects = merged_effects(&metadata.effects, &[Effect::ShellState]);
+                interaction.effects(&effects);
+                let command = match crate::shell_integration::fallback(&parent_action, &shell_name)
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return app_error(args, outcome::NOT_EXECUTED, "parent_action_error", &e)
+                    }
+                };
                 if args.dry_run {
                     interaction.decision("dry_run");
                     return dry_run(args, &command);
                 }
-                interaction.decision("needs_parent");
                 if !args.json {
                     card::preview(
                         &command,
                         &metadata.summary,
                         safety::Tier::Low,
-                        &metadata.effects,
+                        &effects,
                         &[],
                     );
-                    eprintln!("This must run in your current shell; uhm generated it but did not apply it. Copy or evaluate the exact command above.");
+                    if matches!(
+                        parent_action.kind,
+                        crate::action::ParentActionKind::SourceFile
+                    ) {
+                        eprintln!("Source warning: this file executes with your full shell authority and may exit or replace the shell before cleanup or acknowledgement.")
+                    }
                 }
+                let Some(session) = integration else {
+                    interaction.decision("needs_parent");
+                    if !args.json {
+                        eprintln!("This must run in your current shell. Install the optional wrapper with: uhm shell-init {}",std::path::Path::new(&shell_name).file_name().and_then(|v|v.to_str()).unwrap_or("bash"));
+                    }
+                    receipt(
+                        config,
+                        &run_id,
+                        route,
+                        mode,
+                        "require_parent_shell",
+                        "not_applied",
+                        false,
+                        0,
+                        None,
+                        started.elapsed(),
+                        budget.second_used(),
+                        &effects,
+                        &[],
+                    );
+                    return requires_parent(args, &command);
+                };
+                let expected = std::path::Path::new(&shell_name)
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or(&shell_name);
+                if session.shell().as_str() != expected {
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "integration_shell_mismatch",
+                        "the installed wrapper shell does not match the selected target shell",
+                    );
+                }
+                if args.json && !args.force {
+                    return not_executed(
+                        args,
+                        &command,
+                        "parent-shell review is required; automation must use --force or --dry-run",
+                    );
+                }
+                if !args.force {
+                    if !tty_available() {
+                        return not_executed(args,&command,"parent-shell confirmation is required, but no terminal is available; use --force or --dry-run");
+                    }
+                    if !ask("Apply this change to the current shell? [y/N] ") {
+                        interaction.decision("cancelled");
+                        return not_executed(args, &command, "cancelled by user");
+                    }
+                }
+                if let Err(e) = session.write_response(&run_id, &parent_action) {
+                    return app_error(
+                        args,
+                        crate::shell_integration::INTEGRATION_FAILURE,
+                        "integration_response_error",
+                        &e,
+                    );
+                }
+                interaction.decision("needs_parent");
+                interaction.parent_pending();
                 receipt(
                     config,
                     &run_id,
                     route,
                     mode,
                     "require_parent_shell",
-                    "not_applied",
+                    "parent_pending",
                     false,
                     0,
                     None,
                     started.elapsed(),
                     budget.second_used(),
-                    &metadata.effects,
+                    &effects,
                     &[],
                 );
-                return not_executed(
-                    args,
-                    &command,
-                    "parent shell state cannot persist from the uhm child process",
-                );
+                return 0;
             }
             ProposedAction::Program {
                 program: mut proposal,
@@ -640,6 +705,11 @@ pub fn handle(
                 stdin_mode,
             } => {
                 interaction.route("shell");
+                if parent_shell::required(&command) {
+                    interaction.route("parent_shell");
+                    interaction.decision("needs_parent");
+                    return not_executed(args,&command,"the model returned free-form parent-shell source; uhm will not parse or apply it—retry for a typed parent action");
+                }
                 if args.local_input && stdin_mode == StdinMode::Original {
                     interaction.decision("unavailable");
                     return app_error(
@@ -1249,6 +1319,17 @@ fn not_executed(args: &Args, command: &str, message: &str) -> i32 {
     }
     outcome::NOT_EXECUTED
 }
+fn requires_parent(args: &Args, command: &str) -> i32 {
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({"namespace":"uhm","outcome":"requires_parent_shell","exit_code":outcome::NOT_EXECUTED,"executed":false,"requires_parent_shell":true,"command":command,"message":"install the optional shell wrapper to apply this typed action"})
+        );
+    } else {
+        eprintln!("uhm: parent shell state was not changed");
+    }
+    outcome::NOT_EXECUTED
+}
 fn app_error(args: &Args, code: i32, name: &str, message: &str) -> i32 {
     if args.json {
         println!(
@@ -1344,5 +1425,94 @@ mod tests {
         assert!(clarified.replace_with_model(Replacement::Clarification));
         assert!(clarified.execute());
         assert!(!clarified.execute());
+    }
+
+    #[test]
+    fn typed_parent_action_requires_integration_and_then_publishes_one_response() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = Config::test(crate::dirs::Paths {
+            config_file: root.path().join("config"),
+            data_dir: root.path().join("data"),
+            cache_dir: root.path().join("cache"),
+        });
+        config.history.enabled = false;
+        let proposal = ProposedAction::ParentShell {
+            action: crate::action::ParentAction {
+                kind: crate::action::ParentActionKind::SetEnvironment,
+                path: None,
+                name: Some("UHM_PARENT_TEST".into()),
+                value: Some("works".into()),
+            },
+            metadata: ProposalMetadata {
+                summary: "Set a test value.".into(),
+                effects: vec![Effect::ShellState],
+                ..ProposalMetadata::default()
+            },
+        };
+        let args = Args {
+            force: true,
+            shell: Some("bash".into()),
+            ..Args::default()
+        };
+        let api = api::ApiConfig {
+            model: "unused".into(),
+            key: String::new(),
+            max_tokens: 1,
+            reasoning_effort: "low".into(),
+            request_max_bytes: 1024,
+            response_max_bytes: 1024,
+        };
+        let mut without = telemetry::Interaction::new("run", false, false);
+        assert_eq!(
+            handle(
+                &args,
+                &config,
+                &api,
+                "set a value",
+                "run",
+                &crate::input::Spool::default(),
+                crate::first_run::RENDERED_MARKER,
+                &mut without,
+                Some(proposal.clone()),
+                None,
+                None,
+                None,
+            ),
+            outcome::NOT_EXECUTED
+        );
+        let (dir, nonce) = crate::shell_integration::open(
+            &config,
+            crate::shell_integration::ShellFamily::Bash,
+            "/tmp",
+            0,
+        )
+        .unwrap();
+        let session = crate::shell_integration::load(&config, &dir, &nonce).unwrap();
+        let mut interaction = telemetry::Interaction::new("run", false, false);
+        let run_id = interaction.run_id.clone();
+        let code = handle(
+            &args,
+            &config,
+            &api,
+            "set a value",
+            "run",
+            &crate::input::Spool::default(),
+            crate::first_run::RENDERED_MARKER,
+            &mut interaction,
+            Some(proposal),
+            None,
+            Some(&session),
+            None,
+        );
+        assert_eq!(code, 0);
+        let response = crate::shell_integration::validate_response(
+            &config,
+            &dir,
+            &nonce,
+            crate::shell_integration::ShellFamily::Bash,
+        )
+        .unwrap();
+        assert_eq!(response.run_id, run_id);
+        assert_eq!(response.action.name.as_deref(), Some("UHM_PARENT_TEST"));
     }
 }

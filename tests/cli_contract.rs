@@ -12,7 +12,7 @@ fn configured(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
     fs::write(config_dir.join("config.yaml"), yaml).unwrap();
     let data_dir = home.join("data/uhm");
     fs::create_dir_all(&data_dir).unwrap();
-    fs::write(data_dir.join("notice-revision"), "2").unwrap();
+    fs::write(data_dir.join("notice-revision"), "3").unwrap();
     Command::new(binary())
         .args(arguments)
         .env("HOME", home)
@@ -187,6 +187,52 @@ fn removed_short_authority_flag_is_a_usage_error() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown option"));
+}
+
+#[test]
+fn shell_init_is_static_and_needs_no_configuration_or_notice() {
+    let output = Command::new(binary())
+        .args(["shell-init", "bash"])
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("integration v1"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("__uhm_binary"));
+    assert!(output.stderr.is_empty());
+
+    let extra = Command::new(binary())
+        .args(["shell-init", "bash", "extra"])
+        .env_remove("HOME")
+        .output()
+        .unwrap();
+    assert_eq!(extra.status.code(), Some(2));
+    assert!(extra.stdout.is_empty());
+}
+
+#[test]
+fn one_entry_shell_history_is_off_and_cancellation_precedes_any_model_request() {
+    let temp = tempfile::tempdir().unwrap();
+    let disabled = configured(
+        temp.path(),
+        "",
+        &["--uhm-last-history", "private sentinel", "fix", "it"],
+    );
+    assert_eq!(disabled.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&disabled.stderr).contains("private sentinel"));
+
+    let enabled = configured(
+        temp.path(),
+        "shell_context:\n  last_history_entry: true\n",
+        &["--uhm-last-history", "private sentinel", "fix", "it"],
+    );
+    assert_eq!(enabled.status.code(), Some(11));
+    let stderr = String::from_utf8_lossy(&enabled.stderr);
+    assert!(stderr.contains("private sentinel"));
+    assert!(stderr.contains("terminal is required"));
+    assert!(!stderr.contains("API key"));
 }
 
 #[test]

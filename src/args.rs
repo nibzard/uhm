@@ -23,6 +23,12 @@ pub struct Args {
     pub verbose: bool,
     pub help: bool,
     pub version: bool,
+    pub control_dir: Option<String>,
+    pub control_nonce: Option<String>,
+    pub last_history_entry: Option<String>,
+    pub integration_shell: Option<String>,
+    pub parent_cwd: Option<String>,
+    pub parent_status: Option<i32>,
 }
 
 const VERBS: &[&str] = &[
@@ -35,6 +41,12 @@ const VERBS: &[&str] = &[
     "telemetry",
     "feedback",
     "repair",
+    "shell-init",
+    "shell-control-open",
+    "shell-validate",
+    "shell-ack",
+    "shell-clean",
+    "shell-history-enabled",
     "doctor",
     "help",
     "version",
@@ -89,6 +101,48 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
             "--input-format" => {
                 i += 1;
                 out.input_format = Some(argv.get(i).ok_or("--input-format needs a value")?.clone());
+            }
+            "--uhm-control-dir" => {
+                i += 1;
+                out.control_dir = Some(
+                    argv.get(i)
+                        .ok_or("--uhm-control-dir needs a value")?
+                        .clone(),
+                );
+            }
+            "--uhm-control-nonce" => {
+                i += 1;
+                out.control_nonce = Some(
+                    argv.get(i)
+                        .ok_or("--uhm-control-nonce needs a value")?
+                        .clone(),
+                );
+            }
+            "--uhm-last-history" => {
+                i += 1;
+                out.last_history_entry = Some(
+                    argv.get(i)
+                        .ok_or("--uhm-last-history needs a value")?
+                        .clone(),
+                );
+            }
+            "--uhm-shell" => {
+                i += 1;
+                out.integration_shell =
+                    Some(argv.get(i).ok_or("--uhm-shell needs a value")?.clone());
+            }
+            "--uhm-parent-cwd" => {
+                i += 1;
+                out.parent_cwd = Some(argv.get(i).ok_or("--uhm-parent-cwd needs a value")?.clone());
+            }
+            "--uhm-parent-status" => {
+                i += 1;
+                out.parent_status = Some(
+                    argv.get(i)
+                        .ok_or("--uhm-parent-status needs a value")?
+                        .parse()
+                        .map_err(|_| "--uhm-parent-status needs an integer")?,
+                );
             }
             _ if arg.starts_with("--model=") => {
                 out.model = Some(arg[8..].to_string());
@@ -210,6 +264,28 @@ mod tests {
         let a = pv(&["uhm", "config", "show", "--raw"]).unwrap();
         assert_eq!(a.subcommand.as_deref(), Some("config"));
         assert_eq!(a.prompt, "show --raw");
+    }
+
+    #[test]
+    fn private_integration_values_preserve_spaces_and_precede_intent() {
+        let args = parse_from(vec![
+            "uhm".into(),
+            "--uhm-control-dir".into(),
+            "/tmp/a directory".into(),
+            "--uhm-control-nonce".into(),
+            "ab".repeat(32),
+            "--uhm-last-history".into(),
+            "printf 'secret value'".into(),
+            "do".into(),
+            "work".into(),
+        ])
+        .unwrap();
+        assert_eq!(args.control_dir.as_deref(), Some("/tmp/a directory"));
+        assert_eq!(
+            args.last_history_entry.as_deref(),
+            Some("printf 'secret value'")
+        );
+        assert_eq!(args.prompt, "do work");
     }
 
     #[test]

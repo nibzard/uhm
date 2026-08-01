@@ -9,6 +9,9 @@
 # shell: auto                    # auto | bash | zsh | fish | pwsh
 # context_mode: standard         # minimal | standard | full
 # context_timeout_ms: 150        # one shared context-probe deadline
+
+# shell_context:
+#   last_history_entry: false    # sensitive opt-in; previews one entry before sending
 # stdin_max_bytes: 16777216      # exact stdin spool limit
 # request_max_bytes: 262144      # complete untrusted model-input JSON
 # response_max_bytes: 2097152    # streamed or buffered API response

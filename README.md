@@ -102,7 +102,7 @@ OpenAI receives your intent, explicitly piped UTF-8 input unless `--local-input`
 
 Use `uhm context show` to inspect the exact shape. Use `--context minimal` or `context_mode: minimal` to send only the intent and explicitly piped input. OpenAI requests use the Responses API with `store: false`, which disables Responses application-state storage. OpenAI's default abuse-monitoring logs may still retain API content for up to 30 days unless your organization has approved data-retention controls. See [OpenAI's data controls](https://developers.openai.com/api/docs/guides/your-data#data-retention-controls-for-abuse-monitoring).
 
-Content-free telemetry is on by default. A summary contains only fixed categories such as platform, shell, route, decision, effect, proposal outcome, process outcome, feedback, coarse latency, and cache state. It has no prompt, command, output, path, error text, exact timestamp, or stable ID. Cloudflare processes the HTTPS connection; the Worker does not persist connection metadata in application telemetry or logs. See [PRIVACY.md](PRIVACY.md) for the exact schema and retention.
+Content-free telemetry is on by default. A summary contains only fixed categories such as platform, shell, route, decision, effect, proposal outcome, process outcome, parent-action acknowledgement, feedback, coarse latency, and cache state. It has no prompt, command, output, path, error text, exact timestamp, or stable ID. Cloudflare processes the HTTPS connection; the Worker does not persist connection metadata in application telemetry or logs. See [PRIVACY.md](PRIVACY.md) for the exact schema and retention.
 
 ```sh
 uhm telemetry preview       # exact candidate payload for this invocation
@@ -141,7 +141,17 @@ Artifact programs receive collision-resistant sibling staging paths. After a zer
 
 ## Shell behavior and limits
 
-A child process cannot change the shell that launched it. For `cd`, `export`, activation, aliases, and similar requests, `uhm` returns the exact action without pretending it was applied. Copy or evaluate it in your current shell. Automatic parent-shell integration is deferred.
+A child process cannot change the shell that launched it. Without integration, `uhm` returns the exact typed `cd`, environment, or source action without pretending it was applied. Bash, Zsh, and Fish users can install an optional invocation-only wrapper; see [parent-shell integration](docs/shell-integration.md).
+
+```sh
+# Bash (~/.bashrc) or Zsh (~/.zshrc)
+eval "$(uhm shell-init bash)"   # use zsh for Zsh
+
+# Fish (~/.config/fish/config.fish)
+uhm shell-init fish | source
+```
+
+The wrapper uses a private nonce-bound control directory, never application stdout/stderr, and applies only one locally rendered typed action. It does not monitor commands, install prompt hooks, or make sourced code safe.
 
 Warnings for deletion, broad writes, privilege elevation, remote mutation, and process control are convenience signals. They are not a sandbox or a safety guarantee. Model output and the detector can both be wrong. Exit code zero proves only that the process exited zero, not that your intent was satisfied.
 
@@ -152,6 +162,7 @@ The current development version has no universal undo, transaction layer, backgr
 ```text
 uhm [options] -- <intent>
 uhm run|ask|explain [options] -- <intent>
+uhm shell-init bash|zsh|fish
 uhm context show [minimal|standard|full]
 uhm telemetry [status|preview|on|off]
 uhm feedback good|bad [run-id]
@@ -177,6 +188,9 @@ context_mode: standard
 history:
   enabled: true
   detail: metadata
+
+shell_context:
+  last_history_entry: false
 
 telemetry:
   enabled: true

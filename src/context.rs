@@ -2,12 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const POLICY_VERSION: u32 = 3;
-pub const DISCLOSURE_VERSION: u32 = 2;
+pub const POLICY_VERSION: u32 = 4;
+pub const DISCLOSURE_VERSION: u32 = 3;
 pub const TOOL_CATALOG: &[&str] = &[
     "sh", "bash", "zsh", "fish", "git", "rg", "fd", "jq", "yq", "fzf", "gh", "python3", "node",
     "ruby", "go", "cargo", "make", "curl", "wget", "tar", "zip", "docker", "podman", "kubectl",
@@ -51,7 +52,8 @@ pub fn disclosure_payload() -> Value {
         "version": DISCLOSURE_VERSION,
         "default_mode":"standard",
         "leaves_device":true,
-        "groups":["Python 3 runtime path/version/isolated-mode support","OS and architecture","target shell","common tool presence","normalized working directory","bounded Git state","bounded directory entry names"],
+        "groups":["Python 3 runtime path/version/isolated-mode support","OS and architecture","target shell","common tool presence","normalized working directory","bounded Git state","bounded directory entry names","invocation-only parent cwd and previous exit status when shell integration is used"],
+        "shell_history":"off by default; when enabled, exactly one entry is previewed and requires confirmation",
         "local_input":"--local-input keeps piped content out of the model request",
         "inspect":"uhm context show", "minimize":"--context minimal", "config":"context_mode: minimal"
     })
@@ -81,6 +83,7 @@ pub fn gather(mode: Mode, shell: &str, timeout_ms: u64) -> Snapshot {
         "git":git,
         "entries":entries,
         "tools":tools,
+        "session":{"ssh":std::env::var_os("SSH_CONNECTION").is_some()||std::env::var_os("SSH_TTY").is_some(),"tmux":std::env::var_os("TMUX").is_some(),"tty":std::io::stderr().is_terminal()},
     });
     if mode == Mode::Full {
         machine["full"] = json!({
@@ -96,6 +99,30 @@ pub fn gather(mode: Mode, shell: &str, timeout_ms: u64) -> Snapshot {
         mode: mode.as_str().into(),
         program_runtime,
         machine,
+    }
+}
+
+pub fn add_shell_invocation(
+    snapshot: &mut Snapshot,
+    session: &crate::shell_integration::Session,
+    last_history: Option<&str>,
+) {
+    if snapshot.mode == "minimal" {
+        if let Some(entry) = last_history {
+            snapshot.machine["shell_invocation"] = json!({"last_history_entry":entry});
+        }
+        return;
+    }
+    snapshot.machine["shell_invocation"] = json!({
+        "protocol_version":crate::shell_integration::PROTOCOL_VERSION,
+        "shell":session.shell().as_str(),
+        "parent_working_directory":normalize_cwd(Path::new(session.parent_cwd())),
+        "previous_status":session.previous_status(),
+        "last_history_entry":last_history,
+    });
+    if snapshot.mode == "full" {
+        snapshot.machine["shell_invocation"]["raw_parent_working_directory"] =
+            json!(session.parent_cwd());
     }
 }
 
@@ -255,5 +282,33 @@ mod tests {
     #[test]
     fn disclosure_is_versioned() {
         assert_eq!(disclosure_payload()["version"], DISCLOSURE_VERSION);
+    }
+    #[test]
+    fn integration_adds_only_the_bounded_invocation_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let config = crate::config::Config::test(crate::dirs::Paths {
+            config_file: root.path().join("config"),
+            data_dir: root.path().join("data"),
+            cache_dir: root.path().join("cache"),
+        });
+        let (dir, nonce) = crate::shell_integration::open(
+            &config,
+            crate::shell_integration::ShellFamily::Bash,
+            "/tmp",
+            23,
+        )
+        .unwrap();
+        let session = crate::shell_integration::load(&config, &dir, &nonce).unwrap();
+        let mut snapshot = gather(Mode::Standard, "bash", 50);
+        add_shell_invocation(&mut snapshot, &session, Some("one exact entry"));
+        let value = &snapshot.machine["shell_invocation"];
+        assert_eq!(value["protocol_version"], 1);
+        assert_eq!(value["shell"], "bash");
+        assert_eq!(value["previous_status"], 23);
+        assert_eq!(value["last_history_entry"], "one exact entry");
+        assert_eq!(value.as_object().unwrap().len(), 5);
+        let mut minimal = gather(Mode::Minimal, "bash", 50);
+        add_shell_invocation(&mut minimal, &session, None);
+        assert_eq!(minimal.machine, json!({}));
     }
 }

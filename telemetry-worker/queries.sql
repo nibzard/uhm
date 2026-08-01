@@ -1,7 +1,8 @@
 -- blob positions are fixed by src/index.js:
 -- blob1 release, blob2 os, blob3 arch, blob4 shell, blob5 mode,
 -- blob6 route, blob7 decision, blob8 effect, blob9 proposal outcome,
--- blob10 execution outcome, blob11 feedback, blob12 latency, blob13 cache.
+-- blob10 execution outcome, blob11 feedback, blob12 latency, blob13 cache,
+-- blob14 parent action acknowledgement.
 
 -- Interactions by route; feedback_summary is deliberately excluded.
 SELECT blob6 AS route, SUM(_sample_interval) AS interactions
@@ -23,3 +24,9 @@ SELECT blob11 AS feedback, SUM(_sample_interval) AS responses
 FROM uhm_cli_v1
 WHERE index1 = 'feedback_summary'
 GROUP BY feedback;
+
+-- Parent action state is unknown until the wrapper acknowledges it.
+SELECT blob14 AS parent_action, SUM(_sample_interval) AS events
+FROM uhm_cli_v1
+WHERE index1 = 'interaction_summary'
+GROUP BY parent_action;

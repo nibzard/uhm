@@ -3,8 +3,8 @@
 use crate::{config::Config, dirs, render::ansi};
 use std::io::Write;
 
-pub const NOTICE_REVISION: u8 = 2;
-pub const RENDERED_MARKER: &str = "first-use-notice-v2-rendered";
+pub const NOTICE_REVISION: u8 = 3;
+pub const RENDERED_MARKER: &str = "first-use-notice-v3-rendered";
 
 pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, String> {
     let marker = config.paths.data_dir.join("notice-revision");
@@ -38,6 +38,8 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
         "  Python 3 path/version support may be sent for program routing. Use --local-input to keep piped content local to the generated program."
     )
     .map_err(|e| format!("render first-use notice: {}", e))?;
+    writeln!(stderr,"  Optional shell integration adds only invocation-time parent cwd and previous status. One-entry shell history is off by default and always previewed before sending.")
+        .map_err(|e| format!("render first-use notice: {}",e))?;
     writeln!(
         stderr,
         "  Private {} history is {}: at most {} events / {} days. Inspect: uhm history status. Clear: uhm history clear --all.",
@@ -47,7 +49,7 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
     .map_err(|e| format!("render first-use notice: {}", e))?;
     writeln!(
         stderr,
-        "  Content-free telemetry is {} (coarse platform, route, decision, effect, outcome, latency, and cache enums). Cloudflare processes the connection. Opt out: uhm telemetry off.",
+        "  Content-free telemetry is {} (coarse platform, route, decision, effect, process/parent outcome, latency, and cache enums). Cloudflare processes the connection. Opt out: uhm telemetry off.",
         telemetry_state
     )
     .map_err(|e| format!("render first-use notice: {}", e))?;

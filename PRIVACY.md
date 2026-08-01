@@ -31,7 +31,7 @@ An interaction summary has exactly these fields:
 
 ```json
 {
-  "v": 1,
+  "v": 2,
   "event": "interaction_summary",
   "release": "0.1",
   "os": "linux",
@@ -46,12 +46,13 @@ An interaction summary has exactly these fields:
   "user_feedback": "unknown",
   "latency": "1s_2s",
   "cache": "miss",
+  "parent_action": "not_applicable",
   "interactive": true,
-  "notice_revision": 2
+  "notice_revision": 3
 }
 ```
 
-Every string after `release` is selected from a short server-maintained enum. `release` is major/minor only. `interactive` is a boolean. `uhm telemetry preview` prints the candidate schema without sending it.
+Every string after `release` is selected from a short server-maintained enum. `parent_action` is only `not_applicable`, `unknown`, `applied`, or `failed`; an integrated action remains `unknown` until the wrapper acknowledges it. `release` is major/minor only. `interactive` is a boolean. `uhm telemetry preview` prints the candidate schema without sending it.
 
 The Worker rejects unknown keys, unknown enum values, unsupported versions, non-JSON requests, and bodies of 2 KiB or more. It writes accepted categories to Workers Analytics Engine. Raw Analytics Engine data is retained for three months. No raw event is copied to a durable identity store.
 

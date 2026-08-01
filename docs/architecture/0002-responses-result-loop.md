@@ -4,7 +4,7 @@ Status: accepted for Plan 2
 
 ## Decision
 
-uhm uses only OpenAI `POST /v1/responses`, with `store: false`, required tool choice, disabled parallel tool calls, and four strict local proposal tools: answer, child-shell action, parent-shell action, and clarification. Developer instructions are static; intent, context, stdin metadata, feedback, and diagnostics stay in one untrusted JSON input. The client rejects incomplete responses, prose messages/refusals, unknown output items, non-strict resolved tools, and any result other than exactly one completed function call.
+uhm uses only OpenAI `POST /v1/responses`, with `store: false`, required tool choice, disabled parallel tool calls, and five strict local proposal tools: answer, child-shell action, typed parent-shell action, bounded Python program, and clarification. Parent-shell proposals contain operands rather than generated shell source. Developer instructions are static; intent, context, stdin metadata, feedback, and diagnostics stay in one untrusted JSON input. The client rejects incomplete responses, prose messages/refusals, unknown output items, non-strict resolved tools, and any result other than exactly one completed function call.
 
 The job state is deliberately finite: one initial proposal and one optional user-triggered replacement, with no more than two executions. Clarification, revision, repair, and replacement editing compete for that one slot. Follow-ups are reconstructed stateless requests, not hosted conversations. Failures are never repaired automatically.
 
@@ -22,4 +22,4 @@ Execution history is metadata-only JSONL with a dedicated lock, private permissi
 
 ## Consequences
 
-The client is OpenAI-specific and rejects permissive output. Parent-shell effects are truthful but not applied without optional future shell integration. Native TTY failures may lack captured diagnostics. The default model is `gpt-5.6-terra`, selected by the recorded Plan 2 release bakeoff in `docs/model-selection.md`.
+The client is OpenAI-specific and rejects permissive output. Parent-shell effects are truthful and are applied only by the separately installed optional integration. Native TTY failures may lack captured diagnostics. The default model is `gpt-5.6-terra`, selected by the recorded Plan 2 release bakeoff in `docs/model-selection.md`.

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 pub const ENDPOINT: &str = "https://uhm-telemetry.nikola-balic.workers.dev/v1/events";
-pub const SCHEMA_VERSION: u8 = 1;
+pub const SCHEMA_VERSION: u8 = 2;
 const MAX_EVENT_BYTES: usize = 2048;
 const MAX_QUEUE: usize = 20;
 const MAX_AGE: Duration = Duration::from_secs(7 * 86_400);
@@ -63,6 +63,7 @@ const EXECUTIONS: &[&str] = &[
 const FEEDBACK: &[&str] = &["unknown", "good", "bad"];
 const LATENCIES: &[&str] = &["lt_1s", "1s_2s", "2s_5s", "gte_5s"];
 const CACHES: &[&str] = &["unknown", "miss", "hit", "disabled"];
+const PARENT_ACTIONS: &[&str] = &["not_applicable", "unknown", "applied", "failed"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +83,7 @@ pub struct Event {
     pub user_feedback: String,
     pub latency: String,
     pub cache: String,
+    pub parent_action: String,
     pub interactive: bool,
     pub notice_revision: u8,
 }
@@ -116,6 +118,7 @@ impl Event {
             ("user_feedback", self.user_feedback.as_str(), FEEDBACK),
             ("latency", self.latency.as_str(), LATENCIES),
             ("cache", self.cache.as_str(), CACHES),
+            ("parent_action", self.parent_action.as_str(), PARENT_ACTIONS),
         ] {
             if !allowed.contains(&value) {
                 return Err(format!("unknown telemetry {} enum", label));
@@ -158,6 +161,7 @@ impl Interaction {
                 user_feedback: "unknown".into(),
                 latency: "lt_1s".into(),
                 cache: "unknown".into(),
+                parent_action: "not_applicable".into(),
                 interactive,
                 notice_revision: crate::first_run::NOTICE_REVISION,
             }),
@@ -205,6 +209,11 @@ impl Interaction {
     }
     pub fn suppress(&mut self) {
         self.suppress = true;
+    }
+    pub fn parent_pending(&mut self) {
+        if let Some(event) = &mut self.event {
+            event.parent_action = "unknown".into();
+        }
     }
     pub fn event(mut self) -> Option<Event> {
         if let Some(event) = &mut self.event {
@@ -275,6 +284,13 @@ pub fn complete(config: &Config, resolved_policy: &Policy, interaction: Interact
         return;
     };
     if event.validate().is_err() {
+        return;
+    }
+    if event.parent_action == "unknown" {
+        if !policy(config, false).enabled {
+            return;
+        }
+        let _ = enqueue(config, &run_id, &event);
         return;
     }
     let Ok(send_lock) = open_lock(&telemetry_root(config), "send.lock") else {
@@ -383,9 +399,54 @@ fn feedback_event(receipt: &history::CoarseReceipt) -> Event {
         user_feedback: enum_or(&receipt.user_feedback, FEEDBACK),
         latency: receipt_latency(&receipt.latency_bucket).into(),
         cache: enum_or(&receipt.cache_state, CACHES),
+        parent_action: "not_applicable".into(),
         interactive: false,
         notice_revision: crate::first_run::NOTICE_REVISION,
     }
+}
+
+pub fn ack_parent(config: &Config, resolved_policy: &Policy, run_id: &str, status: &str) {
+    if !resolved_policy.enabled || !matches!(status, "applied" | "failed") {
+        return;
+    }
+    if !update_parent_candidate(config, run_id, status) {
+        return;
+    }
+    flush_older(config, Duration::from_millis(300));
+}
+
+fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool {
+    let root = telemetry_root(config);
+    let Ok(lock) = open_lock(&root, "queue.lock") else {
+        return false;
+    };
+    if lock.lock_exclusive().is_err() {
+        return false;
+    }
+    if !policy(config, false).enabled {
+        let _ = fs2::FileExt::unlock(&lock);
+        return false;
+    }
+    let path = root
+        .join("queue")
+        .join(format!("{}.json", safe_name(run_id)));
+    let updated = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Event>(&bytes).ok())
+        .and_then(|mut event| {
+            if event.parent_action != "unknown" {
+                return None;
+            }
+            event.parent_action = status.into();
+            event.validate().ok()?;
+            Some(event)
+        });
+    let changed = updated.is_some();
+    if let Some(event) = updated {
+        let _ = write_private_atomic(&path, &serde_json::to_vec(&event).unwrap_or_default());
+    }
+    let _ = fs2::FileExt::unlock(&lock);
+    changed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -759,6 +820,26 @@ mod tests {
             serde_json::from_slice::<Event>(&std::fs::read(queued).unwrap()).unwrap(),
             event
         );
+    }
+
+    #[test]
+    fn parent_action_stays_unknown_until_matching_acknowledgement() {
+        let root = tempfile::tempdir().unwrap();
+        let config = config(root.path());
+        let mut event = preview("auto", false);
+        event.parent_action = "unknown".into();
+        enqueue(&config, "parent-run", &event).unwrap();
+        assert!(!update_parent_candidate(
+            &config,
+            "different-run",
+            "applied"
+        ));
+        assert!(update_parent_candidate(&config, "parent-run", "failed"));
+        let updated: Event =
+            serde_json::from_slice(&std::fs::read(queue_path(&config, "parent-run")).unwrap())
+                .unwrap();
+        assert_eq!(updated.parent_action, "failed");
+        assert!(!update_parent_candidate(&config, "parent-run", "applied"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ keywords = ["cli", "terminal", "openai", "shell", "productivity"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
   "src/**",
+  "assets/shell/**",
   "tests/**",
   "Cargo.toml",
   "Cargo.lock",
@@ -24,6 +25,7 @@ include = [
   "config.example.yaml",
   "docs/behavior-contract.md",
   "docs/local-history.md",
+  "docs/shell-integration.md",
 ]
 
 [[bin]]

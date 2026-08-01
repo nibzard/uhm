@@ -4,7 +4,7 @@ import { eventToPoint, handle, validateEvent } from "../src/index.js";
 
 function event(overrides = {}) {
   return {
-    v: 1,
+    v: 2,
     event: "interaction_summary",
     release: "0.1",
     os: "linux",
@@ -19,8 +19,9 @@ function event(overrides = {}) {
     user_feedback: "unknown",
     latency: "1s_2s",
     cache: "miss",
+    parent_action: "not_applicable",
     interactive: true,
-    notice_revision: 2,
+    notice_revision: 3,
     ...overrides,
   };
 }
@@ -45,7 +46,7 @@ function request(value, headers = {}) {
   });
 }
 
-test("accepts the exact v1 schema and preserves WAE ordering", async () => {
+test("accepts the exact v2 schema and preserves WAE ordering", async () => {
   const { env, points } = environment();
   const response = await handle(request(event()), env);
   assert.equal(response.status, 202);
@@ -53,16 +54,23 @@ test("accepts the exact v1 schema and preserves WAE ordering", async () => {
   assert.deepEqual(points[0], eventToPoint(event()));
   assert.deepEqual(points[0].indexes, ["interaction_summary"]);
   assert.equal(points[0].blobs[5], "shell");
-  assert.deepEqual(points[0].doubles, [1, 2, 1]);
+  assert.deepEqual(points[0].doubles, [1, 3, 2]);
   assert.equal(validateEvent(event({ route: "program", execution_outcome: "output_overflow" })), true);
+});
+
+test("continues accepting the released exact v1 schema", () => {
+  const legacy = event({ v: 1, notice_revision: 2 });
+  delete legacy.parent_action;
+  assert.equal(validateEvent(legacy), true);
+  assert.equal(eventToPoint(legacy).blobs[13], "not_applicable");
 });
 
 test("rejects unknown keys, values, versions, and arbitrary strings", async () => {
   for (const invalid of [
     event({ prompt: "private" }),
     event({ route: "/home/person/repository" }),
-    event({ v: 2 }),
-    event({ notice_revision: 3 }),
+    event({ v: 3 }),
+    event({ notice_revision: 4 }),
     event({ interactive: "yes" }),
   ]) {
     assert.equal(validateEvent(invalid), false);

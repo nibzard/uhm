@@ -1,6 +1,6 @@
 # uhm telemetry gateway
 
-This independently deployable Cloudflare Worker accepts only the versioned, enum-only payload produced by the CLI. It rejects bodies at or above 2 KiB, unknown fields or enum variants, unsupported versions, non-JSON requests, and requests over the coarse constant-key rate limit. It writes one Workers Analytics Engine point and returns 202.
+This independently deployable Cloudflare Worker accepts only the exact versioned, enum-only payloads produced by the released v1 client and the current v2 client. It rejects bodies at or above 2 KiB, unknown fields or enum variants, unsupported versions, non-JSON requests, and requests over the coarse constant-key rate limit. It writes one Workers Analytics Engine point and returns 202.
 
 The v0.1 deployment is `https://uhm-telemetry.nikola-balic.workers.dev`. The preferred `telemetry.uhm.dev` hostname is deferred because that domain is not currently owned or delegated; the CLI and privacy documentation name the actual Cloudflare hostname instead.
 

@@ -23,6 +23,7 @@ mod runtime;
 mod safety;
 mod secret;
 mod shell;
+mod shell_integration;
 mod sse;
 mod telemetry;
 mod tty;
@@ -52,11 +53,94 @@ fn run(argv: Vec<String>) -> i32 {
         println!("uhm {}", VERSION);
         return 0;
     }
+    if args.subcommand.as_deref() == Some("shell-init") {
+        let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+        return match words.as_slice() {
+            [shell] => match shell_integration::ShellFamily::parse(shell) {
+                Ok(shell) => {
+                    print!("{}", shell_integration::template(shell));
+                    0
+                }
+                Err(e) => app_error(
+                    &args,
+                    outcome::USAGE,
+                    "usage_error",
+                    &format!("usage: uhm shell-init bash|zsh|fish ({})", e),
+                ),
+            },
+            _ => app_error(
+                &args,
+                outcome::USAGE,
+                "usage_error",
+                "usage: uhm shell-init bash|zsh|fish",
+            ),
+        };
+    }
     let config = match config::load(args.model.as_deref()) {
         Ok(v) => v,
         Err(e) => return app_error(&args, outcome::CONFIG, "configuration_error", &e),
     };
     let telemetry_policy = telemetry::policy(&config, args.no_telemetry);
+    if let Some(code) = integration_management(&args, &config, &telemetry_policy) {
+        return code;
+    }
+    let integration = match (&args.control_dir, &args.control_nonce) {
+        (None, None) => None,
+        (Some(dir), Some(nonce)) => {
+            match shell_integration::load(&config, std::path::Path::new(dir), nonce) {
+                Ok(value) => Some(value),
+                Err(e) => return app_error(&args, outcome::CONFIG, "integration_error", &e),
+            }
+        }
+        _ => {
+            return app_error(
+                &args,
+                outcome::USAGE,
+                "usage_error",
+                "the reserved integration directory and nonce must be supplied together",
+            )
+        }
+    };
+    let approved_history = if let Some(entry) = args.last_history_entry.as_deref() {
+        if !config.shell_context.last_history_entry {
+            return app_error(
+                &args,
+                outcome::USAGE,
+                "history_context_disabled",
+                "shell_context.last_history_entry is off",
+            );
+        }
+        if entry.is_empty() || entry.len() > 16 * 1024 || entry.contains('\0') {
+            return app_error(
+                &args,
+                outcome::USAGE,
+                "history_context_invalid",
+                "the one-entry shell history sample is empty, oversized, or contains NUL",
+            );
+        }
+        eprintln!("uhm: the following one shell-history entry will be sent to OpenAI if you continue:\n{}",ansi::sanitize_untrusted(entry));
+        if !std::io::stderr().is_terminal() {
+            return app_error(
+                &args,
+                outcome::NOT_EXECUTED,
+                "history_context_cancelled",
+                "a terminal is required to approve sending shell history",
+            );
+        }
+        eprint!("Continue? [y/N] ");
+        let _ = std::io::stderr().flush();
+        if !tty::read_line_cooked().is_some_and(|v| matches!(v.as_str(), "y" | "yes")) {
+            return app_error(
+                &args,
+                outcome::NOT_EXECUTED,
+                "history_context_cancelled",
+                "shell history was not sent",
+            );
+        }
+        Some(entry)
+    } else {
+        None
+    };
     let disclosure_marker = match first_run::ensure(&config, telemetry_policy.enabled) {
         Ok(marker) => marker,
         Err(e) => return app_error(&args, outcome::CONFIG, "notice_error", &e),
@@ -179,10 +263,159 @@ fn run(argv: Vec<String>) -> i32 {
         &mut interaction,
         preset_action,
         related_run_id.as_deref(),
+        integration.as_ref(),
+        approved_history,
     );
     let _ = std::io::stdout().flush();
     telemetry::complete(&config, &telemetry_policy, interaction);
     code
+}
+
+fn integration_management(
+    args: &args::Args,
+    config: &config::Config,
+    policy: &telemetry::Policy,
+) -> Option<i32> {
+    let verb = args.subcommand.as_deref()?;
+    let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+    let fail = |name: &str, message: &str| app_error(args, outcome::CONFIG, name, message);
+    match verb {
+        "shell-control-open" => Some(match words.as_slice() {
+            [] => match (
+                args.integration_shell
+                    .as_deref()
+                    .map(shell_integration::ShellFamily::parse),
+                args.parent_cwd.as_deref(),
+                args.parent_status,
+            ) {
+                (Some(Ok(shell)), Some(cwd), Some(status)) => {
+                    match shell_integration::open(config, shell, cwd, status) {
+                        Ok((dir, nonce)) => {
+                            println!("{}\t{}", dir.display(), nonce);
+                            0
+                        }
+                        Err(e) => fail("integration_error", &e),
+                    }
+                }
+                _ => app_error(
+                    args,
+                    outcome::USAGE,
+                    "usage_error",
+                    "invalid internal shell-control open invocation",
+                ),
+            },
+            _ => app_error(
+                args,
+                outcome::USAGE,
+                "usage_error",
+                "invalid internal shell-control open invocation",
+            ),
+        }),
+        "shell-validate" => Some(match words.as_slice() {
+            [] => match (
+                args.integration_shell.as_deref(),
+                args.control_dir.as_deref(),
+                args.control_nonce.as_deref(),
+            ) {
+                (Some(shell), Some(dir), Some(nonce)) => {
+                    match shell_integration::ShellFamily::parse(shell).and_then(|shell| {
+                        shell_integration::validate_response(
+                            config,
+                            std::path::Path::new(dir),
+                            nonce,
+                            shell,
+                        )
+                        .and_then(|response| shell_integration::render(&response.action, shell))
+                    }) {
+                        Ok(code) => {
+                            println!("{}", code);
+                            0
+                        }
+                        Err(e) => fail("integration_validation_error", &e),
+                    }
+                }
+                _ => app_error(
+                    args,
+                    outcome::USAGE,
+                    "usage_error",
+                    "invalid internal shell-validation invocation",
+                ),
+            },
+            _ => app_error(
+                args,
+                outcome::USAGE,
+                "usage_error",
+                "invalid internal shell-validation invocation",
+            ),
+        }),
+        "shell-clean" => Some(
+            match (
+                words.as_slice(),
+                args.control_dir.as_deref(),
+                args.control_nonce.as_deref(),
+            ) {
+                ([], Some(dir), Some(nonce)) => {
+                    match shell_integration::clean(config, std::path::Path::new(dir), nonce) {
+                        Ok(()) => 0,
+                        Err(e) => fail("integration_cleanup_error", &e),
+                    }
+                }
+                _ => app_error(
+                    args,
+                    outcome::USAGE,
+                    "usage_error",
+                    "invalid internal shell-clean invocation",
+                ),
+            },
+        ),
+        "shell-history-enabled" => Some(if config.shell_context.last_history_entry {
+            0
+        } else {
+            1
+        }),
+        "shell-ack" => Some(match words.as_slice() {
+            [status] if matches!(*status, "applied" | "failed") => {
+                match (args.control_dir.as_deref(), args.control_nonce.as_deref()) {
+                    (Some(dir), Some(nonce)) => {
+                        match shell_integration::load(config, std::path::Path::new(dir), nonce)
+                            .and_then(|session| {
+                                shell_integration::validate_response(
+                                    config,
+                                    std::path::Path::new(dir),
+                                    nonce,
+                                    session.shell(),
+                                )
+                            }) {
+                            Ok(response) => {
+                                telemetry::ack_parent(config, policy, &response.run_id, status);
+                                let _ = history::record_parent_ack(
+                                    &config.paths.data_dir,
+                                    &config.history,
+                                    &response.run_id,
+                                    status,
+                                );
+                                0
+                            }
+                            Err(e) => fail("integration_ack_error", &e),
+                        }
+                    }
+                    _ => app_error(
+                        args,
+                        outcome::USAGE,
+                        "usage_error",
+                        "invalid internal shell acknowledgement",
+                    ),
+                }
+            }
+            _ => app_error(
+                args,
+                outcome::USAGE,
+                "usage_error",
+                "invalid internal shell acknowledgement",
+            ),
+        }),
+        _ => None,
+    }
 }
 
 fn management(
@@ -629,5 +862,5 @@ fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     code
 }
 fn print_help() {
-    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] -- <intent>\n  uhm run|ask|explain [options] -- <intent>\n  uhm repair <run-id|last> [-- <feedback>]\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [network]\n\nExecution:\n  ordinary actions run and return their result\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     proceed after warnings without confirmation\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. Put -- before intent that starts with '-'.")
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] -- <intent>\n  uhm run|ask|explain [options] -- <intent>\n  uhm repair <run-id|last> [-- <feedback>]\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [network]\n\nExecution:\n  ordinary actions run and return their result\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     proceed after warnings without confirmation\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. Put -- before intent that starts with '-'.")
 }

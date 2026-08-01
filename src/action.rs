@@ -100,6 +100,73 @@ pub struct ProposalMetadata {
     pub requirements: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParentActionKind {
+    ChangeDirectory,
+    SetEnvironment,
+    UnsetEnvironment,
+    SourceFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParentAction {
+    pub kind: ParentActionKind,
+    pub path: Option<String>,
+    pub name: Option<String>,
+    pub value: Option<String>,
+}
+
+impl ParentAction {
+    pub fn validate(&self) -> Result<(), String> {
+        fn bounded(value: &str, label: &str, max: usize) -> Result<(), String> {
+            if value.is_empty() || value.len() > max || value.contains('\0') {
+                return Err(format!(
+                    "parent-shell {} is empty, oversized, or contains NUL",
+                    label
+                ));
+            }
+            Ok(())
+        }
+        let legal = match self.kind {
+            ParentActionKind::ChangeDirectory | ParentActionKind::SourceFile => {
+                self.path.is_some() && self.name.is_none() && self.value.is_none()
+            }
+            ParentActionKind::SetEnvironment => {
+                self.path.is_none() && self.name.is_some() && self.value.is_some()
+            }
+            ParentActionKind::UnsetEnvironment => {
+                self.path.is_none() && self.name.is_some() && self.value.is_none()
+            }
+        };
+        if !legal {
+            return Err("parent-shell action fields do not match its kind".into());
+        }
+        if let Some(path) = &self.path {
+            bounded(path, "path", 4096)?;
+        }
+        if let Some(name) = &self.name {
+            if name.len() > 255
+                || name.is_empty()
+                || !name.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_'
+                        || byte.is_ascii_alphabetic()
+                        || (index > 0 && byte.is_ascii_digit())
+                })
+            {
+                return Err("parent-shell environment name is invalid".into());
+            }
+        }
+        if let Some(value) = &self.value {
+            if value.len() > 16 * 1024 || value.contains('\0') {
+                return Err("parent-shell environment value is oversized or contains NUL".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProposedAction {
@@ -112,7 +179,7 @@ pub enum ProposedAction {
         stdin_mode: StdinMode,
     },
     ParentShell {
-        command: String,
+        action: ParentAction,
         metadata: ProposalMetadata,
     },
     Program {
@@ -188,12 +255,15 @@ impl ProposedAction {
                 command,
                 metadata: value,
                 ..
-            }
-            | Self::ParentShell {
-                command,
-                metadata: value,
             } => {
                 text(command, "command", MAX_COMMAND)?;
+                metadata(value)?;
+            }
+            Self::ParentShell {
+                action,
+                metadata: value,
+            } => {
+                action.validate()?;
                 metadata(value)?;
             }
             Self::Program { program } => {

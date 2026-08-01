@@ -25,6 +25,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install supported shells and terminal fixtures (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh fish tmux openssh-client
+
+      - name: Install supported shells and terminal fixtures (macOS)
+        if: runner.os == 'macOS'
+        run: brew install fish tmux
+
       - name: Check formatting
         run: cargo fmt -- --check
 

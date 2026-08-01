@@ -33,7 +33,9 @@ If a child executes, its status wins unchanged; Unix signals use the conventiona
 
 ## Current-shell actions
 
-Commands such as `cd`, `export`, `unset`, `source`, activation, and `alias` cannot alter the shell that launched `uhm`. Typed parent-shell proposals and common locally recognized forms return status 11 with the exact not-applied command. Until shell integration is implemented, uhm never runs these in a child and pretends the state persisted. Obfuscated shell syntax remains outside the advisory detector's completeness claim.
+Commands such as `cd`, `export`, `unset`, and `source` cannot alter the shell that launched the binary. Without the optional wrapper, typed parent-shell proposals return status 11 with `requires_parent_shell=true` in JSON and never claim application. The Bash/Zsh/Fish wrapper may apply one accepted typed action through the private protocol. A successful child only means a response is pending; acknowledgement distinguishes applied, failed, and unknown parent outcome. Free-form, compound, alias/function, `exit`, `exec`, and trap actions are never integration payloads.
+
+Wrapper status precedence is: ordinary jobs preserve the child status; failed children never apply a parent action; validation or application failure returns 15; successful application returns zero. Control data never shares application stdout or stderr.
 
 ## First use and outbound work
 

@@ -1,8 +1,8 @@
 //! Official OpenAI Responses API client with five strict local proposal tools.
 
 use crate::action::{
-    Effect, ProgramInput, ProgramProposal, ProgramResultMode, ProgramRuntime, ProposalMetadata,
-    ProposedAction, StdinMode,
+    Effect, ParentAction, ParentActionKind, ProgramInput, ProgramProposal, ProgramResultMode,
+    ProgramRuntime, ProposalMetadata, ProposedAction, StdinMode,
 };
 use crate::{http, prompt, sse};
 use serde::Deserialize;
@@ -182,7 +182,10 @@ struct ShellArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ParentArgs {
-    command: String,
+    kind: ParentActionKind,
+    path: Option<String>,
+    name: Option<String>,
+    value: Option<String>,
     summary: String,
     assumptions: Vec<String>,
     effects: Vec<Effect>,
@@ -236,7 +239,12 @@ fn parse_call(item: &Value) -> Result<ProposedAction, String> {
         "require_parent_shell" => {
             let args: ParentArgs = parse_args(arguments, name)?;
             Ok(ProposedAction::ParentShell {
-                command: args.command,
+                action: ParentAction {
+                    kind: args.kind,
+                    path: args.path,
+                    name: args.name,
+                    value: args.value,
+                },
                 metadata: ProposalMetadata {
                     summary: args.summary,
                     assumptions: args.assumptions,
@@ -355,6 +363,14 @@ mod tests {
         assert!(matches!(
             parse_response(&program).unwrap(),
             ProposedAction::Program { .. }
+        ));
+        let parent = response(
+            "require_parent_shell",
+            json!({"kind":"set_environment","path":null,"name":"EDITOR","value":"nvim","summary":"Set the editor.","assumptions":[],"effects":["shell_state"]}),
+        );
+        assert!(matches!(
+            parse_response(&parent).unwrap(),
+            ProposedAction::ParentShell { .. }
         ));
     }
 

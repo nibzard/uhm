@@ -62,6 +62,12 @@ pub struct ExecutionConfig {
     pub deny_env: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ShellContextConfig {
+    pub last_history_entry: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TelemetryConfig {
@@ -136,6 +142,7 @@ pub struct Config {
     pub execution: ExecutionConfig,
     pub telemetry: TelemetryConfig,
     pub program: ProgramConfig,
+    pub shell_context: ShellContextConfig,
     pub cache_enabled: bool,
     pub cache_ttl_secs: u64,
     pub aliases: Vec<(String, String)>,
@@ -162,6 +169,7 @@ struct FileConfig {
     execution: Option<ExecutionConfig>,
     telemetry: Option<TelemetryConfig>,
     program: Option<ProgramConfig>,
+    shell_context: Option<ShellContextConfig>,
     cache_enabled: Option<bool>,
     cache_ttl_secs: Option<u64>,
     aliases: Option<BTreeMap<String, String>>,
@@ -182,6 +190,7 @@ const KEYS: &[&str] = &[
     "execution",
     "telemetry",
     "program",
+    "shell_context",
     "cache_enabled",
     "cache_ttl_secs",
     "aliases",
@@ -208,6 +217,7 @@ impl Config {
             execution: ExecutionConfig::default(),
             telemetry: TelemetryConfig::default(),
             program: ProgramConfig::default(),
+            shell_context: ShellContextConfig::default(),
             cache_enabled: true,
             cache_ttl_secs: 86_400,
             aliases: Vec::new(),
@@ -284,6 +294,11 @@ impl Config {
                 "history.redact_paths",
                 self.history.redact_paths.to_string(),
                 self.source("history"),
+            ),
+            (
+                "shell_context.last_history_entry",
+                self.shell_context.last_history_entry.to_string(),
+                self.source("shell_context"),
             ),
             (
                 "execution.timeout_secs",
@@ -391,6 +406,7 @@ fn apply_file(config: &mut Config, file: FileConfig) {
     apply!(config, file, execution);
     apply!(config, file, telemetry);
     apply!(config, file, program);
+    apply!(config, file, shell_context);
     apply!(config, file, cache_enabled);
     apply!(config, file, cache_ttl_secs);
     if let Some(aliases) = file.aliases {
@@ -497,6 +513,7 @@ mod tests {
         assert_eq!(c.context_mode, "standard");
         assert!(c.history.enabled);
         assert!(c.telemetry.enabled);
+        assert!(!c.shell_context.last_history_entry);
     }
     #[test]
     fn rejects_removed_provider_base_url() {

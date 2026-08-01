@@ -1,10 +1,11 @@
 const MAX_BODY = 2048;
 
-const KEYS = [
+const KEYS_V1 = [
   "v", "event", "release", "os", "arch", "shell", "mode", "route", "decision",
   "effects", "proposal_outcome", "execution_outcome", "user_feedback", "latency",
   "cache", "interactive", "notice_revision",
 ];
+const KEYS_V2 = [...KEYS_V1, "parent_action"];
 
 const ENUMS = Object.freeze({
   event: ["interaction_summary", "feedback_summary"],
@@ -20,15 +21,17 @@ const ENUMS = Object.freeze({
   user_feedback: ["unknown", "good", "bad"],
   latency: ["lt_1s", "1s_2s", "2s_5s", "gte_5s"],
   cache: ["unknown", "miss", "hit", "disabled"],
+  parent_action: ["not_applicable", "unknown", "applied", "failed"],
 });
 
 export function validateEvent(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const keys = Object.keys(value).sort();
-  if (keys.length !== KEYS.length || keys.some((key, index) => key !== [...KEYS].sort()[index])) return false;
-  if (value.v !== 1 || ![1, 2].includes(value.notice_revision) || typeof value.interactive !== "boolean") return false;
+  const expected = value.v === 1 ? KEYS_V1 : value.v === 2 ? KEYS_V2 : [];
+  if (keys.length !== expected.length || keys.some((key, index) => key !== [...expected].sort()[index])) return false;
+  if ((value.v === 1 && ![1, 2].includes(value.notice_revision)) || (value.v === 2 && value.notice_revision !== 3) || typeof value.interactive !== "boolean") return false;
   if (typeof value.release !== "string" || !/^\d+\.\d+$/.test(value.release)) return false;
-  return Object.entries(ENUMS).every(([key, allowed]) =>
+  return Object.entries(ENUMS).filter(([key]) => key !== "parent_action" || value.v === 2).every(([key, allowed]) =>
     typeof value[key] === "string" && allowed.includes(value[key]),
   );
 }
@@ -39,7 +42,7 @@ export function eventToPoint(event) {
     blobs: [
       event.release, event.os, event.arch, event.shell, event.mode, event.route, event.decision,
       event.effects, event.proposal_outcome, event.execution_outcome, event.user_feedback,
-      event.latency, event.cache,
+      event.latency, event.cache, event.parent_action || "not_applicable",
     ],
     doubles: [event.interactive ? 1 : 0, event.notice_revision, event.v],
   };
