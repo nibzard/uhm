@@ -1,0 +1,5 @@
+# Context
+
+Apple XNU rejects RLIMIT_AS with EINVAL when the current process map already exceeds the requested value. The macOS CI test binary exceeded the 256 MiB hypothesis before exec, so enforcing it made every Python spawn fail. Plan 4 explicitly requires host limits only where meaningful and compatible. CPU and open-file rlimits remain applied on macOS; address-space is now reported unavailable there. Linux retains CPU, address-space, open-file, and child-process limits.
+
+Primary reference: apple-oss-distributions/xnu bsd/kern/kern_resource.c, dosetrlimit RLIMIT_AS branch.
