@@ -341,7 +341,7 @@ pub fn queue_count(config: &Config) -> usize {
         .count()
 }
 
-pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::Receipt) {
+pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::CoarseReceipt) {
     if !resolved_policy.enabled {
         return;
     }
@@ -356,29 +356,17 @@ pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::Re
         let _ = fs2::FileExt::unlock(&send_lock);
         return;
     }
-    let queued = queue_path(config, &receipt.run_id);
-    if let Ok(bytes) = std::fs::read(&queued) {
-        if let Ok(mut event) = serde_json::from_slice::<Event>(&bytes) {
-            event.user_feedback = receipt.user_feedback.clone();
-            if event.validate().is_ok() {
-                let _ =
-                    write_private_atomic(&queued, &serde_json::to_vec(&event).unwrap_or_default());
-                let _ = fs2::FileExt::unlock(&send_lock);
-                return;
-            }
-        }
-    }
     let event = feedback_event(receipt);
     match send(&event, Duration::from_millis(100)) {
         SendResult::PreSend => {
-            let _ = enqueue(config, &format!("{}-feedback", receipt.run_id), &event);
+            let _ = enqueue(config, &format!("feedback-{}", history::run_id()), &event);
         }
         SendResult::Accepted | SendResult::Ambiguous | SendResult::Rejected => {}
     }
     let _ = fs2::FileExt::unlock(&send_lock);
 }
 
-fn feedback_event(receipt: &history::Receipt) -> Event {
+fn feedback_event(receipt: &history::CoarseReceipt) -> Event {
     Event {
         v: SCHEMA_VERSION,
         event: "feedback_summary".into(),
@@ -575,6 +563,7 @@ fn telemetry_root(config: &Config) -> PathBuf {
 fn disabled_marker(config: &Config) -> PathBuf {
     config.paths.data_dir.join("telemetry.disabled")
 }
+#[cfg(test)]
 fn queue_path(config: &Config, run_id: &str) -> PathBuf {
     telemetry_root(config)
         .join("queue")
@@ -619,7 +608,7 @@ fn dominant_effect(effects: &[Effect]) -> &'static str {
         .max_by_key(|v| EFFECTS.iter().position(|e| e == v).unwrap_or(0))
         .unwrap_or("none")
 }
-fn receipt_effect(receipt: &history::Receipt) -> &'static str {
+fn receipt_effect(receipt: &history::CoarseReceipt) -> &'static str {
     receipt
         .declared_effects
         .iter()
@@ -645,7 +634,7 @@ fn receipt_decision(value: &str) -> &'static str {
         _ => "not_run",
     }
 }
-fn receipt_execution(receipt: &history::Receipt) -> &'static str {
+fn receipt_execution(receipt: &history::CoarseReceipt) -> &'static str {
     if !receipt.execution_attempted {
         "not_run"
     } else if receipt.signal.is_some() {

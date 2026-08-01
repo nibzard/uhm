@@ -23,6 +23,7 @@ include = [
   "PRIVACY.md",
   "config.example.yaml",
   "docs/behavior-contract.md",
+  "docs/local-history.md",
 ]
 
 [[bin]]

@@ -77,6 +77,8 @@ pub fn handle(
     stdin: &crate::input::Spool,
     disclosure_marker: &str,
     interaction: &mut telemetry::Interaction,
+    preset_action: Option<ProposedAction>,
+    related_run_id: Option<&str>,
 ) -> i32 {
     let started = Instant::now();
     if args.local_input && !stdin.is_piped() {
@@ -101,18 +103,22 @@ pub fn handle(
         Err(e) => return app_error(args, outcome::USAGE, "usage_error", &e),
     };
     // Aliases are resolved before automatic context probes and do not leave the device.
-    let alias = config
-        .aliases
-        .iter()
-        .find(|(name, _)| name.trim() == request.trim())
-        .map(|(_, command)| ProposedAction::Shell {
-            command: command.clone(),
-            metadata: ProposalMetadata {
-                summary: "Expanded from a local alias.".into(),
-                ..Default::default()
-            },
-            stdin_mode: StdinMode::None,
-        });
+    let alias = if preset_action.is_some() {
+        None
+    } else {
+        config
+            .aliases
+            .iter()
+            .find(|(name, _)| name.trim() == request.trim())
+            .map(|(_, command)| ProposedAction::Shell {
+                command: command.clone(),
+                metadata: ProposalMetadata {
+                    summary: "Expanded from a local alias.".into(),
+                    ..Default::default()
+                },
+                stdin_mode: StdinMode::None,
+            })
+    };
     let snapshot = if alias.is_some() {
         interaction.suppress();
         context::gather(
@@ -125,28 +131,54 @@ pub fn handle(
     };
     let mut budget = Budget::default();
     let run_id = interaction.run_id.clone();
-    let mut action = match alias {
+    if let Err(e) = history::record_request(
+        &config.paths.data_dir,
+        &config.history,
+        &run_id,
+        route,
+        route,
+        mode.as_str(),
+        request,
+        related_run_id,
+    ) {
+        eprintln!("uhm: history: {}", e);
+    }
+    if let Err(e) = history::record_context(
+        &config.paths.data_dir,
+        &config.history,
+        &run_id,
+        route,
+        route,
+        mode.as_str(),
+        related_run_id,
+    ) {
+        eprintln!("uhm: history: {}", e);
+    }
+    let mut action = match preset_action {
         Some(v) => v,
-        None => match propose(
-            args,
-            config,
-            api_config,
-            route,
-            request,
-            &snapshot,
-            stdin.model_value_for(args.local_input, args.input_format.as_deref()),
-            None,
-            &shell_name,
-        ) {
-            Ok((v, cache_hit)) => {
-                budget.initial_model();
-                interaction.proposal(true, cache_hit);
-                v
-            }
-            Err(e) => {
-                interaction.proposal(false, false);
-                return app_error(args, outcome::MODEL, "model_error", &e);
-            }
+        None => match alias {
+            Some(v) => v,
+            None => match propose(
+                args,
+                config,
+                api_config,
+                route,
+                request,
+                &snapshot,
+                stdin.model_value_for(args.local_input, args.input_format.as_deref()),
+                None,
+                &shell_name,
+            ) {
+                Ok((v, cache_hit)) => {
+                    budget.initial_model();
+                    interaction.proposal(true, cache_hit);
+                    v
+                }
+                Err(e) => {
+                    interaction.proposal(false, false);
+                    return app_error(args, outcome::MODEL, "model_error", &e);
+                }
+            },
         },
     };
     loop {
@@ -160,6 +192,18 @@ pub fn handle(
                     metadata: metadata.clone(),
                 };
             }
+        }
+        if let Err(e) = history::record_proposal(
+            &config.paths.data_dir,
+            &config.history,
+            &run_id,
+            route,
+            route,
+            mode.as_str(),
+            &action,
+            related_run_id,
+        ) {
+            eprintln!("uhm: history: {}", e);
         }
         match action {
             ProposedAction::Answer { text } => {
@@ -527,6 +571,18 @@ pub fn handle(
                 } else {
                     "exit_nonzero"
                 });
+                if let Err(error) = history::record_output(
+                    &config.paths.data_dir,
+                    &config.history,
+                    &run_id,
+                    "run_program",
+                    mode.as_str(),
+                    Some(&result.stdout_tail),
+                    Some(&result.stderr_tail),
+                    result.code != 0,
+                ) {
+                    eprintln!("uhm: history: {}", error);
+                }
                 receipt(
                     config,
                     &run_id,
@@ -831,6 +887,18 @@ pub fn handle(
                 } else {
                     "exit_nonzero"
                 });
+                if let Err(error) = history::record_output(
+                    &config.paths.data_dir,
+                    &config.history,
+                    &run_id,
+                    "run_shell",
+                    mode.as_str(),
+                    result.stdout_tail.as_deref(),
+                    result.stderr_tail.as_deref(),
+                    result.code != 0,
+                ) {
+                    eprintln!("uhm: history: {}", error);
+                }
                 receipt(
                     config,
                     &run_id,
@@ -1047,12 +1115,7 @@ fn receipt(
         second_turn_used: second,
         user_feedback: "unknown".into(),
     };
-    if let Err(e) = history::append(
-        &config.paths.data_dir,
-        &entry,
-        config.history.max_records,
-        config.history.max_age_days,
-    ) {
+    if let Err(e) = history::append_receipt(&config.paths.data_dir, &config.history, &entry) {
         eprintln!("uhm: history: {}", e)
     }
 }

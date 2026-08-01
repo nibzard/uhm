@@ -115,12 +115,18 @@ uhm --no-telemetry -- ...   # this invocation only
 
 ## Local records
 
-Private metadata receipts are on by default. They contain bounded route, coarse runtime (`python3` or `none`), effect, process outcome, and timing categories, never the intent, command, program source, manifest, cwd, input, output, or diagnostics. They live in the platform data directory shown by `uhm history status`, with a maximum of 500 records or 30 days.
+Private, append-only metadata history is on by default. It contains state transitions, route, effects, process outcome, hashes, and timing categories—never intent, proposal, paths, input, output, or diagnostics. Explicit `diagnostic` and `full` detail levels can retain private per-run artifacts; telemetry remains independently content-free. See [local history](docs/local-history.md).
 
 ```sh
 uhm history status
-uhm feedback good           # attaches one enum to the latest receipt
-uhm history clear
+uhm history list --limit 20
+uhm history show last
+uhm history search -- failure
+uhm history replay <run-id> --review
+uhm history export --output /absolute/path/history.jsonl
+uhm history prune --dry-run
+uhm feedback good [run-id]
+uhm history clear --all
 ```
 
 The proposal cache holds validated model proposals, not execution results. Runtime directories and files use owner-only permissions on Unix.
@@ -148,8 +154,9 @@ uhm [options] -- <intent>
 uhm run|ask|explain [options] -- <intent>
 uhm context show [minimal|standard|full]
 uhm telemetry [status|preview|on|off]
-uhm feedback good|bad
-uhm history [status|clear]
+uhm feedback good|bad [run-id]
+uhm repair <run-id|last> [-- <feedback>]
+uhm history [list|show|search|replay|export|prune|clear|status]
 uhm config [show|check]
 uhm doctor [network]
 ```
@@ -169,6 +176,7 @@ context_mode: standard
 
 history:
   enabled: true
+  detail: metadata
 
 telemetry:
   enabled: true

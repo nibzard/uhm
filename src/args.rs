@@ -1,7 +1,7 @@
 //! Invocation grammar. The first intent word is an intentional parsing boundary:
 //! every following token is opaque user text, even when it starts with `-`.
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Args {
     pub subcommand: Option<String>,
     pub prompt: String,
@@ -34,6 +34,7 @@ const VERBS: &[&str] = &[
     "context",
     "telemetry",
     "feedback",
+    "repair",
     "doctor",
     "help",
     "version",

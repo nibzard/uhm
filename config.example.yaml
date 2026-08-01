@@ -13,10 +13,15 @@
 # request_max_bytes: 262144      # complete untrusted model-input JSON
 # response_max_bytes: 2097152    # streamed or buffered API response
 
-# history:                       # metadata only; never intent/command/output
+# history:                       # richer levels are explicit and stay local
 #   enabled: true
+#   detail: metadata             # metadata | diagnostic | full
+#   capture_output: false        # applies only to diagnostic/full
+#   redact_paths: true
 #   max_records: 500
 #   max_age_days: 30
+#   max_bytes: 268435456
+#   artifact_max_bytes: 1048576
 
 # execution:
 #   timeout_secs: 300

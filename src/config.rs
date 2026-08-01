@@ -4,20 +4,52 @@ use crate::dirs::{self, Paths};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryDetail {
+    Metadata,
+    Diagnostic,
+    Full,
+}
+
+impl HistoryDetail {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Metadata => "metadata",
+            Self::Diagnostic => "diagnostic",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn retains_proposals(self) -> bool {
+        matches!(self, Self::Diagnostic | Self::Full)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HistoryConfig {
     pub enabled: bool,
+    pub detail: HistoryDetail,
+    pub capture_output: bool,
+    pub redact_paths: bool,
     pub max_records: usize,
     pub max_age_days: u64,
+    pub max_bytes: u64,
+    pub artifact_max_bytes: usize,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            detail: HistoryDetail::Metadata,
+            capture_output: false,
+            redact_paths: true,
             max_records: 500,
             max_age_days: 30,
+            max_bytes: 256 * 1024 * 1024,
+            artifact_max_bytes: 1024 * 1024,
         }
     }
 }
@@ -239,6 +271,21 @@ impl Config {
                 self.source("history"),
             ),
             (
+                "history.detail",
+                self.history.detail.as_str().into(),
+                self.source("history"),
+            ),
+            (
+                "history.capture_output",
+                self.history.capture_output.to_string(),
+                self.source("history"),
+            ),
+            (
+                "history.redact_paths",
+                self.history.redact_paths.to_string(),
+                self.source("history"),
+            ),
+            (
                 "execution.timeout_secs",
                 self.execution.timeout_secs.to_string(),
                 self.source("execution"),
@@ -371,7 +418,11 @@ fn validate(c: &Config) -> Result<(), String> {
     if !matches!(c.context_mode.as_str(), "minimal" | "standard" | "full") {
         return Err("config context_mode must be minimal, standard, or full".into());
     }
-    if !(1..=10_000).contains(&c.history.max_records) || c.history.max_age_days == 0 {
+    if !(1..=100_000).contains(&c.history.max_records)
+        || c.history.max_age_days == 0
+        || c.history.max_bytes == 0
+        || c.history.artifact_max_bytes == 0
+    {
         return Err("config history bounds must be positive".into());
     }
     if c.stdin_max_bytes == 0

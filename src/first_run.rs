@@ -40,7 +40,8 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
     .map_err(|e| format!("render first-use notice: {}", e))?;
     writeln!(
         stderr,
-        "  Private metadata receipts are {}: at most {} records / {} days. Clear: uhm history clear.",
+        "  Private {} history is {}: at most {} events / {} days. Inspect: uhm history status. Clear: uhm history clear --all.",
+        config.history.detail.as_str(),
         receipt_state, config.history.max_records, config.history.max_age_days
     )
     .map_err(|e| format!("render first-use notice: {}", e))?;
