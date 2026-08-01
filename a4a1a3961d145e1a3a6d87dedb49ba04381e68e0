@@ -1,0 +1,16 @@
+ADR: Strict Responses actions and bounded result loop
+
+Context
+uhm must return terminal results quickly without becoming an autonomous coding agent. Plan 2 required a single official OpenAI contract, useful but bounded machine context, exact process I/O, and at most one correction.
+
+Decision
+Use POST /v1/responses with store=false, required strict local tools, and no parallel calls. Route every mode through one typed action boundary. Limit a job to one initial proposal plus one clarification/revision/repair/edit slot, and permit a second execution only after an explicit failed-action replacement. Use standard context by default, metadata-only bounded JSONL receipts, and gpt-5.6-terra as the fastest model clearing the live six-task quality gate.
+
+Alternatives
+Rejected Chat Completions/provider-compatible endpoints, free-form prose commands, automatic repair loops, content-rich history, and a PTY proxy for v0.1.
+
+Consequences
+The client is intentionally OpenAI-specific and strict. Parent-shell actions are generated but not applied. Redirected streams provide diagnostics while native TTY streams favor job-control fidelity. The executor is not a sandbox.
+
+Verification
+62 tests pass across unit and CLI contract suites; Clippy is warning-free; Rust 1.82 check and release build pass; local alias p95 is 11.39 ms. Live bakeoff: Luna 6/6 at 2247 ms median, Terra 6/6 at 1824 ms, Sol 6/6 at 2656 ms.
