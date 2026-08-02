@@ -57,6 +57,16 @@ pub enum EventKind {
     JobFinished,
     MigratedReceipt,
     ParentActionAcknowledged,
+    RecoveryClassified,
+    RecoveryPrepared,
+    RecoveryCommitted,
+    RecoveryUnavailable,
+    UndoStarted,
+    UndoItemFinished,
+    UndoFinished,
+    ForcedRestoreFinished,
+    RecoveryExpired,
+    BestEffortInverseRequested,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -722,6 +732,71 @@ pub fn repair_seed(
     Ok((id, seed))
 }
 
+pub fn recovery_seed(
+    data: &Path,
+    id: &str,
+    guidance: Option<&str>,
+) -> Result<(String, String), String> {
+    let id = resolve_run(data, id)?;
+    let events = events_for(data, &id)?;
+    if events.iter().any(|event| event.route == "recover")
+        || events
+            .first()
+            .is_some_and(|event| event.related_run_id.is_some())
+    {
+        return Err("best-effort recovery cannot be chained or recursively applied to a linked recovery job".into());
+    }
+    let intent = events
+        .iter()
+        .find(|event| event.kind == EventKind::RequestCreated)
+        .and_then(|event| event.data.get("intent"))
+        .and_then(Value::as_str)
+        .ok_or("best-effort recovery unavailable: the original intent was not retained; set history.detail to full for future runs")?;
+    let (_, action) = load_proposal(data, &id)?;
+    if matches!(
+        action,
+        ProposedAction::Answer { .. } | ProposedAction::Clarification { .. }
+    ) {
+        return Err(
+            "best-effort recovery unavailable: the retained proposal did not perform an action"
+                .into(),
+        );
+    }
+    let outcome = events
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(
+                event.kind,
+                EventKind::ExecutionFinished | EventKind::JobFinished
+            )
+        })
+        .map(|event| event.data.clone())
+        .unwrap_or_else(|| json!({"result":"unknown"}));
+    let guidance = guidance.map(|value| {
+        value
+            .chars()
+            .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+            .take(4096)
+            .collect::<String>()
+    });
+    let subset = json!({
+        "schema": "uhm.best_effort_inverse.v1",
+        "label": "best_effort_inverse",
+        "source_run_id": id,
+        "original_intent": intent,
+        "typed_proposal": action,
+        "coarse_outcome": outcome,
+        "guidance": guidance,
+        "constraint": "Propose one bounded action only. Do not claim that executing it restores the original state."
+    });
+    let seed = serde_json::to_string_pretty(&subset).map_err(|error| error.to_string())?;
+    if seed.len() > 96 * 1024 {
+        return Err("best-effort recovery subset exceeds the bounded model-request limit".into());
+    }
+    Ok((id, seed))
+}
+
 pub fn list(
     data: &Path,
     limit: usize,
@@ -854,7 +929,12 @@ fn prune_locked(data: &Path, cfg: &HistoryConfig, dry_run: bool) -> Result<(usiz
                     return Err("refusing to prune a symlink under the history run root".into());
                 }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if !kept_ids.contains(&name) {
+                let recovery_owned = entry
+                    .path()
+                    .join("recovery.json")
+                    .symlink_metadata()
+                    .is_ok();
+                if !kept_ids.contains(&name) && !recovery_owned {
                     std::fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
                 }
             }
@@ -916,7 +996,12 @@ pub fn clear_before(data: &Path, cutoff: u64) -> Result<usize, String> {
                 );
             }
             let id = entry.file_name().to_string_lossy().into_owned();
-            if !kept_ids.contains(&id) {
+            let recovery_owned = entry
+                .path()
+                .join("recovery.json")
+                .symlink_metadata()
+                .is_ok();
+            if !kept_ids.contains(&id) && !recovery_owned {
                 std::fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
             }
         }
@@ -1021,6 +1106,68 @@ pub fn record_parent_ack(
     );
     let _guard = lock(data)?;
     append_locked(data, event)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_recovery_event(
+    data: &Path,
+    cfg: &HistoryConfig,
+    run: &str,
+    route: &str,
+    context_mode: &str,
+    kind: EventKind,
+    state: &str,
+    reason: Option<&str>,
+    item_count: usize,
+    related: Option<&str>,
+) -> Result<(), String> {
+    if !cfg.enabled {
+        return Ok(());
+    }
+    validate_id(run)?;
+    if !matches!(
+        kind,
+        EventKind::RecoveryClassified
+            | EventKind::RecoveryPrepared
+            | EventKind::RecoveryCommitted
+            | EventKind::RecoveryUnavailable
+            | EventKind::UndoStarted
+            | EventKind::UndoItemFinished
+            | EventKind::UndoFinished
+            | EventKind::ForcedRestoreFinished
+            | EventKind::RecoveryExpired
+            | EventKind::BestEffortInverseRequested
+    ) {
+        return Err("invalid recovery history event kind".into());
+    }
+    if state.len() > 64
+        || !state
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        || item_count > 16
+    {
+        return Err("invalid bounded recovery event".into());
+    }
+    let bounded_reason = reason.map(|value| {
+        value
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(512)
+            .collect::<String>()
+    });
+    let _guard = lock(data)?;
+    append_locked(
+        data,
+        base_event(
+            run,
+            route,
+            route,
+            context_mode,
+            kind,
+            json!({"state":state,"reason":bounded_reason,"item_count":item_count}),
+            related,
+        ),
+    )
 }
 
 fn coarse_from_event(event: &Event, feedback: &str) -> CoarseReceipt {
@@ -1314,5 +1461,95 @@ mod tests {
             events_for(d.path(), "last").unwrap().last().unwrap().kind,
             EventKind::UserFeedbackReceived
         );
+    }
+
+    #[test]
+    fn best_effort_seed_is_bounded_exact_and_rejects_linked_jobs() {
+        let d = tempfile::tempdir().unwrap();
+        let full = cfg(HistoryDetail::Full);
+        let action = ProposedAction::Shell {
+            command: "git reset --soft HEAD~1".into(),
+            metadata: crate::action::ProposalMetadata {
+                summary: "move the branch pointer".into(),
+                assumptions: vec![],
+                effects: vec![crate::action::Effect::WriteLocal],
+                requirements: vec!["git".into()],
+            },
+            stdin_mode: crate::action::StdinMode::None,
+        };
+        record_request(
+            d.path(),
+            &full,
+            "original-0001",
+            "run",
+            "run",
+            "minimal",
+            "undo my latest local commit",
+            None,
+        )
+        .unwrap();
+        record_proposal(
+            d.path(),
+            &full,
+            "original-0001",
+            "run",
+            "run",
+            "minimal",
+            &action,
+            None,
+        )
+        .unwrap();
+        let (_, seed) = recovery_seed(d.path(), "original-0001", Some("keep changes")).unwrap();
+        assert!(seed.contains("best_effort_inverse"));
+        assert!(seed.contains("keep changes"));
+        assert!(!seed.contains("snapshots"));
+        record_request(
+            d.path(),
+            &full,
+            "linked-000001",
+            "recover",
+            "recover",
+            "minimal",
+            "linked inverse",
+            Some("original-0001"),
+        )
+        .unwrap();
+        record_proposal(
+            d.path(),
+            &full,
+            "linked-000001",
+            "recover",
+            "recover",
+            "minimal",
+            &action,
+            Some("original-0001"),
+        )
+        .unwrap();
+        assert!(recovery_seed(d.path(), "linked-000001", None).is_err());
+    }
+
+    #[test]
+    fn generic_pruning_preserves_recovery_owned_run_directories() {
+        let d = tempfile::tempdir().unwrap();
+        let config = HistoryConfig {
+            max_records: 0,
+            ..cfg(HistoryDetail::Metadata)
+        };
+        record_request(
+            d.path(),
+            &config,
+            "recover-00001",
+            "run",
+            "run",
+            "minimal",
+            "test",
+            None,
+        )
+        .unwrap();
+        let run = runs_path(d.path()).join("recover-00001");
+        dirs::ensure_private_dir(&run).unwrap();
+        write_private_atomic(&run.join("recovery.json"), b"retained").unwrap();
+        prune(d.path(), &config, false).unwrap();
+        assert!(run.join("recovery.json").exists());
     }
 }

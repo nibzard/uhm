@@ -21,6 +21,8 @@ Use `uhm context show minimal|standard|full` before a request to inspect the exa
 
 `uhm` does not automatically add environment values, secrets, file contents, Git remotes, Git diffs, local receipts, cached proposals, stdout, stderr, or clipboard data. The generated command may read files or contact services when executed; that behavior belongs to the command and is described by its declared and detected effects.
 
+`uhm recover` is the one explicit exception for local receipts. It prints the exact bounded subset before sending, requires terminal approval, and sends only the retained original intent, typed proposal, coarse outcome, optional guidance, and a fixed best-effort label. The selected current context is also sent under the normal context policy. It never sends the full journal, unrelated runs, recovery manifests, snapshot paths, or snapshot bytes.
+
 OpenAI's terms and retention controls can change. The linked provider documentation, not this repository, is authoritative for provider-side handling.
 
 ## Aggregate telemetry
@@ -93,6 +95,8 @@ You can also set `telemetry.enabled: false` in `config.yaml`. Every opt-out is c
 ## Local storage
 
 Metadata receipts are enabled by default and stored under the platform data directory reported by `uhm history status`. They are capped at 500 records and 30 days. Receipts contain categorical execution metadata, including only coarse program route/runtime/outcome, never intent, commands, program source, manifests, paths, terminal content, or diagnostics. `uhm history clear` removes them. Set `history.enabled: false` to stop recording new receipts.
+
+Recovery snapshot capture is separately consented and off by default. When enabled globally with `uhm recovery on` or once with `--recoverable`, eligible managed file preimages are copied below private `runs/<run-id>/snapshots/` files. The default limits are 8 MiB per file, 128 MiB total, and 14 days. `uhm recovery status` reports usage; `uhm recovery off` stops new capture; `uhm recovery prune` removes validated owned snapshots and leaves expiry tombstones. Normal history export excludes snapshots. Snapshot bytes, paths, manifests, and hashes are excluded from telemetry.
 
 The same private data directory contains the disclosure revision, optional secrets file, telemetry opt-out marker, and short-lived telemetry queue. The cache directory contains validated model proposals. Unix directories and files created by `uhm` use modes `0700` and `0600`.
 

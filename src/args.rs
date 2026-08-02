@@ -19,6 +19,7 @@ pub struct Args {
     pub local_input: bool,
     pub input_format: Option<String>,
     pub retain_program: bool,
+    pub recoverable: bool,
     pub fresh: bool,
     pub verbose: bool,
     pub help: bool,
@@ -41,6 +42,10 @@ const VERBS: &[&str] = &[
     "telemetry",
     "feedback",
     "repair",
+    "recover",
+    "undo",
+    "restore",
+    "recovery",
     "shell-init",
     "shell-control-open",
     "shell-validate",
@@ -84,6 +89,7 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
             "--no-motion" => out.no_motion = true,
             "--local-input" => out.local_input = true,
             "--retain-program" => out.retain_program = true,
+            "--recoverable" => out.recoverable = true,
             "--fresh" | "--no-cache" => out.fresh = true,
             "-v" | "--verbose" => out.verbose = true,
             "-m" | "--model" => {
@@ -224,6 +230,12 @@ mod tests {
         assert!(args.local_input);
         assert!(args.retain_program);
         assert_eq!(args.input_format.as_deref(), Some("text/csv"));
+        assert!(!args.recoverable);
+        assert!(
+            parse_from(vec!["uhm".into(), "--recoverable".into(), "rewrite".into()])
+                .unwrap()
+                .recoverable
+        );
         assert!(parse_from(vec![
             "uhm".into(),
             "--input-format=bad label".into(),

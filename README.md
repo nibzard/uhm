@@ -131,6 +131,20 @@ uhm history clear --all
 
 The proposal cache holds validated model proposals, not execution results. Runtime directories and files use owner-only permissions on Unix.
 
+## Bounded recovery
+
+Recovery snapshots are off by default because they duplicate file contents. After its separate disclosure, `uhm recovery on` can capture bounded preimages for eligible regular-file outputs committed through the managed Python artifact path. `uhm undo` is reserved for a hash-verified restore; a later edit is a conflict. `uhm restore --force` applies retained evidence under an explicitly different outcome. `uhm recover` instead asks for one reviewed best-effort inverse and never claims that process success recovered the original state. See [bounded recovery](docs/recovery.md).
+
+```sh
+uhm recovery on
+uhm --recoverable run -- rewrite report.txt as compact JSON
+uhm recovery status
+uhm undo <run-id|last>
+uhm restore <run-id|last> --force
+uhm recover <run-id|last> -- prefer a local-only inverse
+uhm recovery prune --dry-run
+```
+
 ## Bounded Python microprograms
 
 When a short command or pipeline is the clearest solution, `uhm` still uses the shell. For structured data, statistics, or multifile logic that would become contorted, it may generate one standard-library Python 3 program. The program runs directly as `python3 -I -S <private-source-file>` with a stripped environment, a private workspace, a 10-second wall limit, a 5-second CPU limit, a 16 MiB combined output cap, and best-effort host resource limits. `uhm doctor` reports whether the runtime is available.
@@ -155,7 +169,7 @@ The wrapper uses a private nonce-bound control directory, never application stdo
 
 Warnings for deletion, broad writes, privilege elevation, remote mutation, and process control are convenience signals. They are not a sandbox or a safety guarantee. Model output and the detector can both be wrong. Exit code zero proves only that the process exited zero, not that your intent was satisfied.
 
-The current development version has no universal undo, transaction layer, background agent, native Windows build, shell completion, auto-updater, package installation, JavaScript program runtime, or project-scale code generation.
+The current development version has no universal undo, filesystem-wide transaction layer, background agent, native Windows build, shell completion, auto-updater, package installation, JavaScript program runtime, or project-scale code generation.
 
 ## CLI reference
 
@@ -167,6 +181,10 @@ uhm context show [minimal|standard|full]
 uhm telemetry [status|preview|on|off]
 uhm feedback good|bad [run-id]
 uhm repair <run-id|last> [-- <feedback>]
+uhm recover <run-id|last> [-- <guidance>]
+uhm undo <run-id|last> [--review]
+uhm restore <run-id|last> --force
+uhm recovery on|off|status|prune|pin|unpin|resume
 uhm history [list|show|search|replay|export|prune|clear|status]
 uhm config [show|check]
 uhm doctor [network]
@@ -199,6 +217,12 @@ program:
   enabled: true
   timeout_secs: 10
   output_max_bytes: 16777216
+
+recovery:
+  enabled: false
+  max_age_days: 14
+  max_total_bytes: 134217728
+  max_file_bytes: 8388608
 ```
 
 ## Development

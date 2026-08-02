@@ -6,8 +6,8 @@ use crate::config::Config;
 use crate::outcome::Outcome;
 use crate::render::{ansi, card, spinner};
 use crate::{
-    api, cache, context, history, outcome, parent_shell, program, prompt, safety, shell, telemetry,
-    tty,
+    api, cache, context, history, outcome, parent_shell, program, prompt, recovery, safety, shell,
+    telemetry, tty,
 };
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Write};
@@ -159,6 +159,20 @@ pub fn handle(
     ) {
         eprintln!("uhm: history: {}", e);
     }
+    if route == "recover" {
+        let _ = history::record_recovery_event(
+            &config.paths.data_dir,
+            &config.history,
+            &run_id,
+            route,
+            mode.as_str(),
+            history::EventKind::BestEffortInverseRequested,
+            "best_effort_inverse",
+            Some("a reviewed inverse proposal is not verified restoration"),
+            0,
+            related_run_id,
+        );
+    }
     let mut action = match preset_action {
         Some(v) => v,
         None => match alias {
@@ -186,7 +200,12 @@ pub fn handle(
             },
         },
     };
+    let mut recovery_label_shown = false;
     loop {
+        if route == "recover" && !recovery_label_shown && !args.json {
+            eprintln!("Best-effort inverse: execution success does not verify that the original state was recovered.");
+            recovery_label_shown = true;
+        }
         if let Err(e) = history::record_proposal(
             &config.paths.data_dir,
             &config.history,
@@ -203,7 +222,7 @@ pub fn handle(
             ProposedAction::Answer { text } => {
                 interaction.route("answer");
                 interaction.decision("returned");
-                if route == "run" {
+                if matches!(route, "run" | "recover") {
                     interaction.decision("unavailable");
                     return app_error(
                         args,
@@ -282,6 +301,24 @@ pub fn handle(
                 interaction.route("parent_shell");
                 let effects = merged_effects(&metadata.effects, &[Effect::ShellState]);
                 interaction.effects(&effects);
+                if recovery::capture_requested(
+                    &config.paths.data_dir,
+                    &config.recovery,
+                    args.recoverable,
+                ) {
+                    let _ = history::record_recovery_event(
+                        &config.paths.data_dir,
+                        &config.history,
+                        &run_id,
+                        route,
+                        mode.as_str(),
+                        history::EventKind::RecoveryClassified,
+                        recovery::RecoveryClass::BestEffortOnly.as_str(),
+                        Some("parent-shell changes have a receipt but no controlled preimage"),
+                        0,
+                        related_run_id,
+                    );
+                }
                 let command = match crate::shell_integration::fallback(&parent_action, &shell_name)
                 {
                     Ok(v) => v,
@@ -392,6 +429,45 @@ pub fn handle(
                 let detected = program::detected_effects(&proposal.source);
                 let effects = merged_effects(&proposal.effects, &detected);
                 interaction.effects(&effects);
+                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let recovery_classification =
+                    if proposal.result_mode == ProgramResultMode::Artifacts {
+                        recovery::classify(
+                            &config.paths.data_dir,
+                            &cwd,
+                            &proposal.outputs,
+                            &config.recovery,
+                            config.history.enabled,
+                            args.recoverable,
+                        )
+                    } else {
+                        recovery::Classification {
+                            requested: recovery::capture_requested(
+                                &config.paths.data_dir,
+                                &config.recovery,
+                                args.recoverable,
+                            ),
+                            class: recovery::RecoveryClass::Unavailable,
+                            reason: "stdout-only programs have no managed artifact preimage".into(),
+                            items: Vec::new(),
+                        }
+                    };
+                if recovery_classification.requested {
+                    if let Err(error) = history::record_recovery_event(
+                        &config.paths.data_dir,
+                        &config.history,
+                        &run_id,
+                        route,
+                        mode.as_str(),
+                        history::EventKind::RecoveryClassified,
+                        recovery_classification.class.as_str(),
+                        Some(&recovery_classification.reason),
+                        recovery_classification.items.len(),
+                        related_run_id,
+                    ) {
+                        eprintln!("uhm: history: {error}");
+                    }
+                }
                 if !snapshot.program_runtime.available {
                     interaction.decision("unavailable");
                     return app_error(
@@ -411,7 +487,7 @@ pub fn handle(
                     return dry_run(args, &proposal.source);
                 }
                 if review && !args.json {
-                    program_preview(&proposal, &snapshot, config);
+                    program_preview(&proposal, &snapshot, config, &recovery_classification);
                 }
                 if args.json && review && !args.force {
                     return not_executed(
@@ -509,6 +585,21 @@ pub fn handle(
                         ansi::warning("Proceeding because --force was supplied.")
                     );
                 }
+                if recovery_classification.requested
+                    && !recovery_classification.all_eligible()
+                    && !args.force
+                {
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "verified_restore_unavailable",
+                        &format!(
+                            "{}; use --force to run without a verified restore",
+                            recovery_classification.reason
+                        ),
+                    );
+                }
                 if !budget.execute() {
                     interaction.decision("unavailable");
                     return app_error(
@@ -518,7 +609,6 @@ pub fn handle(
                         "execution budget exhausted",
                     );
                 }
-                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let result = match program::execute(program::Request {
                     proposal: &proposal,
                     python: &snapshot.program_runtime,
@@ -526,6 +616,14 @@ pub fn handle(
                     cwd: &cwd,
                     config: &config.program,
                     retain_workspace: args.retain_program,
+                    recovery: recovery_classification.all_eligible().then_some(
+                        program::RecoveryRequest {
+                            data_dir: &config.paths.data_dir,
+                            run_id: &run_id,
+                            config: &config.recovery,
+                            allow_unrecoverable: args.force,
+                        },
+                    ),
                 }) {
                     Ok(value) => value,
                     Err(error) => {
@@ -613,6 +711,63 @@ pub fn handle(
                     eprintln!(
                         "uhm: retained private program workspace at {}",
                         path.display()
+                    );
+                }
+                if result.recovery_prepared {
+                    let _ = history::record_recovery_event(
+                        &config.paths.data_dir,
+                        &config.history,
+                        &run_id,
+                        route,
+                        mode.as_str(),
+                        history::EventKind::RecoveryPrepared,
+                        "preparing",
+                        Some("eligible preimages were captured before the program started"),
+                        proposal.outputs.len(),
+                        related_run_id,
+                    );
+                }
+                if let Some(state) = &result.recovery_state {
+                    if !args.json {
+                        eprintln!("Verified restore: {state} (run {run_id})");
+                    }
+                    let kind = if state == "available" {
+                        history::EventKind::RecoveryCommitted
+                    } else {
+                        history::EventKind::RecoveryUnavailable
+                    };
+                    if let Err(error) = history::record_recovery_event(
+                        &config.paths.data_dir,
+                        &config.history,
+                        &run_id,
+                        route,
+                        mode.as_str(),
+                        kind,
+                        state,
+                        result.recovery_reason.as_deref(),
+                        proposal.outputs.len(),
+                        related_run_id,
+                    ) {
+                        eprintln!("uhm: history: {error}");
+                    }
+                } else if let Some(reason) = &result.recovery_reason {
+                    if !args.json {
+                        eprintln!(
+                            "Verified restore unavailable: {}",
+                            ansi::sanitize_untrusted(reason)
+                        );
+                    }
+                    let _ = history::record_recovery_event(
+                        &config.paths.data_dir,
+                        &config.history,
+                        &run_id,
+                        route,
+                        mode.as_str(),
+                        history::EventKind::RecoveryUnavailable,
+                        "unavailable",
+                        Some(reason),
+                        proposal.outputs.len(),
+                        related_run_id,
                     );
                 }
                 let decision = if result.timed_out {
@@ -750,6 +905,24 @@ pub fn handle(
                 let classification = safety::classify(&command);
                 let effects = merged_effects(&classification.effects, &metadata.effects);
                 interaction.effects(&effects);
+                if recovery::capture_requested(
+                    &config.paths.data_dir,
+                    &config.recovery,
+                    args.recoverable,
+                ) {
+                    let _ = history::record_recovery_event(
+                        &config.paths.data_dir,
+                        &config.history,
+                        &run_id,
+                        route,
+                        mode.as_str(),
+                        history::EventKind::RecoveryClassified,
+                        recovery::RecoveryClass::BestEffortOnly.as_str(),
+                        Some("shell execution has a receipt but no controlled preimage"),
+                        0,
+                        related_run_id,
+                    );
+                }
                 let consequential = classification.tier.severity()
                     >= safety::Tier::Destructive.severity()
                     || effects.iter().any(Effect::requires_advisory_pause);
@@ -1202,6 +1375,7 @@ fn program_preview(
     proposal: &crate::action::ProgramProposal,
     snapshot: &context::Snapshot,
     config: &Config,
+    recovery: &recovery::Classification,
 ) {
     eprintln!("{}", ansi::primary("Proposed Python microprogram"));
     eprintln!("{}", ansi::sanitize_untrusted(&proposal.source));
@@ -1226,6 +1400,19 @@ fn program_preview(
         eprintln!(
             "Output (staged, then renamed): {}",
             ansi::sanitize_untrusted_inline(output)
+        );
+    }
+    eprintln!(
+        "Recovery: {} — {}",
+        recovery.class.as_str(),
+        ansi::sanitize_untrusted_inline(&recovery.reason)
+    );
+    for item in &recovery.items {
+        eprintln!(
+            "  {}: {} ({})",
+            ansi::sanitize_untrusted_inline(&item.destination.display().to_string()),
+            item.class.as_str(),
+            ansi::sanitize_untrusted_inline(&item.reason)
         );
     }
     for assumption in &proposal.assumptions {

@@ -48,6 +48,14 @@
 #   output_max_bytes: 16777216
 #   diagnostic_bytes: 1048576
 
+# recovery:                      # separate disclosed opt-in; snapshots contain file bytes
+#   enabled: false               # run `uhm recovery on` to record consent
+#   max_age_days: 14
+#   max_total_bytes: 134217728
+#   max_file_bytes: 8388608
+#   scan_limit: 1000
+#   prune_batch: 100
+
 # cache_enabled: true            # caches the RESPONSE only, never the prompt
 # cache_ttl_secs: 86400
 

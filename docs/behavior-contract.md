@@ -17,6 +17,8 @@ The action proposed by the model and the action passed to the child shell are th
 
 The no-argument TTY path collects one intent, completes one bounded interaction, and exits. It is not a REPL. A clarification or failed-command repair may consume at most one second turn; they cannot both occur in the same interaction.
 
+`undo` is a local, hash-verified restore of retained managed-file evidence and never calls the model. `restore --force` uses the same retained evidence but records a forced outcome. `recover` previews a bounded receipt subset before one normal model proposal, always reviews that proposal, and never equates execution success with restoration. See [bounded recovery](recovery.md).
+
 ## Application statuses
 
 | Status | Meaning when no child executed |

@@ -28,6 +28,9 @@ pub struct ExecutionResult {
     pub duration: Duration,
     pub artifacts: Vec<PathBuf>,
     pub retained_workspace: Option<PathBuf>,
+    pub recovery_prepared: bool,
+    pub recovery_state: Option<String>,
+    pub recovery_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -45,12 +48,22 @@ struct OutputEnv {
 struct StagedOutput {
     destination: PathBuf,
     staging: PathBuf,
+    cleanup: bool,
 }
 
 impl Drop for StagedOutput {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.staging);
+        if self.cleanup {
+            let _ = std::fs::remove_file(&self.staging);
+        }
     }
+}
+
+pub struct RecoveryRequest<'a> {
+    pub data_dir: &'a Path,
+    pub run_id: &'a str,
+    pub config: &'a crate::config::RecoveryConfig,
+    pub allow_unrecoverable: bool,
 }
 
 pub struct Request<'a> {
@@ -60,6 +73,7 @@ pub struct Request<'a> {
     pub cwd: &'a Path,
     pub config: &'a ProgramConfig,
     pub retain_workspace: bool,
+    pub recovery: Option<RecoveryRequest<'a>>,
 }
 
 /// Conservative source scan used only to strengthen review messaging.
@@ -161,7 +175,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
             })
         })
         .collect::<std::result::Result<Vec<_>, String>>()?;
-    let staged = prepare_outputs(req.cwd, &req.proposal.outputs)?;
+    let mut staged = prepare_outputs(req.cwd, &req.proposal.outputs)?;
     let outputs = staged
         .iter()
         .map(|value| OutputEnv {
@@ -169,6 +183,30 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
             destination: value.destination.to_string_lossy().into_owned(),
         })
         .collect::<Vec<_>>();
+    let mut recovery_reason = None;
+    let mut recovery = if let Some(capture) = &req.recovery {
+        let paths = staged
+            .iter()
+            .map(|output| (output.destination.clone(), output.staging.clone()))
+            .collect::<Vec<_>>();
+        match crate::recovery::prepare(capture.data_dir, capture.run_id, capture.config, &paths) {
+            Ok(coordinator) => Some(coordinator),
+            Err(error) if capture.allow_unrecoverable => {
+                crate::recovery::cleanup_incomplete_capture(capture.data_dir, capture.run_id);
+                recovery_reason = Some(error);
+                None
+            }
+            Err(error) => {
+                crate::recovery::cleanup_incomplete_capture(capture.data_dir, capture.run_id);
+                return Err(format!(
+                    "recovery snapshot failed before program execution: {error}"
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    let recovery_prepared = recovery.is_some();
 
     let mut cmd = Command::new(python);
     cmd.args(fixed_arguments(&source_path));
@@ -246,7 +284,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
     };
     CHILD_GROUP.store(0, Ordering::SeqCst);
     let (stdout_bytes, stdout_tail) = stdout.join().unwrap_or_default();
-    let (_, stderr_tail) = stderr.join().unwrap_or_default();
+    let (_, mut stderr_tail) = stderr.join().unwrap_or_default();
     let output_overflow = overflow.load(Ordering::SeqCst);
     #[cfg(unix)]
     let signal = {
@@ -264,8 +302,40 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
         if directory_size(workspace.path())? > req.config.workspace_max_bytes {
             code = 1;
         } else if req.proposal.result_mode == ProgramResultMode::Artifacts {
-            artifacts = commit_outputs(staged, req.config.workspace_max_bytes)?;
+            let commit = if let Some(coordinator) = &mut recovery {
+                for output in &mut staged {
+                    output.cleanup = false;
+                }
+                coordinator.commit(req.config.workspace_max_bytes)
+            } else {
+                commit_outputs(staged, req.config.workspace_max_bytes)
+            };
+            match commit {
+                Ok(paths) => artifacts = paths,
+                Err(error) => {
+                    code = 1;
+                    let message = format!("uhm managed artifact commit failed: {error}\n");
+                    append_tail(
+                        &mut stderr_tail,
+                        message.as_bytes(),
+                        req.config.diagnostic_bytes,
+                    );
+                    recovery_reason = Some(error);
+                }
+            }
         }
+    }
+    if recovery
+        .as_ref()
+        .is_some_and(|coordinator| coordinator.state() == "preparing")
+    {
+        recovery.take();
+        if let Some(capture) = &req.recovery {
+            crate::recovery::cleanup_incomplete_capture(capture.data_dir, capture.run_id);
+        }
+        recovery_reason.get_or_insert_with(|| {
+            "the program did not complete a managed commit, so its uncommitted preimage capture was removed".into()
+        });
     }
     let retained_workspace = if req.retain_workspace {
         Some(workspace.into_path())
@@ -283,7 +353,17 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
         duration: started.elapsed(),
         artifacts,
         retained_workspace,
+        recovery_prepared,
+        recovery_state: recovery.as_ref().map(|value| value.state().into()),
+        recovery_reason,
     })
+}
+
+fn append_tail(target: &mut Vec<u8>, bytes: &[u8], max: usize) {
+    target.extend_from_slice(bytes);
+    if target.len() > max {
+        target.drain(..target.len() - max);
+    }
 }
 
 fn fixed_arguments(source: &Path) -> Vec<std::ffi::OsString> {
@@ -335,6 +415,7 @@ fn prepare_outputs(cwd: &Path, values: &[String]) -> Result<Vec<StagedOutput>, S
         out.push(StagedOutput {
             destination,
             staging,
+            cleanup: true,
         });
     }
     Ok(out)
@@ -546,6 +627,7 @@ mod tests {
             cwd: &cwd,
             config: &ProgramConfig::default(),
             retain_workspace: false,
+            recovery: None,
         })
         .unwrap();
         assert_eq!(
@@ -575,6 +657,7 @@ mod tests {
             cwd: &cwd,
             config: &ProgramConfig::default(),
             retain_workspace: false,
+            recovery: None,
         })
         .unwrap();
         std::env::remove_var("UHM_PROGRAM_TEST_SECRET");
@@ -614,6 +697,7 @@ mod tests {
             cwd: &cwd,
             config: &config,
             retain_workspace: false,
+            recovery: None,
         })
         .unwrap();
         assert!(result.output_overflow);
@@ -660,6 +744,7 @@ mod tests {
             cwd: root.path(),
             config: &ProgramConfig::default(),
             retain_workspace: false,
+            recovery: None,
         })
         .unwrap();
         assert_eq!(result.code, 0);
@@ -677,6 +762,7 @@ mod tests {
             cwd: root.path(),
             config: &ProgramConfig::default(),
             retain_workspace: false,
+            recovery: None,
         })
         .unwrap();
         assert_ne!(result.code, 0);
@@ -689,6 +775,88 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .starts_with(".uhm-stage-")));
+    }
+
+    #[test]
+    fn recovery_preimage_is_durable_before_the_child_and_commits_through_coordinator() {
+        let inventory = crate::runtime::inventory();
+        if !inventory.available {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let destination = root.path().join("result.txt");
+        std::fs::write(&destination, "original").unwrap();
+        let run = "run-00000100";
+        let snapshot = data
+            .join("runs")
+            .join(run)
+            .join("snapshots")
+            .join("output-000.preimage");
+        let snapshot_literal = serde_json::to_string(snapshot.to_str().unwrap()).unwrap();
+        let source = format!(
+            "import os,json\np={snapshot_literal}\nassert open(p,'rb').read() == b'original'\no=json.loads(os.environ['UHM_PROGRAM_OUTPUTS'])[0]\nopen(o['path'],'w').write('replacement')"
+        );
+        let mut value = proposal(&source);
+        value.outputs = vec!["result.txt".into()];
+        value.result_mode = ProgramResultMode::Artifacts;
+        value.effects = vec![Effect::WriteLocal];
+        let recovery_config = crate::config::RecoveryConfig::default();
+        let result = execute(Request {
+            proposal: &value,
+            python: &inventory,
+            stdin: None,
+            cwd: root.path(),
+            config: &ProgramConfig::default(),
+            retain_workspace: false,
+            recovery: Some(RecoveryRequest {
+                data_dir: &data,
+                run_id: run,
+                config: &recovery_config,
+                allow_unrecoverable: false,
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            result.code,
+            0,
+            "{}",
+            String::from_utf8_lossy(&result.stderr_tail)
+        );
+        assert_eq!(result.recovery_state.as_deref(), Some("available"));
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "replacement"
+        );
+        crate::recovery::restore(&data, run, "undo-00000100", &recovery_config, false).unwrap();
+        assert_eq!(std::fs::read_to_string(destination).unwrap(), "original");
+
+        let failed_run = "run-00000101";
+        let mut failed = value.clone();
+        failed.source.push_str("\nraise SystemExit(2)");
+        let result = execute(Request {
+            proposal: &failed,
+            python: &inventory,
+            stdin: None,
+            cwd: root.path(),
+            config: &ProgramConfig::default(),
+            retain_workspace: false,
+            recovery: Some(RecoveryRequest {
+                data_dir: &data,
+                run_id: failed_run,
+                config: &recovery_config,
+                allow_unrecoverable: false,
+            }),
+        })
+        .unwrap();
+        assert_eq!(result.code, 2);
+        assert!(result.recovery_prepared);
+        assert!(result.recovery_state.is_none());
+        assert!(!data
+            .join("runs")
+            .join(failed_run)
+            .join("recovery.json")
+            .exists());
     }
 
     #[test]
@@ -715,6 +883,7 @@ mod tests {
             cwd: root.path(),
             config: &ProgramConfig::default(),
             retain_workspace: false,
+            recovery: None,
         })
         .unwrap();
         assert_eq!(result.code, 0);
@@ -735,6 +904,7 @@ mod tests {
             cwd: &cwd,
             config: &ProgramConfig::default(),
             retain_workspace: false,
+            recovery: None,
         })
         .unwrap();
         assert_eq!(result.signal, Some(libc::SIGTERM));

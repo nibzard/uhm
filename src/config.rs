@@ -91,6 +91,30 @@ pub struct ProgramConfig {
     pub diagnostic_bytes: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecoveryConfig {
+    pub enabled: bool,
+    pub max_age_days: u64,
+    pub max_total_bytes: u64,
+    pub max_file_bytes: u64,
+    pub scan_limit: usize,
+    pub prune_batch: usize,
+}
+
+impl Default for RecoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_age_days: 14,
+            max_total_bytes: 128 * 1024 * 1024,
+            max_file_bytes: 8 * 1024 * 1024,
+            scan_limit: 1_000,
+            prune_batch: 100,
+        }
+    }
+}
+
 impl Default for ProgramConfig {
     fn default() -> Self {
         Self {
@@ -142,6 +166,7 @@ pub struct Config {
     pub execution: ExecutionConfig,
     pub telemetry: TelemetryConfig,
     pub program: ProgramConfig,
+    pub recovery: RecoveryConfig,
     pub shell_context: ShellContextConfig,
     pub cache_enabled: bool,
     pub cache_ttl_secs: u64,
@@ -169,6 +194,7 @@ struct FileConfig {
     execution: Option<ExecutionConfig>,
     telemetry: Option<TelemetryConfig>,
     program: Option<ProgramConfig>,
+    recovery: Option<RecoveryConfig>,
     shell_context: Option<ShellContextConfig>,
     cache_enabled: Option<bool>,
     cache_ttl_secs: Option<u64>,
@@ -190,6 +216,7 @@ const KEYS: &[&str] = &[
     "execution",
     "telemetry",
     "program",
+    "recovery",
     "shell_context",
     "cache_enabled",
     "cache_ttl_secs",
@@ -217,6 +244,7 @@ impl Config {
             execution: ExecutionConfig::default(),
             telemetry: TelemetryConfig::default(),
             program: ProgramConfig::default(),
+            recovery: RecoveryConfig::default(),
             shell_context: ShellContextConfig::default(),
             cache_enabled: true,
             cache_ttl_secs: 86_400,
@@ -326,6 +354,26 @@ impl Config {
                 self.source("program"),
             ),
             (
+                "recovery.enabled",
+                self.recovery.enabled.to_string(),
+                self.source("recovery"),
+            ),
+            (
+                "recovery.max_age_days",
+                self.recovery.max_age_days.to_string(),
+                self.source("recovery"),
+            ),
+            (
+                "recovery.max_total_bytes",
+                self.recovery.max_total_bytes.to_string(),
+                self.source("recovery"),
+            ),
+            (
+                "recovery.max_file_bytes",
+                self.recovery.max_file_bytes.to_string(),
+                self.source("recovery"),
+            ),
+            (
                 "cache_enabled",
                 self.cache_enabled.to_string(),
                 self.source("cache_enabled"),
@@ -406,6 +454,7 @@ fn apply_file(config: &mut Config, file: FileConfig) {
     apply!(config, file, execution);
     apply!(config, file, telemetry);
     apply!(config, file, program);
+    apply!(config, file, recovery);
     apply!(config, file, shell_context);
     apply!(config, file, cache_enabled);
     apply!(config, file, cache_ttl_secs);
@@ -471,6 +520,18 @@ fn validate(c: &Config) -> Result<(), String> {
     {
         return Err("configured program manifest limits exceed the supported schema".into());
     }
+    if c.recovery.max_age_days == 0
+        || c.recovery.max_age_days > 3_650
+        || c.recovery.max_total_bytes == 0
+        || c.recovery.max_total_bytes > 1_099_511_627_776
+        || c.recovery.max_file_bytes == 0
+        || c.recovery.max_file_bytes > 1_073_741_824
+        || c.recovery.max_file_bytes > c.recovery.max_total_bytes
+        || !(1..=10_000).contains(&c.recovery.scan_limit)
+        || !(1..=1_000).contains(&c.recovery.prune_batch)
+    {
+        return Err("config recovery limits are invalid or unbounded".into());
+    }
     let shell = std::path::Path::new(&c.shell)
         .file_name()
         .and_then(|v| v.to_str())
@@ -514,6 +575,7 @@ mod tests {
         assert!(c.history.enabled);
         assert!(c.telemetry.enabled);
         assert!(!c.shell_context.last_history_entry);
+        assert!(!c.recovery.enabled);
     }
     #[test]
     fn rejects_removed_provider_base_url() {

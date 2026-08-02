@@ -263,3 +263,50 @@ fn plain_first_use_notice_contains_no_terminal_controls() {
     let output = configured_fresh(temp.path(), "", &["--plain", "config", "show"]);
     assert!(!output.stderr.contains(&0x1b));
 }
+
+#[test]
+fn recovery_is_off_by_default_and_enablement_is_explicit() {
+    let temp = tempfile::tempdir().unwrap();
+    let status = configured(temp.path(), "", &["--json", "recovery", "status"]);
+    assert!(status.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(value["enabled"], false);
+    let enabled = configured(temp.path(), "", &["recovery", "on"]);
+    assert!(enabled.status.success());
+    assert!(String::from_utf8_lossy(&enabled.stderr)
+        .contains("duplicates eligible managed file preimages"));
+    let status = configured(temp.path(), "", &["--json", "recovery", "status"]);
+    let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(value["enabled"], true);
+}
+
+#[test]
+fn forced_restore_requires_the_literal_authority_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = configured(temp.path(), "", &["restore", "last"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("literal --force"));
+}
+
+#[test]
+fn disabled_recovery_creates_no_recovery_timeline_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = configured(
+        temp.path(),
+        "aliases:\n  local-noop: true\n",
+        &["local-noop"],
+    );
+    assert!(run.status.success());
+    let history = configured(
+        temp.path(),
+        "aliases:\n  local-noop: true\n",
+        &["--json", "history", "show", "last"],
+    );
+    assert!(history.status.success());
+    let events: serde_json::Value = serde_json::from_slice(&history.stdout).unwrap();
+    assert!(events.as_array().unwrap().iter().all(|event| {
+        !event["kind"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("recovery_"))
+    }));
+}

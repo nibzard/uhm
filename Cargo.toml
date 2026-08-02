@@ -25,6 +25,7 @@ include = [
   "config.example.yaml",
   "docs/behavior-contract.md",
   "docs/local-history.md",
+  "docs/recovery.md",
   "docs/shell-integration.md",
 ]
 

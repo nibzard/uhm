@@ -29,7 +29,7 @@ uhm feedback good|bad [run-id]
 
 Exports are redacted by default: run identifiers, relationships, content, paths, proposal references, output, and diagnostics are removed. `--include-content` is an explicit local disclosure. Export writes atomically. Back up the journal and `runs` directory together if preserving replay evidence matters.
 
-Pruning applies record-count, age, journal-byte, and owned-run rules under the validated history root. Symlinks below the run root are rejected. There is no undo, rollback, snapshot, shell surveillance, cloud sync, or proof that an exit-zero process achieved the user's intent.
+Pruning applies record-count, age, journal-byte, and owned-run rules under the validated history root. Symlinks below the run root are rejected. Separately consented recovery snapshots have their own lifecycle and are excluded from normal export and generic retention deletion; see [bounded recovery](recovery.md). History alone offers no undo, rollback, shell surveillance, cloud sync, or proof that an exit-zero process achieved the user's intent.
 
 ## Integrity and recovery
 
