@@ -202,6 +202,20 @@ pub fn handle(
     };
     let mut recovery_label_shown = false;
     loop {
+        if matches!(route, "ask" | "explain")
+            && !matches!(
+                &action,
+                ProposedAction::Answer { .. } | ProposedAction::Clarification { .. }
+            )
+        {
+            interaction.decision("unavailable");
+            return app_error(
+                args,
+                outcome::MODEL,
+                "route_contract_error",
+                "ask and explain are prose-only; the model proposed local execution",
+            );
+        }
         if route == "recover" && !recovery_label_shown && !args.json {
             eprintln!("Best-effort inverse: execution success does not verify that the original state was recovered.");
             recovery_label_shown = true;

@@ -23,8 +23,8 @@ Adopt a proven argument parser or implement an equivalently well-tested grammar.
 The new public grammar should be:
 
 ```text
-uhm [global options] -- <intent>
-uhm run [options] -- <intent>       # require an executable local action
+uhm [global options] <intent>
+uhm run [options] <intent>       # require an executable local action
 uhm ask [options] -- <question>     # terminal/CLI answer only; never execute
 uhm explain [options] -- <command>  # explain only; never execute
 uhm history ...
@@ -169,7 +169,7 @@ Cache keys must include model, endpoint/API family, prompt/schema version, relev
 
 - A checked-in behavior table covers TTY/non-TTY × auto/run/ask/explain × default/review/dry-run/force.
 - Exit-code tests prove executed actions preserve child status, non-executed application outcomes use the documented app namespace, and `--json` disambiguates both.
-- `uhm ask -- what does -V mean`, `uhm explain -- git log -p`, and a prompt containing `-y`, `--help`, or `--system` reach the intended mode byte-for-byte.
+- `uhm ask what does -V mean`, `uhm explain git log -p`, and a prompt containing `-y`, `--help`, or `--system` reach the intended mode byte-for-byte after the first intent word. `--` remains available only when the first intent word itself begins with a hyphen.
 - Property or corpus tests prove `strip_styles(highlight(command)) == command` for spaces, tabs, quotes, Unicode, pipes, chained commands, redirections, and heredocs.
 - Edited commands never retain the original summary, assumptions, model effects, or confidence.
 - Adversarial classifier fixtures include quoted/chained deletion, shell wrappers such as `bash -lc`, `env` prefixes, `dd`, `rsync --delete`, and remote mutations. False negatives may remain and may skip the advisory pause under the explicit default-trust policy, but none can silently become a claim of safety or classifier-granted authority.

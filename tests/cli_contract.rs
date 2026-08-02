@@ -108,6 +108,21 @@ fn nonexecuted_review_is_nonzero_and_contains_no_controls() {
 }
 
 #[test]
+fn prose_only_routes_never_execute_a_local_alias() {
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("must-not-exist");
+    let command = format!("touch {}", marker.display());
+    let yaml = format!("aliases:\n  inspect: '{}'\n", command.replace('\'', "''"));
+
+    for route in ["ask", "explain"] {
+        let output = configured(temp.path(), &yaml, &[route, "inspect"]);
+        assert_eq!(output.status.code(), Some(10));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("prose-only"));
+        assert!(!marker.exists());
+    }
+}
+
+#[test]
 fn dry_run_command_channel_is_exact() {
     let temp = tempfile::tempdir().unwrap();
     let command = "printf  '%s\\n'  'snow 雪'";

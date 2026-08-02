@@ -27,11 +27,12 @@ Reference the SVG in the README with ordinary markdown image syntax. Do not atte
 
 Keep the cast 30–60 seconds. Open with the hero and order by impact, using intents already documented in the README so the demo and docs agree:
 
-1. Hero (read): `uhm -- find the ten biggest files in this directory` — the answer appears, done.
-2. Ask over a pipe: `git diff | uhm ask -- write a concise summary`.
-3. Explain: `uhm explain -- git log -p`.
-4. Dry run: `uhm run --dry-run -- concatenate the markdown files` — exact bytes shown, nothing executes.
-5. Consequential UX (power without pretending): `uhm run -- remove build artifacts` — show the review card / advisory pause and that the user stays in control. Keep the wording literal; the demo must not imply a safety guarantee.
+1. Hero (read): `uhm list the three biggest files` — the answer appears with no separator, route, or context flag.
+2. Ask over a pipe: `git diff | uhm ask write a one-line commit message`.
+3. Multifile work: `uhm count the words, paragraphs, and headings in the markdown files in docs` — show that one natural-language request can select a suitable shell pipeline or bounded program.
+4. Explain: `uhm explain what git log -p does`.
+5. Dry run: `uhm run --dry-run concatenate the markdown files` — exact bytes shown, nothing executes.
+6. Explicit yolo mode: `uhm --force remove build artifacts` — show the warning, skip confirmation under explicit user authority, and return a literal result. The disposable sandbox makes this demonstration harmless; do not imply that `--force` makes an action safe.
 
 Every step runs inside a sandbox so no real repository, remote, or path is shown. Drive the steps from a committed script so the demo is reproducible rather than a one-off live take.
 
@@ -44,7 +45,7 @@ Reproducibility:
 - Run from a `mktemp` sandbox populated with a few seeded files and a tiny local git repo with no remote, so output is stable across takes.
 - Drive commands from the script with small, deliberate delays so the cast reads like typing; trim dead air with `asciinema rec --idle-time-limit` and `agg`/post-edit.
 - Use a fixed terminal size (for example 80×24) and a real color `TERM` (for example `xterm-256color`) so colors and layout match the render. The demo deliberately shows styling and personality, so do not use `--plain` for the recorded run.
-- Use `--context minimal` for the recorded calls to keep the demo fast and to avoid sending the irrelevant sandbox inventory; this also keeps cost and latency predictable.
+- Use normal `standard` context implicitly. Do not expose a context flag in the recording: the hero must look like the product's default path, while the throwaway sandbox keeps the bounded context impersonal.
 
 Privacy and safety (hard rules):
 
@@ -80,8 +81,8 @@ Coordinate with Plan 3 §7 so the demo lands inside the README rewrite rather th
 ## Definition of done
 
 - `scripts/demo/demo-script.sh` and `scripts/record-demo.sh` exist; running the latter from a clean checkout rebuilds `docs/demo/uhm-demo.svg` byte-stably from `docs/demo/uhm-demo.cast` (modulo renderer version).
-- The cast runs ≤ ~60 seconds, opens with the hero intent, and includes a read, an ask-over-pipe, an explain, a `--dry-run`, and one advisory/consequential pause with literal wording.
-- The record script builds `uhm`, runs in a throwaway sandbox at a fixed size and `TERM` with `--context minimal`, injects `OPENAI_API_KEY` outside the recorded session, and exits nonzero if the cast contains `sk-`, real home paths, configured key fragments, or real hostnames.
+- The cast runs ≤ ~60 seconds, opens with a bare natural-language hero intent, and includes a read, an ask-over-pipe, multifile statistics, an explain, a `--dry-run`, and an explicit `--force` execution with literal wording.
+- The record script builds `uhm`, runs in a throwaway sandbox at a fixed size and `TERM` with implicit standard context, injects `OPENAI_API_KEY` outside the recorded session, and exits nonzero if the cast contains `sk-`, real home paths, configured key fragments, or real hostnames.
 - The README contains a Demo block near the top: the committed SVG renders inline on GitHub, plus a caption and a working link to the interactive player; a GIF fallback asset exists.
 - `docs/demo/README.md` records the toolchain, versions, privacy rules, and the single rebuild command.
 - If the optional CI check is added, CI regenerates the SVG from the committed cast and fails on drift, using no API key.

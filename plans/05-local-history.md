@@ -94,7 +94,7 @@ Keep command parsing in `src/args.rs`, orchestration in `src/command.rs`, storag
 Add:
 
 ```text
-uhm repair <run-id|last> [-- <feedback>]
+uhm repair <run-id|last> [feedback]
 ```
 
 Repair is available only when the selected receipt level retained enough evidence. It builds the smallest explicit request from the prior intent, failed proposal, current machine facts, runtime version, exit/signal, and bounded sanitized diagnostic tail. Before sending, review mode shows which receipt fields will leave the device. The full journal and unrelated runs are never attached.

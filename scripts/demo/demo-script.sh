@@ -22,35 +22,26 @@ beat() {
   sleep 1
 }
 
-type_line 'uhm --context minimal -- find the ten biggest files in this directory'
-"$UHM_DEMO_BIN" --context minimal -- find the ten biggest files in this directory
+type_line 'uhm list the three biggest files'
+"$UHM_DEMO_BIN" list the three biggest files
 beat
 
-type_line 'git diff | uhm ask --context minimal -- write a concise summary'
-git diff | "$UHM_DEMO_BIN" ask --context minimal -- write a concise summary
+type_line 'git diff | uhm ask write a one-line commit message'
+git diff | "$UHM_DEMO_BIN" ask write a one-line commit message
 beat
 
-type_line 'uhm explain --context minimal -- git log -p'
-"$UHM_DEMO_BIN" explain --context minimal -- git log -p
+type_line 'uhm count the words, paragraphs, and headings in the markdown files in docs'
+"$UHM_DEMO_BIN" count the words, paragraphs, and headings in the markdown files in docs
 beat
 
-type_line 'uhm run --dry-run --context minimal -- concatenate the markdown files'
-"$UHM_DEMO_BIN" run --dry-run --context minimal -- concatenate the markdown files
+type_line 'uhm explain what git log -p does'
+"$UHM_DEMO_BIN" explain what git log -p does
+beat
+
+type_line 'uhm run --dry-run concatenate the markdown files'
+"$UHM_DEMO_BIN" run --dry-run concatenate the markdown files
 printf '\n'
 beat
 
-type_line 'uhm run --context minimal -- remove build artifacts'
-printf -v quoted_bin '%q' "$UHM_DEMO_BIN"
-set +e
-if [[ $(uname -s) == Darwin ]]; then
-  (sleep 1; printf 'q\n') | script -q /dev/null "$UHM_DEMO_BIN" run --context minimal -- remove build artifacts
-else
-  (sleep 1; printf 'q\n') | script -q -e -c "$quoted_bin run --context minimal -- remove build artifacts" /dev/null
-fi
-cancel_status=$?
-set -e
-if [[ $cancel_status -ne 0 && $cancel_status -ne 11 ]]; then
-  exit "$cancel_status"
-fi
-
-printf '\n\033[1;36mCancelled. Nothing was removed.\033[0m\n'
+type_line 'uhm --force remove build artifacts'
+"$UHM_DEMO_BIN" --force remove build artifacts

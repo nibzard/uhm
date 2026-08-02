@@ -19,13 +19,13 @@ To replace the source recording, also install asciinema 3.2.0, export
 scripts/record-demo.sh
 ```
 
-The recording uses real Responses API calls for the hero, piped ask, and
-explain examples in a disposable local Git repository with no remote. The
-dry-run and cancellation use exact-intent aliases so their bytes and review
-behavior stay deterministic. It sets an isolated home and XDG directories, fixes
-the terminal at 80x24 with `TERM=xterm-256color`, disables demo telemetry and
-history, and sends minimal context. The key is inherited by the child process;
-it is never typed or echoed.
+The hero, piped ask, multifile statistics, and explanation make real Responses
+API calls. They run in a disposable local Git repository with no remote. The
+dry-run and forced removal use exact-intent aliases so their output and effects
+stay predictable. The recorder isolates the home and XDG directories, fixes the
+terminal at 80x24 with `TERM=xterm-256color`, and disables demo telemetry and
+history. It uses standard context without putting a context flag in the shown
+commands. The child process inherits the key; the demo never types or echoes it.
 
 Before any cast or render is published, the script rejects recordings that
 contain `sk-`, a fragment of the configured key, the real home directory, the
@@ -34,8 +34,9 @@ checks are a backstop, not proof that arbitrary private data is absent.
 
 The combined cast, SVG, and GIF budget is 6 MiB. The SVG is the preferred web
 asset; the GIF exists for clients that cannot animate SVG. The final removal
-example operates only on a seeded `build` directory and is cancelled at the
-real consequential-action prompt.
+example operates only on a seeded `build` directory. It deliberately uses
+`--force` as the final, advanced step, after the demo has already delivered
+value through a bare `uhm <intent>` invocation.
 
 `index.html` hosts the interactive player on GitHub Pages. It loads the pinned
 asciinema player 3.6.3 bundle from jsDelivr and reads the committed cast from

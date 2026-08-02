@@ -10,7 +10,7 @@ It is deliberately smaller than a coding agent. One intent goes in. One bounded 
 
 [![A terminal demo of uhm turning natural-language requests into results](docs/demo/uhm-demo.svg)](https://nibzard.github.io/uhm/demo/)
 
-Thirty-one seconds, five jobs: inspect files, summarize a diff, explain Git, preview a write, and cancel a consequential action. [Open the interactive recording](https://nibzard.github.io/uhm/demo/) or use the [GIF fallback](docs/demo/uhm-demo.gif). The demo uses real OpenAI calls in a disposable repository; its [rebuild and privacy procedure](docs/demo/README.md) is committed with the assets.
+Under a minute, six jobs: inspect files, summarize a diff, compute multifile statistics, explain Git, preview a write, and explicitly force a consequential action. [Open the interactive recording](https://nibzard.github.io/uhm/demo/) or use the [GIF fallback](docs/demo/uhm-demo.gif). The demo uses real OpenAI calls in a disposable repository; its [rebuild and privacy procedure](docs/demo/README.md) is committed with the assets.
 
 ## Install
 
@@ -50,7 +50,7 @@ Give `uhm` an OpenAI API key through the environment or its private secrets file
 ```sh
 export OPENAI_API_KEY="your-key"
 uhm doctor
-uhm -- find the ten biggest files in this directory
+uhm list the three biggest files
 ```
 
 `uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and run `chmod 600 <path>` if you do not want the key in your shell environment. `uhm doctor network` makes a separate, explicit OpenAI reachability and authentication check.
@@ -62,25 +62,25 @@ Before the first outbound request, `uhm` prints a short data notice to stderr. I
 Get the answer produced by a local tool:
 
 ```sh
-uhm -- how many paragraphs are in README.md?
+uhm how many paragraphs are in README.md?
 ```
 
 Transform files and keep the result pipeable:
 
 ```sh
-uhm run -- concatenate the markdown files in docs and write combined.md
+uhm run concatenate the markdown files in docs and write combined.md
 ```
 
 Use exact piped bytes as request data:
 
 ```sh
-git diff | uhm ask -- summarize this for a commit message
+git diff | uhm ask summarize this for a commit message
 ```
 
 Keep piped content on your machine while letting a generated program process it:
 
 ```sh
-cat private-report.csv | uhm --local-input --input-format text/csv -- total the amount column
+cat private-report.csv | uhm --local-input --input-format text/csv total the amount column
 ```
 
 The model receives the intent, byte count, UTF-8 status, and optional format label, but not the piped bytes. If it chooses the bounded Python route, the program receives a private local input path.
@@ -88,14 +88,14 @@ The model receives the intent, byte count, UTF-8 status, and optional format lab
 Ask for prose without allowing execution:
 
 ```sh
-uhm explain -- git log --first-parent --oneline
+uhm explain git log --first-parent --oneline
 ```
 
 Inspect a proposal without running it:
 
 ```sh
-uhm run --dry-run -- count every occurrence of the word world in report.txt
-uhm run --review -- remove old build artifacts
+uhm run --dry-run count every occurrence of the word world in report.txt
+uhm run --review remove old build artifacts
 ```
 
 Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. `--force` skips the advisory prompt for a detected consequential action, while still showing the warning.
@@ -114,7 +114,7 @@ Content-free telemetry is on by default. A summary contains only fixed categorie
 uhm telemetry preview       # exact candidate payload for this invocation
 uhm telemetry status
 uhm telemetry off           # persistent opt-out and clear queued summaries
-uhm --no-telemetry -- ...   # this invocation only
+uhm --no-telemetry do something   # this invocation only
 ```
 
 `UHM_TELEMETRY=off` and `DO_NOT_TRACK=1` are also honored. Telemetry is best effort and lossy. It runs after result bytes are written, never on local alias or cache hits, and never changes a job's exit status.
@@ -143,7 +143,7 @@ Recovery snapshots are off by default because they duplicate file contents. Afte
 
 ```sh
 uhm recovery on
-uhm --recoverable run -- rewrite report.txt as compact JSON
+uhm run --recoverable rewrite report.txt as compact JSON
 uhm recovery status
 uhm undo <run-id|last>
 uhm restore <run-id|last> --force
@@ -180,14 +180,14 @@ The current development version has no universal undo, filesystem-wide transacti
 ## CLI reference
 
 ```text
-uhm [options] -- <intent>
-uhm run|ask|explain [options] -- <intent>
+uhm [options] <intent>
+uhm run|ask|explain [options] <intent>
 uhm shell-init bash|zsh|fish
 uhm context show [minimal|standard|full]
 uhm telemetry [status|preview|on|off]
 uhm feedback good|bad [run-id]
-uhm repair <run-id|last> [-- <feedback>]
-uhm recover <run-id|last> [-- <guidance>]
+uhm repair <run-id|last> [feedback]
+uhm recover <run-id|last> [guidance]
 uhm undo <run-id|last> [--review]
 uhm restore <run-id|last> --force
 uhm recovery on|off|status|prune|pin|unpin|resume

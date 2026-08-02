@@ -85,9 +85,9 @@ Opt out in any of these ways:
 
 ```sh
 uhm telemetry off
-uhm --no-telemetry -- <intent>
-UHM_TELEMETRY=off uhm -- <intent>
-DO_NOT_TRACK=1 uhm -- <intent>
+uhm --no-telemetry <intent>
+UHM_TELEMETRY=off uhm <intent>
+DO_NOT_TRACK=1 uhm <intent>
 ```
 
 You can also set `telemetry.enabled: false` in `config.yaml`. Every opt-out is checked before an event is created or a queued event is claimed. `uhm telemetry off` writes the persistent opt-out first, waits for any send already in flight, clears queued summaries, and returns with no local send in flight. It cannot retract an event that the server already accepted. Use `uhm telemetry on` to remove the persistent opt-out; environment and config opt-outs still take precedence.

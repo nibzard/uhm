@@ -13,7 +13,7 @@ Recovery is off by default and has consent separate from metadata history becaus
 ```sh
 uhm recovery on
 uhm recovery status
-uhm --recoverable run -- rewrite report.txt as compact JSON  # one job only
+uhm run --recoverable rewrite report.txt as compact JSON  # one job only
 uhm recovery off
 uhm recovery off --prune
 ```
@@ -39,7 +39,7 @@ Each individual supported rename is atomic. A multi-output set is not a filesyst
 
 ## Best-effort inverse
 
-`uhm recover <run-id|last> [-- <guidance>]` requires full history detail for the original intent and diagnostic/full detail for the typed proposal. It prints the exact bounded subset and instruction before sending them, then asks for confirmation. The normal selected current context is also sent and disclosed. The full journal, unrelated runs, snapshots, and snapshot bytes are excluded.
+`uhm recover <run-id|last> [guidance]` requires full history detail for the original intent and diagnostic/full detail for the typed proposal. It prints the exact bounded subset and instruction before sending them, then asks for confirmation. The normal selected current context is also sent and disclosed. The full journal, unrelated runs, snapshots, and snapshot bytes are excluded.
 
 The resulting action is always reviewed and linked to the original run. The existing global limit of two model calls and two executions applies; clarification, revision, edit, or failure repair share the single replacement slot. A recovery job cannot recover another linked recovery job, and no inverse is automatically executed, retried, or chained.
 

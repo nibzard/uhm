@@ -72,7 +72,6 @@ fi
 need asciinema
 need cargo
 need git
-need script
 [[ $(asciinema --version) == "asciinema $ASCIINEMA_VERSION" ]] || \
   die "asciinema $ASCIINEMA_VERSION is required"
 [[ -n ${OPENAI_API_KEY:-} ]] || die 'OPENAI_API_KEY must be set before recording'
@@ -114,7 +113,6 @@ printf 'small fixture\n' > "$workspace/tiny.txt"
 )
 
 printf '%s\n' \
-  'context_mode: minimal' \
   'max_completion_tokens: 1024' \
   'cache_enabled: false' \
   'history:' \
@@ -123,11 +121,12 @@ printf '%s\n' \
   '  enabled: false' \
   'aliases:' \
   "  'concatenate the markdown files': 'cat docs/*.md > combined.md'" \
-  "  'remove build artifacts': 'rm -rf -- build'" > "$demo_home/config/uhm/config.yaml"
+  "  'remove build artifacts': 'rm -rf -- build && echo Build artifacts removed.'" > "$demo_home/config/uhm/config.yaml"
 printf '3\n' > "$demo_home/data/uhm/notice-revision"
 
 staged_cast="$stage/uhm-demo.cast"
 printf 'Recording a real session in an isolated 80x24 workspace...\n'
+set +e
 (
   cd "$workspace"
   export HOME="$demo_home"
@@ -144,6 +143,13 @@ printf 'Recording a real session in an isolated 80x24 workspace...\n'
     --title 'uhm — say what you need; get the result' \
     --command "bash '$driver'" "$staged_cast"
 )
+record_status=$?
+set -e
+if [[ $record_status -ne 0 ]]; then
+  failed_cast="$repo_root/target/uhm-demo-failed.cast"
+  cp "$staged_cast" "$failed_cast"
+  die "recorded session exited $record_status; inspect $failed_cast"
+fi
 
 # v2 players do not require these recorder-specific fields. Removing them keeps
 # checkout paths out of published metadata and avoids a new timestamp-only diff.

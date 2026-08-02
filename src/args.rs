@@ -259,6 +259,17 @@ mod tests {
     }
 
     #[test]
+    fn bare_natural_language_is_the_primary_invocation() {
+        let a = pv(&["uhm", "list", "the", "three", "biggest", "files"]).unwrap();
+        assert_eq!(a.subcommand, None);
+        assert_eq!(a.prompt, "list the three biggest files");
+
+        let ask = pv(&["uhm", "ask", "write", "a", "one-line", "summary"]).unwrap();
+        assert_eq!(ask.subcommand.as_deref(), Some("ask"));
+        assert_eq!(ask.prompt, "write a one-line summary");
+    }
+
+    #[test]
     fn removed_yes_flag_is_rejected() {
         assert!(pv(&["uhm", "-y", "list", "files"]).is_err());
         assert!(pv(&["uhm", "--yes", "list", "files"]).is_err());
@@ -302,11 +313,11 @@ mod tests {
 
     #[test]
     fn documented_flag_like_prompts_reach_the_intended_mode() {
-        let ask = pv(&["uhm", "ask", "--", "what", "does", "-V", "mean"]).unwrap();
+        let ask = pv(&["uhm", "ask", "what", "does", "-V", "mean"]).unwrap();
         assert_eq!(ask.subcommand.as_deref(), Some("ask"));
         assert_eq!(ask.prompt, "what does -V mean");
 
-        let explain = pv(&["uhm", "explain", "--", "git", "log", "-p"]).unwrap();
+        let explain = pv(&["uhm", "explain", "git", "log", "-p"]).unwrap();
         assert_eq!(explain.subcommand.as_deref(), Some("explain"));
         assert_eq!(explain.prompt, "git log -p");
 

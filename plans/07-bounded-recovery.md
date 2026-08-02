@@ -79,7 +79,7 @@ Undoing an undo is not part of the initial contract. The undo job records enough
 Provide one explicit command:
 
 ```text
-uhm recover <run-id|last> [-- <guidance>]
+uhm recover <run-id|last> [guidance]
 ```
 
 `recover` is not an alias for `undo`. It extracts the smallest relevant receipt subset, previews exactly what will be sent to OpenAI, and requests one strict normal action proposal labeled `best_effort_inverse`. It never sends the full journal, unrelated runs, snapshots, file contents, or unbounded output. If the retained receipt lacks sufficient evidence, say so rather than inventing an inverse.
