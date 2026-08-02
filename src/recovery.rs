@@ -956,7 +956,7 @@ fn create_restore_temporary(
     item: &RecoveryItem,
     snapshot: &Path,
 ) -> Result<CString, String> {
-    let name = CString::new(format!(".uhm-restore-{}-{}", &item.id, std::process::id()))
+    let name = CString::new(format!(".uhm-restore-{}-{}", item.id, std::process::id()))
         .map_err(|_| "invalid restore temporary name")?;
     let descriptor = unsafe {
         libc::openat(
@@ -1927,12 +1927,13 @@ fn rename_replace(parent: &File, source: &CString, destination: &CString) -> Res
 #[cfg(target_os = "linux")]
 fn rename_no_replace(parent: &File, source: &CString, destination: &CString) -> Result<(), String> {
     let result = unsafe {
-        libc::renameat2(
+        libc::syscall(
+            libc::SYS_renameat2,
             parent.as_raw_fd(),
             source.as_ptr(),
             parent.as_raw_fd(),
             destination.as_ptr(),
-            1,
+            1u32,
         )
     };
     if result == 0 {
