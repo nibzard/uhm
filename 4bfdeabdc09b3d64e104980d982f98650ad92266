@@ -1,0 +1,10 @@
+# Context
+
+## Background
+Hosted CI exposed two portability differences not visible under the development stable toolchain: Clippy 1.97 rejects a redundant formatting borrow, and musl does not export renameat2 as a linkable libc symbol.
+
+## Why This Way
+Linux atomic no-replace now invokes SYS_renameat2 directly through libc::syscall. This preserves the same kernel primitive and RENAME_NOREPLACE semantics across glibc and musl without adding a dependency or falling back to a racy existence check.
+
+## Verification
+The complete local suite, Rust 1.82 check, and x86_64-unknown-linux-musl release link passed before push.
