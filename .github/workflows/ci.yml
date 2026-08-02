@@ -76,6 +76,33 @@ jobs:
         run: npm test
         working-directory: telemetry-worker
 
+  demo-assets:
+    name: Demo assets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Install pinned agg renderer
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/asciinema/agg/releases/download/v1.9.0/agg-x86_64-unknown-linux-gnu \
+            --output "$RUNNER_TEMP/agg"
+          chmod +x "$RUNNER_TEMP/agg"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Regenerate media without an API key
+        run: scripts/record-demo.sh --render-only
+
+      - name: Require byte-stable derived assets
+        run: git diff --exit-code -- docs/demo/uhm-demo.svg docs/demo/uhm-demo.gif
+
   msrv:
     name: MSRV / Rust 1.82
     runs-on: ubuntu-latest

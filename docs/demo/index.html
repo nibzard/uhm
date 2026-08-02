@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="A real 31-second terminal walkthrough of uhm: natural language in, useful result out."
+    />
+    <title>uhm — 31 seconds, five terminal jobs</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.css"
+    />
+    <link rel="stylesheet" href="demo.css" />
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.min.js"
+    ></script>
+    <script defer src="demo-player.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="wordmark" href="../../" aria-label="uhm repository">uhm<span aria-hidden="true">.</span></a>
+      <a class="repo-link" href="https://github.com/nibzard/uhm">View source <span aria-hidden="true">↗</span></a>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="demo-title">
+        <p class="signal"><span aria-hidden="true"></span> Real calls · disposable repo · nothing mocked</p>
+        <h1 id="demo-title">Five jobs.<br />Thirty-one seconds.</h1>
+        <p class="lede">
+          Say what you need. <strong>uhm</strong> finds the terminal-shaped answer, runs ordinary work,
+          and pauses when the choice should stay yours.
+        </p>
+      </section>
+
+      <section class="player-region" aria-label="Interactive terminal recording">
+        <div id="demo-player"></div>
+        <noscript>
+          JavaScript is required for the interactive player. You can still
+          <a href="uhm-demo.cast">download the asciicast</a> or <a href="uhm-demo.gif">watch the GIF</a>.
+        </noscript>
+        <p id="player-status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <footer>
+        <p>80×24 · minimal context · OpenAI Responses API</p>
+        <p><a href="README.md">How this demo is built and privacy-checked</a></p>
+      </footer>
+    </main>
+  </body>
+</html>

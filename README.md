@@ -6,6 +6,12 @@ Say what you need. Get the result.
 
 It is deliberately smaller than a coding agent. One intent goes in. One bounded job comes out. Then `uhm` exits.
 
+## See it work
+
+[![A terminal demo of uhm turning natural-language requests into results](docs/demo/uhm-demo.svg)](https://nibzard.github.io/uhm/demo/)
+
+Thirty-one seconds, five jobs: inspect files, summarize a diff, explain Git, preview a write, and cancel a consequential action. [Open the interactive recording](https://nibzard.github.io/uhm/demo/) or use the [GIF fallback](docs/demo/uhm-demo.gif). The demo uses real OpenAI calls in a disposable repository; its [rebuild and privacy procedure](docs/demo/README.md) is committed with the assets.
+
 ## Install
 
 Download the archive for your machine from the [v0.1.0 release](https://github.com/nibzard/uhm/releases/tag/v0.1.0):
