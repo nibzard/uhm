@@ -1,0 +1,19 @@
+# ADR: Bound recovery to retained managed-file evidence
+
+## Status
+Accepted
+
+## Context
+uhm needs useful recovery without becoming a transaction engine or calling model-proposed inverses undo. Arbitrary shell and remote effects lack controlled preimages.
+
+## Decision
+Reserve undo for descriptor-validated, sibling-staged regular-file outputs with private preimages and pre/post hashes. Keep snapshot consent separate and off by default. Use explicit crash-aware manifest/item states, atomic per-file operations, conflict refusal, forced_restore as a distinct outcome, bounded retention, and a separately reviewed best-effort recover job.
+
+## Alternatives Considered
+- Infer inverses from command text: rejected because plausibility is not evidence.
+- Snapshot arbitrary writes/directories: rejected because uhm does not mediate them.
+- Couple snapshots to metadata history: rejected because duplicated content requires separate disclosure.
+- Report inverse exit zero as recovery: rejected because semantic and remote state remain unverifiable.
+
+## Consequences
+Verified undo is narrow and honest; multi-file work remains non-transactional and subject to a documented compare/rename race. Linux and macOS need platform atomic-rename coverage. The 8 MiB boundary fixture completed capture, commit, and undo in about 146 ms on the development Linux host; defaults remain capped at 8 MiB/file, 128 MiB total, and 14 days.
