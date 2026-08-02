@@ -2,11 +2,16 @@
 - **Getting started**
   - [Install](install.md)
   - [Quickstart](getting-started.md)
+  - [Troubleshooting](troubleshooting.md)
+- **Concepts**
+  - [Core concepts](concepts.md)
+  - [Bounded Python microprograms](program.md)
 - **Reference**
   - [CLI reference](cli-reference.md)
   - [Configuration](configuration.md)
   - [Behavior & exit codes](behavior-contract.md)
 - **Guides**
+  - [Cookbook](cookbook.md)
   - [Parent-shell integration](shell-integration.md)
   - [Local history](local-history.md)
   - [Bounded recovery](recovery.md)

@@ -317,6 +317,31 @@ section.cover,
 .pagination .pagination-item a { color: var(--muted); }
 .pagination .pagination-item a:hover { color: var(--primary); }
 
+/* ---------- Edit-page footer & copy-code button --------------------------- */
+
+.edit-page {
+  margin: 2.5rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.82rem;
+}
+.edit-page a { color: var(--muted); }
+.edit-page a:hover { color: var(--primary); }
+
+/* docsify-copy-code button (class name is docsify-copy-code-button) */
+.docsify-copy-code-button {
+  background: var(--surface-2) !important;
+  border: 1px solid var(--rule) !important;
+  border-radius: 6px !important;
+  color: var(--muted) !important;
+  font-family: var(--font-ui) !important;
+  font-size: 0.72rem !important;
+  padding: 0.15rem 0.5rem !important;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.docsify-copy-code-button:hover { color: var(--ink) !important; border-color: var(--primary) !important; }
+.docsify-copy-code-button.success { color: var(--accent) !important; border-color: var(--accent) !important; }
+
 /* ---------- Scrollbars ---------------------------------------------------- */
 
 * { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }

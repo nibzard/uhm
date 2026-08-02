@@ -1,0 +1,91 @@
+# Cookbook
+
+Short recipes for common goals. Each assumes `uhm` is installed and your API key is configured — see [Install](install.md) and [Quickstart](getting-started.md).
+
+## Quick answers
+
+Get a fact produced by a local tool:
+
+```sh
+uhm how many paragraphs are in README.md?
+uhm find the three biggest files in this directory
+```
+
+## File transforms
+
+Run a change and keep the result pipeable:
+
+```sh
+uhm run concatenate the markdown files in docs and write combined.md
+```
+
+## Piped input
+
+Feed exact bytes as request data:
+
+```sh
+git diff | uhm ask summarize this for a commit message
+```
+
+## Privacy-preserving input
+
+Keep piped content on your machine while a generated program still processes it:
+
+```sh
+cat private_report.csv | uhm --local-input --input-format text/csv total the amount column
+```
+
+The model receives the intent, a byte count, UTF-8 status, and the format label — not the bytes. If it chooses the bounded Python route, the program receives a private local input path.
+
+## Inspect before running
+
+See the exact proposal without executing:
+
+```sh
+uhm run --dry-run count every occurrence of the word world in report.txt
+uhm run --review remove old build artifacts
+```
+
+`--dry-run` prints exact command bytes and runs nothing. `--review` pauses every proposal at a prompt. `--force` skips the advisory prompt for a detected consequential action while still showing the warning.
+
+## Explain only
+
+Ask for prose without allowing execution:
+
+```sh
+uhm explain git log --first-parent --oneline
+```
+
+## Work with history
+
+```sh
+uhm history status
+uhm history list --limit 20
+uhm history show last
+uhm history search -- failure
+uhm history replay <run-id> --review
+```
+
+## Undo a change
+
+With recovery enabled:
+
+```sh
+uhm recovery on
+uhm run --recoverable rewrite report.txt as compact JSON
+uhm undo last                 # hash-verified restore
+uhm restore last --force      # reapply retained evidence
+```
+
+## Plain output for scripts
+
+```sh
+uhm --plain count the lines in *.md     # ASCII-safe, no controls
+uhm --json count the lines in *.md      # machine-readable where supported
+```
+
+## Next
+
+- [CLI reference](cli-reference.md) — the full surface
+- [Bounded Python microprograms](program.md) — when a program is generated
+- [Troubleshooting](troubleshooting.md) — when something goes wrong
