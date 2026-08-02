@@ -43,7 +43,7 @@ Wrapper status precedence is: ordinary jobs preserve the child status; failed ch
 
 Before any OpenAI request or telemetry send, a fresh installation writes a versioned disclosure to stderr and flushes it. Only then does it atomically persist an owner-only notice marker. A changed outbound-data contract increments the revision and makes the notice appear once more.
 
-OpenAI receives the prompt, explicitly supplied UTF-8 stdin, and the selected context. `standard` context is the default. Aggregate telemetry is enabled by default but has only fixed, content-free categories. Its opt-outs are evaluated before an event or queue entry exists. [PRIVACY.md](../PRIVACY.md) is the normative field and retention description.
+OpenAI receives the prompt, explicitly supplied UTF-8 stdin, and the selected context. `standard` context is the default. Aggregate telemetry is enabled by default but has only fixed, content-free categories. Its opt-outs are evaluated before an event or queue entry exists. [PRIVACY.md](https://github.com/nibzard/uhm/blob/main/PRIVACY.md) is the normative field and retention description.
 
 `--local-input` changes explicitly piped stdin to local-only program data. The request carries only presence, byte count, UTF-8 status, and the optional `--input-format` label. It never carries the input body. Python runtime path/version/isolated-mode inventory is disclosed in every context mode for intentional routing.
 

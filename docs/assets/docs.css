@@ -1,0 +1,322 @@
+/* ==========================================================================
+   uhm docs — warm-dark system, lifted verbatim from docs/demo/demo.css and
+   applied on top of docsify's dark.css layout base.
+   OKLCH is the source of truth; hex values are approximate sRGB equivalents.
+   ========================================================================== */
+
+:root {
+  --bg: oklch(0.085 0 0);            /* #141414 near-black page */
+  --surface: oklch(0.145 0.008 25.7);/* #252220 warm card surface */
+  --surface-2: oklch(0.175 0.01 25.7);/* slightly raised surface */
+  --ink: oklch(0.96 0.006 25.7);     /* #f4f1ee near-white text */
+  --muted: oklch(0.72 0.018 25.7);   /* #b1a39a muted warm gray */
+  --primary: oklch(0.665 0.222 25.7);/* #ec5a3c coral brand */
+  --accent: oklch(0.78 0.12 205);    /* #69c2d0 cyan focus */
+  --rule: oklch(0.29 0.018 25.7);    /* #4a4441 hairline */
+  --font-ui: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --theme-color: var(--primary);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+::selection { background: color-mix(in oklch, var(--primary) 30%, transparent); }
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+a { color: var(--primary); text-decoration: none; text-underline-offset: 0.2em; }
+a:hover { color: var(--ink); }
+
+/* ---------- Sidebar ------------------------------------------------------- */
+
+aside.sidebar,
+.sidebar {
+  background: var(--bg);
+  border-right: 1px solid var(--rule);
+  color: var(--muted);
+  padding: 1.5rem 0 1rem;
+}
+
+.sidebar-nav { padding: 0 1.25rem; }
+
+.sidebar ul { margin: 0; }
+.sidebar ul li { font-size: 0.9rem; line-height: 1.5; }
+.sidebar ul li a {
+  color: var(--muted);
+  font-weight: 500;
+  padding: 0.18rem 0;
+  display: inline-block;
+}
+.sidebar ul li a:hover { color: var(--ink); }
+.sidebar ul li.active > a { color: var(--primary); font-weight: 600; }
+.sidebar ul li ul { padding-left: 0.85rem; margin: 0.15rem 0 0.5rem; }
+.sidebar ul li strong {
+  display: block;
+  margin: 1.1rem 0 0.35rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 620;
+  opacity: 0.8;
+}
+
+/* brand wordmark at top of sidebar: "uhm" + a coral period */
+.app-name { padding: 0 1.25rem 1rem; }
+.app-name a,
+.app-name-link {
+  color: var(--ink) !important;
+  font-size: 1.25rem !important;
+  font-weight: 760;
+  letter-spacing: -0.025em;
+}
+.app-name a::after { content: "."; color: var(--primary); }
+
+/* sidebar search */
+.sidebar .search { margin: 0 1.25rem 0.75rem; }
+.sidebar .search .input-wrap input {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  padding: 0.4rem 0.6rem;
+}
+.sidebar .search .input-wrap input:focus { border-color: var(--primary); outline: none; }
+.sidebar .search .clear-button { color: var(--muted); }
+.sidebar .search h3 {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0.75rem 0 0.25rem;
+}
+.sidebar .search p { font-size: 0.85rem; color: var(--muted); }
+.sidebar .search a { color: var(--ink); font-weight: 500; }
+.sidebar .search a:hover { color: var(--primary); }
+.sidebar .search .matching-post { border-bottom: 1px solid var(--rule); padding: 0.4rem 0; }
+
+/* ---------- Content ------------------------------------------------------- */
+
+.content,
+section.content { background: var(--bg); }
+.markdown-section {
+  max-width: 50rem;
+  padding: 2.5rem 2.25rem 5rem;
+  color: var(--ink);
+}
+
+.markdown-section h1,
+.markdown-section h2,
+.markdown-section h3,
+.markdown-section h4 {
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.markdown-section h1 {
+  font-size: 2.4rem;
+  letter-spacing: -0.035em;
+  margin: 0 0 1.25rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--rule);
+}
+.markdown-section h2 {
+  font-size: 1.5rem;
+  margin: 2.5rem 0 0.9rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--rule);
+}
+.markdown-section h3 { font-size: 1.15rem; margin: 1.8rem 0 0.6rem; }
+.markdown-section h4 { font-size: 1rem; color: var(--muted); margin: 1.4rem 0 0.4rem; }
+
+.markdown-section p { margin: 0.85rem 0; }
+.markdown-section ul,
+.markdown-section ol { margin: 0.85rem 0; padding-left: 1.25rem; }
+.markdown-section li { margin: 0.3rem 0; }
+
+.markdown-section strong { color: var(--ink); font-weight: 650; }
+.markdown-section em { color: var(--ink); }
+
+.markdown-section img { border-radius: 12px; box-shadow: 0 0 0 1px var(--rule); }
+
+.markdown-section hr { border: 0; border-top: 1px solid var(--rule); margin: 2rem 0; }
+
+/* blockquote → callout / note */
+.markdown-section blockquote {
+  background: var(--surface);
+  border: 0;
+  border-left: 3px solid var(--primary);
+  border-radius: 0 10px 10px 0;
+  padding: 0.75rem 1rem;
+  color: var(--muted);
+  margin: 1.25rem 0;
+}
+.markdown-section blockquote p { margin: 0.3rem 0; color: var(--ink); }
+
+/* tables */
+.markdown-section table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.25rem 0;
+  font-size: 0.92rem;
+}
+.markdown-section th,
+.markdown-section td {
+  border-bottom: 1px solid var(--rule);
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-section th {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 620;
+  border-bottom: 2px solid var(--rule);
+}
+.markdown-section tr:hover td { background: var(--surface); }
+
+/* inline code */
+.markdown-section code,
+.markdown-section p code,
+.markdown-section li code,
+.markdown-section td code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--surface);
+  padding: 0.12em 0.4em;
+  border-radius: 6px;
+  color: var(--ink);
+}
+
+/* fenced code blocks — the .player-region card recipe from the demo */
+.markdown-section pre {
+  background: var(--surface);
+  border: 0;
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px var(--rule);
+  padding: 1rem 1.1rem;
+  margin: 1.25rem 0;
+  overflow: auto;
+}
+.markdown-section pre > code {
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+/* ---------- Cover page ---------------------------------------------------- */
+
+section.cover,
+.cover {
+  background: var(--bg) !important;
+}
+.cover .mask { background: var(--bg) !important; opacity: 1 !important; }
+
+.cover.show .cover-main { max-width: 46rem; }
+
+.cover h1 {
+  color: var(--ink);
+  font-size: clamp(3rem, 9vw, 5rem);
+  font-weight: 760;
+  letter-spacing: -0.04em;
+  line-height: 0.95;
+  margin: 0 0 1rem;
+}
+.cover h1 .dot,
+.cover h1 span.dot { color: var(--primary); }
+
+.cover blockquote {
+  color: var(--muted);
+  font-size: 1.2rem;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0 0 0.75rem;
+  line-height: 1.5;
+}
+.cover blockquote p { color: var(--muted); }
+.cover > .cover-main > p { color: var(--muted); font-size: 1rem; max-width: 38rem; }
+
+/* cover CTAs (docsify renders the link list as buttons; scope to list items so
+   the .app-name-link wordmark above stays a plain wordmark, not a pill) */
+.cover-main li a {
+  display: inline-block;
+  color: var(--ink) !important;
+  font-weight: 600;
+  font-family: var(--font-ui);
+  font-size: 0.95rem;
+  padding: 0.6rem 1.15rem;
+  margin: 0.4rem 0.5rem 0 0;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--surface);
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.cover-main li a:hover {
+  color: var(--ink) !important;
+  border-color: var(--primary);
+  background: var(--surface-2);
+}
+
+.cover .cover-meta {
+  margin-top: 2rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+.cover ul { list-style: none; padding: 0; }
+
+/* ---------- GitHub corner & pagination ------------------------------------ */
+
+.github-corner svg { fill: var(--primary); color: var(--bg); }
+
+.app-nav { color: var(--muted); }
+.app-nav a { color: var(--muted); }
+.app-nav a:hover { color: var(--ink); }
+
+.pagination .pagination-item a { color: var(--muted); }
+.pagination .pagination-item a:hover { color: var(--primary); }
+
+/* ---------- Scrollbars ---------------------------------------------------- */
+
+* { scrollbar-width: thin; scrollbar-color: var(--rule) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 8px; }
+*::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- Responsive ---------------------------------------------------- */
+
+@media (max-width: 42rem) {
+  .markdown-section { padding: 1.75rem 1.25rem 4rem; }
+  .markdown-section h1 { font-size: 1.9rem; }
+  .markdown-section pre { padding: 0.85rem; border-radius: 12px; }
+  .cover h1 { font-size: 2.6rem; }
+}
+
+/* Respect users who prefer less motion (the chrome is already static). */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

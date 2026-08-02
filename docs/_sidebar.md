@@ -1,0 +1,22 @@
+- [Home](/)
+- **Getting started**
+  - [Install](install.md)
+  - [Quickstart](getting-started.md)
+- **Reference**
+  - [CLI reference](cli-reference.md)
+  - [Configuration](configuration.md)
+  - [Behavior & exit codes](behavior-contract.md)
+- **Guides**
+  - [Parent-shell integration](shell-integration.md)
+  - [Local history](local-history.md)
+  - [Bounded recovery](recovery.md)
+  - [Privacy & telemetry](privacy.md)
+  - [Model selection](model-selection.md)
+- **Architecture**
+  - [Core dependencies & MSRV](architecture/0001-core-dependencies-and-msrv.md)
+  - [Responses result loop](architecture/0002-responses-result-loop.md)
+  - [Content-free telemetry](architecture/0003-content-free-telemetry.md)
+  - [Bounded evidence recovery](architecture/0004-bounded-evidence-recovery.md)
+- [Releases](releases/v0.1.0.md)
+- [Demo ↗](https://nibzard.github.io/uhm/demo/)
+- [Source ↗](https://github.com/nibzard/uhm)

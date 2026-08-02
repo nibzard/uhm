@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="uhm — a fast natural-language layer over terminal tools. Say what you need; get the result."
+    />
+    <title>uhm — say what you need, get the result</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- docsify dark layout as a base; assets/docs.css overrides it to the uhm warm-dark system. -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/dark.css" />
+    <link rel="stylesheet" href="assets/docs.css" />
+  </head>
+  <body>
+    <div id="app">Loading… if this persists, JavaScript is required for the docs reader.</div>
+    <script>
+      window.$docsify = {
+        name: "uhm",
+        nameLink: "#/",
+        repo: "https://github.com/nibzard/uhm",
+        coverpage: true,
+        loadSidebar: true,
+        maxLevel: 3,
+        subMaxLevel: 3,
+        auto2top: true,
+        themeColor: "#ec5a3c",
+        search: {
+          maxAge: 86400000, // 1 day
+          paths: "auto",
+          placeholder: "Search the docs…",
+          noData: "No matches",
+          depth: 3,
+        },
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/zoom-image.min.js"></script>
+  </body>
+</html>
