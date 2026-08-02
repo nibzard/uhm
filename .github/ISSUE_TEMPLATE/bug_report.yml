@@ -13,7 +13,7 @@ body:
     attributes:
       label: uhm version
       description: Run `uhm --version`.
-      placeholder: uhm 0.1.0
+      placeholder: uhm 0.2.0
     validations:
       required: true
 

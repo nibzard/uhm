@@ -10,22 +10,22 @@ It is deliberately smaller than a coding agent. One intent goes in. One bounded 
 
 ## Install
 
-Download the archive for your machine from the [v0.1.0 release](https://github.com/nibzard/uhm/releases/tag/v0.1.0):
+Download the archive for your machine from the [v0.2.0 release](https://github.com/nibzard/uhm/releases/tag/v0.2.0):
 
 | System | Archive |
 |---|---|
-| Linux x86-64 | `uhm-v0.1.0-x86_64-unknown-linux-musl.tar.gz` |
-| Linux arm64 | `uhm-v0.1.0-aarch64-unknown-linux-musl.tar.gz` |
-| macOS Intel | `uhm-v0.1.0-x86_64-apple-darwin.tar.gz` |
-| macOS Apple silicon | `uhm-v0.1.0-aarch64-apple-darwin.tar.gz` |
+| Linux x86-64 | `uhm-v0.2.0-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `uhm-v0.2.0-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `uhm-v0.2.0-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `uhm-v0.2.0-aarch64-apple-darwin.tar.gz` |
 
 Verify the download before installing it:
 
 ```sh
-grep 'uhm-v0.1.0-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
-grep 'uhm-v0.1.0-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
-tar -xzf uhm-v0.1.0-<target>.tar.gz
-install -m 755 uhm-v0.1.0-<target>/uhm "$HOME/.local/bin/uhm"
+grep 'uhm-v0.2.0-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
+grep 'uhm-v0.2.0-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
+tar -xzf uhm-v0.2.0-<target>.tar.gz
+install -m 755 uhm-v0.2.0-<target>/uhm "$HOME/.local/bin/uhm"
 uhm --version
 ```
 
@@ -34,7 +34,7 @@ The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, 
 Rust users can build the same binary from source:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.1.0 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.2.0 uhm-cli
 ```
 
 The crates.io package is prepared but publication is deferred until ownership is ready.
