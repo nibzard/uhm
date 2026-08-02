@@ -167,13 +167,32 @@ section.content { background: var(--bg); }
 }
 .markdown-section blockquote p { margin: 0.3rem 0; color: var(--ink); }
 
-/* tables */
+/* tables — docsify's base theme stripes even rows with #f8f8f8 (light); with
+   near-white text that is white-on-white and unreadable. The theme rule is
+   `.markdown-section tr:nth-child(2n){background-color:#f8f8f8}` (specificity
+   0,2,2, no !important). Repaint with our dark surface tokens and !important so
+   that stripe can never win the cascade. */
 .markdown-section table {
   display: table;
   width: 100%;
   border-collapse: collapse;
   margin: 1.25rem 0;
   font-size: 0.92rem;
+}
+/* odd rows: no background set — the dark page background shows through */
+/* even rows: a subtle band a shade above the page background */
+.markdown-section table tbody tr:nth-child(2n),
+.markdown-section table tbody tr:nth-child(2n) > th,
+.markdown-section table tbody tr:nth-child(2n) > td {
+  background-color: var(--surface) !important;
+}
+/* hover: a raised surface; higher specificity than the even-row rule so it
+   wins on both odd and even rows */
+.markdown-section table tbody tr:hover > th,
+.markdown-section table tbody tr:hover > td,
+.markdown-section table tbody tr:nth-child(2n):hover > th,
+.markdown-section table tbody tr:nth-child(2n):hover > td {
+  background-color: var(--surface-2) !important;
 }
 .markdown-section th,
 .markdown-section td {
@@ -190,7 +209,6 @@ section.content { background: var(--bg); }
   font-weight: 620;
   border-bottom: 2px solid var(--rule);
 }
-.markdown-section tr:hover td { background: var(--surface); }
 
 /* inline code */
 .markdown-section code,
