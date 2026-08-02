@@ -1,0 +1,20 @@
+# ADR: Canonical cast with derived media and a Pages player
+
+## Status
+Accepted
+
+## Context
+Plan 8 needs a real model-backed demo that works in script-hostile README rendering, remains interactive elsewhere, leaks no recorder-machine context, and can be rebuilt without spending API tokens.
+
+## Decision
+Commit a privacy-scanned asciicast v2 file as the canonical source. Derive a script-free animated SVG and GIF with pinned renderers, enforce byte stability in CI, and host the official pinned player from the main-branch docs directory. The hero, piped ask, and explain use real Responses API calls; exact-intent aliases make dry-run bytes and cancellation deterministic. Recorder-added command and timestamp fields are removed before privacy scanning.
+
+The model prompt now distinguishes ordinary pipelines from process control and routes undeclared directory traversal to shell tools, fixing issues discovered in the first live take.
+
+## Alternatives Considered
+- Anonymous asciinema.org upload: rejected as the canonical link because unclaimed uploads expire after seven days.
+- Script inside the README SVG: rejected because GitHub sanitizes script content.
+- Mocked model output: rejected because it would not demonstrate the product contract.
+
+## Consequences
+The README animation works without JavaScript, the Pages view is pausable and copyable, and CI can verify media with no API key. Re-recording still requires a key and human review; the Pages wrapper depends on pinned jsDelivr-hosted player assets.
