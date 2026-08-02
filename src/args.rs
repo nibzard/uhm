@@ -32,6 +32,26 @@ pub struct Args {
     pub parent_status: Option<i32>,
 }
 
+impl Args {
+    /// True for subcommands that perform no outbound work (no OpenAI request and
+    /// no telemetry send), so the first-use disclosure can be skipped for them.
+    /// `doctor` is local only without the `network` operand; `feedback` and any
+    /// model-routed verb (`run`/`ask`/`explain`/`repair`/`recover`/bare intent)
+    /// send data and return false.
+    pub fn is_local_only(&self) -> bool {
+        match self.subcommand.as_deref() {
+            Some(
+                "config" | "context" | "history" | "telemetry" | "undo" | "restore" | "recovery",
+            ) => true,
+            Some("doctor") => !self
+                .prompt
+                .split_whitespace()
+                .any(|value| value == "network"),
+            _ => false,
+        }
+    }
+}
+
 const VERBS: &[&str] = &[
     "run",
     "ask",
@@ -56,6 +76,12 @@ const VERBS: &[&str] = &[
     "help",
     "version",
 ];
+
+/// Basenames accepted for `--shell`, mirroring `command::normalize_shell` (which
+/// matches on the path basename and treats `auto`/empty as "detect"). Kept here
+/// rather than imported because `command` depends on `args`, so importing it
+/// back would cycle. `auto` and empty are accepted separately at the call site.
+const VALID_SHELLS: &[&str] = &["sh", "bash", "zsh", "fish", "pwsh", "powershell"];
 
 pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
     let mut out = Args::default();
@@ -198,6 +224,24 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
             return Err("--input-format must be a 1-64 character format label".into());
         }
     }
+    // Validate enumerated overrides at parse time so a bad `--shell`/`--context`
+    // surfaces as a usage error (exit 2) before API-key resolution (exit 13).
+    if let Some(shell) = &out.shell {
+        let name = std::path::Path::new(shell)
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or(shell);
+        if !(shell == "auto" || shell.is_empty() || VALID_SHELLS.contains(&name)) {
+            return Err(format!(
+                "unsupported shell '{}'; valid: auto, {}",
+                shell,
+                VALID_SHELLS.join(", ")
+            ));
+        }
+    }
+    if let Some(context) = &out.context {
+        crate::context::Mode::parse(context)?;
+    }
     out.prompt = intent.join(" ");
     Ok(out)
 }
@@ -324,5 +368,75 @@ mod tests {
         let dictated = pv(&["uhm", "say", "-y", "--help", "--system", "verbatim"]).unwrap();
         assert!(!dictated.help);
         assert_eq!(dictated.prompt, "say -y --help --system verbatim");
+    }
+
+    #[test]
+    fn invalid_shell_override_is_a_usage_error() {
+        assert!(pv(&["uhm", "--shell", "cmd", "x"]).is_err());
+        assert!(pv(&["uhm", "--shell=cmd", "x"]).is_err());
+        assert!(pv(&["uhm", "--shell", "/bin/nope", "x"]).is_err());
+    }
+
+    #[test]
+    fn valid_shell_overrides_are_accepted() {
+        for shell in ["auto", "sh", "bash", "zsh", "fish", "pwsh", "powershell"] {
+            assert!(pv(&["uhm", "--shell", shell, "x"]).is_ok(), "{shell}");
+        }
+        // Full paths are accepted because the downstream matcher uses the basename.
+        assert!(pv(&["uhm", "--shell", "/bin/bash", "x"]).is_ok());
+    }
+
+    #[test]
+    fn invalid_context_override_is_a_usage_error() {
+        assert!(pv(&["uhm", "--context", "enormous", "x"]).is_err());
+        assert!(pv(&["uhm", "--context=huge", "x"]).is_err());
+    }
+
+    #[test]
+    fn valid_context_overrides_are_accepted() {
+        for mode in ["minimal", "standard", "full"] {
+            assert!(pv(&["uhm", "--context", mode, "x"]).is_ok(), "{mode}");
+        }
+    }
+
+    #[test]
+    fn local_only_classification_matches_outbound_risk() {
+        let local = |sub: &str| Args {
+            subcommand: Some(sub.into()),
+            ..Default::default()
+        };
+        for sub in [
+            "config",
+            "context",
+            "history",
+            "telemetry",
+            "undo",
+            "restore",
+            "recovery",
+        ] {
+            assert!(local(sub).is_local_only(), "{sub}");
+        }
+        assert!(local("doctor").is_local_only(), "doctor without network");
+
+        let doctor_network = Args {
+            subcommand: Some("doctor".into()),
+            prompt: "network".into(),
+            ..Default::default()
+        };
+        assert!(
+            !doctor_network.is_local_only(),
+            "doctor network is outbound"
+        );
+
+        assert!(
+            !local("feedback").is_local_only(),
+            "feedback sends telemetry"
+        );
+
+        let bare = Args {
+            prompt: "list the three biggest files".into(),
+            ..Default::default()
+        };
+        assert!(!bare.is_local_only(), "bare intent is outbound");
     }
 }

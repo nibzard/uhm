@@ -1,4 +1,6 @@
-//! HTTP layer: the single place ureq is used. Streaming POST over TLS.
+//! HTTP layer for the streaming OpenAI request. Other modules (doctor, telemetry)
+//! build their own short-lived ureq agents; all of them opt into env-proxy via
+//! `try_proxy_from_env`.
 
 use std::io::Read;
 use std::time::Duration;
@@ -13,6 +15,7 @@ pub fn post_stream(url: &str, auth: &str, body: &str) -> Result<Response, String
     static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     let agent = AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
+            .try_proxy_from_env(true)
             .timeout_connect(Duration::from_secs(10))
             .timeout_write(Duration::from_secs(30))
             .timeout_read(Duration::from_secs(120))

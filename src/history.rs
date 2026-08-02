@@ -1292,7 +1292,7 @@ mod tests {
             schema_version: 1,
             run_id: id.into(),
             timestamp: now_secs(),
-            app_version: "0.1".into(),
+            app_version: env!("CARGO_PKG_VERSION").into(),
             mode: "auto".into(),
             context_mode: "minimal".into(),
             route: "run_shell".into(),

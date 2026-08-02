@@ -31,6 +31,8 @@ The no-argument TTY path collects one intent, completes one bounded interaction,
 | 13 | Configuration, credentials, or path resolution failed |
 | 14 | A model-declared executable requirement is unavailable |
 
+`uhm doctor` returns 13 when any non-optional check fails (host, API key, paths, network, shell, or Python runtime) and 0 only when all checks pass; `uhm doctor --json` reports the same `exit_code`.
+
 If a child executes, its status wins unchanged; Unix signals use the conventional `128 + signal` form. With `--json`, application outcomes use namespace `uhm`. Executed-child receipts use `uhm.child` on stderr so the child's stdout remains unmodified.
 
 ## Current-shell actions

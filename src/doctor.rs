@@ -23,12 +23,17 @@ pub struct Report {
 pub fn gather(config: &Config, network: bool, telemetry_policy: &telemetry::Policy) -> Report {
     let supported = matches!(std::env::consts::OS, "linux" | "macos")
         && matches!(std::env::consts::ARCH, "x86_64" | "aarch64");
+    let host_hint = format!(
+        "uhm v{}.{} supports Linux/macOS on x86_64/aarch64",
+        env!("CARGO_PKG_VERSION_MAJOR"),
+        env!("CARGO_PKG_VERSION_MINOR")
+    );
     let mut checks = vec![
         check(
             "host",
             supported,
             format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH),
-            "uhm v0.1 supports Linux/macOS on x86_64/aarch64",
+            &host_hint,
         ),
         Check {
             name: "terminal",
@@ -110,6 +115,20 @@ fn python_check(enabled: bool) -> Check {
             "install Python 3 or disable program execution; shell actions remain available".into()
         }),
     }
+}
+
+/// Overall health: true only when no check reports a real failure. Benign
+/// statuses (`ok`, `off`, `skipped`, `optional`) do not fail — `optional` covers
+/// the clipboard helper, which is genuinely optional. Everything else (e.g.
+/// `unsupported`, `missing`, `permissions`, `blocked`, `authentication`,
+/// `rate_limit`, `api`, `network_tls`) is a failure. The host check already
+/// emits `unsupported` on an unsupported platform, so this subsumes the old
+/// `report.supported` test.
+pub fn healthy(report: &Report) -> bool {
+    report
+        .checks
+        .iter()
+        .all(|check| matches!(check.status, "ok" | "off" | "skipped" | "optional"))
 }
 
 pub fn render(report: &Report) {
@@ -254,6 +273,7 @@ fn network_check() -> Check {
         };
     };
     let agent = ureq::AgentBuilder::new()
+        .try_proxy_from_env(true)
         .timeout(Duration::from_secs(3))
         .build();
     match agent
@@ -318,5 +338,61 @@ mod tests {
             .unwrap()
             .contains("doctor-secret-sentinel"));
         std::env::remove_var("OPENAI_API_KEY");
+    }
+
+    fn check_status(name: &'static str, status: &'static str) -> Check {
+        Check {
+            name,
+            status,
+            detail: String::new(),
+            next: None,
+        }
+    }
+
+    #[test]
+    fn healthy_report_has_no_failures() {
+        let report = Report {
+            supported: true,
+            checks: vec![
+                check_status("host", "ok"),
+                check_status("OpenAI network", "ok"),
+            ],
+        };
+        assert!(healthy(&report));
+    }
+
+    #[test]
+    fn benign_optional_and_skipped_statuses_are_healthy() {
+        let report = Report {
+            supported: true,
+            checks: vec![
+                check_status("host", "ok"),
+                check_status("clipboard", "optional"),
+                check_status("OpenAI network", "skipped"),
+                check_status("Python runtime", "off"),
+            ],
+        };
+        assert!(healthy(&report));
+    }
+
+    #[test]
+    fn failing_network_check_is_unhealthy() {
+        let report = Report {
+            supported: true,
+            checks: vec![
+                check_status("host", "ok"),
+                check_status("OpenAI network", "network_tls"),
+            ],
+        };
+        assert!(!healthy(&report));
+    }
+
+    #[test]
+    fn unsupported_host_is_unhealthy() {
+        let report = Report {
+            supported: false,
+            checks: vec![check_status("host", "unsupported")],
+        };
+        assert!(!healthy(&report));
     }
 }

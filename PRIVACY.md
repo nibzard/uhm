@@ -35,7 +35,7 @@ An interaction summary has exactly these fields:
 {
   "v": 2,
   "event": "interaction_summary",
-  "release": "0.1",
+  "release": "0.2",
   "os": "linux",
   "arch": "x86_64",
   "shell": "bash",

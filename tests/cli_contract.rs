@@ -179,6 +179,40 @@ fn successful_management_json_is_namespaced() {
 }
 
 #[test]
+fn doctor_reports_thirteen_when_a_non_optional_check_fails() {
+    // `uhm doctor` exit reflects overall health (Fix 2): on a keyless supported
+    // host the API-key check is "missing", which is not benign, so both the
+    // process exit and the JSON `exit_code` must be 13. This pins the main.rs
+    // `doctor::healthy(&report)` -> exit wiring that the pure unit tests of
+    // `healthy()` never reach.
+    let temp = tempfile::tempdir().unwrap();
+    let config_dir = temp.path().join("config/uhm");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(config_dir.join("config.yaml"), "model: test-model\n").unwrap();
+    let output = Command::new(binary())
+        .args(["--json", "doctor"])
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("TERM", "dumb")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(13));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["namespace"], "uhm");
+    assert_eq!(value["outcome"], "doctor");
+    assert_eq!(value["exit_code"], 13);
+    let missing = value["data"]["checks"]
+        .as_array()
+        .expect("doctor report has a checks array")
+        .iter()
+        .any(|check| check["status"].as_str() == Some("missing"));
+    assert!(missing, "a keyless host reports at least one failing check");
+}
+
+#[test]
 fn unresolved_paths_never_fall_back_to_the_working_directory() {
     let temp = tempfile::tempdir().unwrap();
     let output = Command::new(binary())
@@ -273,10 +307,25 @@ fn first_use_notice_precedes_work_and_is_rendered_once() {
 }
 
 #[test]
-fn plain_first_use_notice_contains_no_terminal_controls() {
+fn local_command_on_a_fresh_config_skips_the_first_use_notice() {
+    // `config show` does no outbound work, so on a fresh install it must neither
+    // print the first-use data notice nor persist its marker (Fix 4). Asserting
+    // the notice text is absent — not just the ESC byte — pins the contract: a
+    // plain-mode notice contains no 0x1b either way, so the byte check alone is
+    // blind to a regression that re-renders the notice for local commands.
     let temp = tempfile::tempdir().unwrap();
     let output = configured_fresh(temp.path(), "", &["--plain", "config", "show"]);
+    assert_eq!(output.status.code(), Some(0));
     assert!(!output.stderr.contains(&0x1b));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("OpenAI receives"),
+        "local command must not render the first-use notice: {stderr:?}"
+    );
+    assert!(
+        !temp.path().join("data/uhm/notice-revision").exists(),
+        "local command must not persist the notice marker"
+    );
 }
 
 #[test]

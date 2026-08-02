@@ -144,9 +144,16 @@ fn run(argv: Vec<String>) -> i32 {
     } else {
         None
     };
-    let disclosure_marker = match first_run::ensure(&config, telemetry_policy.enabled) {
-        Ok(marker) => marker,
-        Err(e) => return app_error(&args, outcome::CONFIG, "notice_error", &e),
+    // The first-use disclosure gates outbound work, not every invocation, so
+    // skip it (and the notice marker) for purely-local commands; it is rendered
+    // on the first actual outbound request instead.
+    let disclosure_marker = if args.is_local_only() {
+        first_run::RENDERED_MARKER
+    } else {
+        match first_run::ensure(&config, telemetry_policy.enabled) {
+            Ok(marker) => marker,
+            Err(e) => return app_error(&args, outcome::CONFIG, "notice_error", &e),
+        }
     };
     let mut preset_action = None;
     let mut related_run_id = None;
@@ -1146,20 +1153,20 @@ fn management(
                 .split_whitespace()
                 .any(|value| value == "network");
             let report = doctor::gather(config, network, telemetry_policy);
-            let supported = report.supported;
+            let code = if doctor::healthy(&report) {
+                0
+            } else {
+                outcome::CONFIG
+            };
             if args.json {
                 println!(
                     "{}",
-                    serde_json::json!({"namespace":"uhm","outcome":"doctor","exit_code":if supported {0} else {outcome::CONFIG},"data":report})
+                    serde_json::json!({"namespace":"uhm","outcome":"doctor","exit_code":code,"data":report})
                 );
             } else {
                 doctor::render(&report);
             }
-            if supported {
-                0
-            } else {
-                outcome::CONFIG
-            }
+            code
         }
         _ => outcome::USAGE,
     }

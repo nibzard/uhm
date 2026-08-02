@@ -466,7 +466,10 @@ fn send_to(endpoint: &str, event: &Event, timeout: Duration) -> SendResult {
         Ok(value) => value,
         Err(_) => return SendResult::PreSend,
     };
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = ureq::AgentBuilder::new()
+        .try_proxy_from_env(true)
+        .timeout(timeout)
+        .build();
     match agent
         .post(endpoint)
         .set("Content-Type", "application/json")
