@@ -6,6 +6,7 @@
 - **Concepts**
   - [Core concepts](concepts.md)
   - [Bounded Python microprograms](program.md)
+  - [How it compares](comparison.md)
 - **Reference**
   - [CLI reference](cli-reference.md)
   - [Configuration](configuration.md)

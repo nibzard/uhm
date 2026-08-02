@@ -98,6 +98,14 @@ Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` 
 
 If one essential detail is missing, `uhm` can ask one question and revise the proposal. A failed command can get one bounded repair attempt in an interactive terminal. There is no open-ended chat loop.
 
+## How it compares
+
+`uhm` does one bounded job and exits. A chatbot keeps a conversation; an autonomous agent loops over files and repositories until a larger objective is done. `uhm` sits between — one intent in, one bounded job out (a shell action or a generated Python microprogram), then the real result and exit.
+
+Direct alternatives lead with llm-cmd, then hai, cmd-ai, ShellGPT, llm-term, and several more. Broader agents include Claude Code, OpenAI Codex CLI, Warp, and Gemini CLI. When the real problem is remembering a command rather than expressing one, non-AI tools (Atuin, navi, The Fuck, tldr) are usually the better fit.
+
+Full breakdown in [docs/comparison.md](docs/comparison.md).
+
 ## Data leaving your machine
 
 OpenAI receives your intent, explicitly piped UTF-8 input unless `--local-input` is used, and the selected context. `standard` context is the default: bounded OS and architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. All modes also disclose the resolved Python 3 path/version and whether `-I -S` works so the model can choose an available route. It does not automatically include file contents, Git remotes or diffs, environment values, API keys, history, or cached results.
