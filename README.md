@@ -2,7 +2,7 @@
 
 Say what you need. Get the result.
 
-`uhm` is a fast natural-language layer over terminal tools. Ask it to count paragraphs, find a large file, explain a command, or do one local job. It chooses a typed action, runs ordinary work, and gives you the real output.
+`uhm` is a fast natural-language layer over terminal tools. Ask it to count paragraphs, find a large file, explain a command, or do one local job. It chooses a typed action, runs it, and prints the real output.
 
 It is deliberately smaller than a coding agent. One intent goes in. One bounded job comes out. Then `uhm` exits.
 
@@ -10,7 +10,7 @@ It is deliberately smaller than a coding agent. One intent goes in. One bounded 
 
 [![A terminal demo of uhm turning natural-language requests into results](docs/demo/uhm-demo.svg)](https://nibzard.github.io/uhm/demo/)
 
-Under a minute, six jobs: inspect files, summarize a diff, compute multifile statistics, explain Git, preview a write, and explicitly force a consequential action. [Open the interactive recording](https://nibzard.github.io/uhm/demo/) or use the [GIF fallback](docs/demo/uhm-demo.gif). The demo uses real OpenAI calls in a disposable repository; its [rebuild and privacy procedure](docs/demo/README.md) is committed with the assets.
+Under a minute, six jobs: inspect files, summarize a diff, compute multifile statistics, explain Git, preview a write, and force a consequential action. [Open the interactive recording](https://nibzard.github.io/uhm/demo/) or use the [GIF fallback](docs/demo/uhm-demo.gif). The demo uses real OpenAI calls in a disposable repository; its [rebuild and privacy procedure](docs/demo/README.md) is committed with the assets.
 
 ## Install
 
@@ -33,7 +33,7 @@ install -m 755 uhm-v0.1.0-<target>/uhm "$HOME/.local/bin/uhm"
 uhm --version
 ```
 
-The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, inspect the downloaded file and approve it in System Settings. Do not bypass the warning for a file whose checksum does not match.
+The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, inspect the downloaded file and approve it in System Settings. Never bypass the warning for a mismatched checksum.
 
 Rust users can build the same binary from source:
 
@@ -41,7 +41,7 @@ Rust users can build the same binary from source:
 cargo install --locked --git https://github.com/nibzard/uhm --tag v0.1.0 uhm-cli
 ```
 
-The crates.io package is prepared but publication is deferred until ownership is ready. GitHub archives are the primary install path.
+The crates.io package is prepared but publication is deferred until ownership is ready.
 
 ## First run
 
@@ -53,9 +53,9 @@ uhm doctor
 uhm list the three biggest files
 ```
 
-`uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and run `chmod 600 <path>` if you do not want the key in your shell environment. `uhm doctor network` makes a separate, explicit OpenAI reachability and authentication check.
+`uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and `chmod 600 <path>` to keep the key out of your shell environment. `uhm doctor network` makes a separate OpenAI reachability and authentication check.
 
-Before the first outbound request, `uhm` prints a short data notice to stderr. It records that the current notice revision was shown, then gets out of the way.
+Before the first outbound request, `uhm` prints a short data notice to stderr. It records that the current notice revision was shown.
 
 ## Things to try
 
@@ -98,7 +98,7 @@ uhm run --dry-run count every occurrence of the word world in report.txt
 uhm run --review remove old build artifacts
 ```
 
-Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. `--force` skips the advisory prompt for a detected consequential action, while still showing the warning.
+Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. `--force` skips the advisory prompt for a detected consequential action, still showing the warning.
 
 If one essential detail is missing, `uhm` can ask one question and revise the proposal. A failed command can get one bounded repair attempt in an interactive terminal. There is no open-ended chat loop.
 
@@ -139,7 +139,7 @@ The proposal cache holds validated model proposals, not execution results. Runti
 
 ## Bounded recovery
 
-Recovery snapshots are off by default because they duplicate file contents. After its separate disclosure, `uhm recovery on` can capture bounded preimages for eligible regular-file outputs committed through the managed Python artifact path. `uhm undo` is reserved for a hash-verified restore; a later edit is a conflict. `uhm restore --force` applies retained evidence under an explicitly different outcome. `uhm recover` instead asks for one reviewed best-effort inverse and never claims that process success recovered the original state. See [bounded recovery](docs/recovery.md).
+Recovery snapshots are off by default: they copy file contents. After its separate disclosure, `uhm recovery on` captures bounded preimages of eligible regular-file outputs that came through the managed Python artifact path. `uhm undo` restores only what it can hash-verify; a later edit is a conflict. `uhm restore --force` reapplies retained evidence when the outcome differs. `uhm recover` asks you for one reviewed, best-effort inverse — and never claims that running it recovered the original. See [bounded recovery](docs/recovery.md).
 
 ```sh
 uhm recovery on
@@ -153,7 +153,7 @@ uhm recovery prune --dry-run
 
 ## Bounded Python microprograms
 
-When a short command or pipeline is the clearest solution, `uhm` still uses the shell. For structured data, statistics, or multifile logic that would become contorted, it may generate one standard-library Python 3 program. The program runs directly as `python3 -I -S <private-source-file>` with a stripped environment, a private workspace, a 10-second wall limit, a 5-second CPU limit, a 16 MiB combined output cap, and best-effort host resource limits. `uhm doctor` reports whether the runtime is available.
+When a short command or pipeline is clearest, `uhm` still uses the shell. For structured data, statistics, or multifile logic that would become contorted, it may generate one standard-library Python 3 program. The program runs directly as `python3 -I -S <private-source-file>` with a stripped environment, a private workspace, a 10-second wall limit, a 5-second CPU limit, a 16 MiB combined output cap, and best-effort host resource limits. `uhm doctor` reports whether the runtime is available.
 
 This is not a sandbox. The program runs with your user permissions and can read files, use the network, start processes, or cause unmanaged effects if the generated source does so. Isolated/no-site mode and resource limits reduce ambient state and accidents; they do not contain hostile code or protect user-readable secret files. Review shows the exact source, manifest, detected effects, runtime, and limits. `--retain-program` keeps its private temporary workspace only when explicitly requested for debugging.
 
