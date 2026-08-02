@@ -10,11 +10,12 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 static CHILD_GROUP: AtomicI32 = AtomicI32::new(0);
 static SIGNALS: Once = Once::new();
+type ReaderHandle = std::thread::JoinHandle<(Vec<u8>, Vec<u8>)>;
 
 #[derive(Debug)]
 pub struct ExecutionResult {
@@ -189,7 +190,13 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
             .iter()
             .map(|output| (output.destination.clone(), output.staging.clone()))
             .collect::<Vec<_>>();
-        match crate::recovery::prepare(capture.data_dir, capture.run_id, capture.config, &paths) {
+        match crate::recovery::prepare_with_lease(
+            capture.data_dir,
+            capture.run_id,
+            capture.config,
+            &paths,
+            req.config.timeout_secs.saturating_add(2),
+        ) {
             Ok(coordinator) => Some(coordinator),
             Err(error) if capture.allow_unrecoverable => {
                 crate::recovery::cleanup_incomplete_capture(capture.data_dir, capture.run_id);
@@ -238,23 +245,27 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
     CHILD_GROUP.store(child.id() as i32, Ordering::SeqCst);
     let total = Arc::new(AtomicUsize::new(0));
     let overflow = Arc::new(AtomicBool::new(false));
+    let cancel_readers = Arc::new(AtomicBool::new(false));
     let stdout = read_bounded(
         child.stdout.take().expect("piped stdout"),
         total.clone(),
         overflow.clone(),
+        cancel_readers.clone(),
         req.config.output_max_bytes,
         req.config.diagnostic_bytes,
         true,
-    );
+    )?;
     let stderr = read_bounded(
         child.stderr.take().expect("piped stderr"),
         total,
         overflow.clone(),
+        cancel_readers.clone(),
         req.config.output_max_bytes,
         req.config.diagnostic_bytes,
         false,
-    );
+    )?;
     let mut timed_out = false;
+    let deadline = started + Duration::from_secs(req.config.timeout_secs);
     let status = 'wait: loop {
         if let Some(status) = child
             .try_wait()
@@ -262,9 +273,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
         {
             break status;
         }
-        if overflow.load(Ordering::SeqCst)
-            || started.elapsed() >= Duration::from_secs(req.config.timeout_secs)
-        {
+        if overflow.load(Ordering::SeqCst) || Instant::now() >= deadline {
             timed_out = !overflow.load(Ordering::SeqCst);
             terminate(child.id() as i32, libc::SIGTERM);
             let grace = Instant::now();
@@ -282,9 +291,38 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
             std::thread::sleep(Duration::from_millis(10));
         }
     };
-    CHILD_GROUP.store(0, Ordering::SeqCst);
+
+    // The primary process can exit while a descendant still owns an inherited
+    // pipe. Give ordinary buffered output a brief drain window, then terminate
+    // remaining in-group descendants. A process that deliberately starts a new
+    // session is outside group cleanup, so the nonblocking collectors also obey
+    // the absolute deadline and can close their descriptors without EOF.
+    let drain_grace = Instant::now() + Duration::from_millis(50);
+    while (!stdout.is_finished() || !stderr.is_finished())
+        && Instant::now() < deadline
+        && Instant::now() < drain_grace
+        && !overflow.load(Ordering::SeqCst)
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let lingering_descendants = !stdout.is_finished() || !stderr.is_finished();
+    if lingering_descendants {
+        timed_out = true;
+        terminate(child.id() as i32, libc::SIGTERM);
+        let cleanup_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
+        while (!stdout.is_finished() || !stderr.is_finished()) && Instant::now() < cleanup_deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    if !stdout.is_finished() || !stderr.is_finished() {
+        terminate(child.id() as i32, libc::SIGKILL);
+        cancel_readers.store(true, Ordering::SeqCst);
+    }
+    cancel_readers.store(true, Ordering::SeqCst);
     let (stdout_bytes, stdout_tail) = stdout.join().unwrap_or_default();
     let (_, mut stderr_tail) = stderr.join().unwrap_or_default();
+    CHILD_GROUP.store(0, Ordering::SeqCst);
     let output_overflow = overflow.load(Ordering::SeqCst);
     #[cfg(unix)]
     let signal = {
@@ -299,7 +337,9 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
     }
     let mut artifacts = Vec::new();
     if code == 0 {
-        if directory_size(workspace.path())? > req.config.workspace_max_bytes {
+        if directory_size(workspace.path(), req.config.workspace_max_bytes)?
+            > req.config.workspace_max_bytes
+        {
             code = 1;
         } else if req.proposal.result_mode == ProgramResultMode::Artifacts {
             let commit = if let Some(coordinator) = &mut recovery {
@@ -473,38 +513,56 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| format!("sync {}: {e}", path.display()))
 }
 
-fn directory_size(root: &Path) -> Result<u64, String> {
+fn directory_size(root: &Path, limit: u64) -> Result<u64, String> {
     let mut total = 0u64;
     let mut pending = vec![root.to_path_buf()];
     while let Some(path) = pending.pop() {
         for entry in std::fs::read_dir(&path).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            let meta = entry.metadata().map_err(|e| e.to_string())?;
+            let meta = std::fs::symlink_metadata(entry.path()).map_err(|e| e.to_string())?;
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "program workspace contains a symlink: {}",
+                    entry.path().display()
+                ));
+            }
             if meta.is_dir() {
                 pending.push(entry.path());
             } else {
                 total = total.saturating_add(meta.len());
+                if total > limit {
+                    return Ok(total);
+                }
             }
         }
     }
     Ok(total)
 }
 
-fn read_bounded<R: Read + Send + 'static>(
+fn read_bounded<R: Read + Send + std::os::fd::AsRawFd + 'static>(
     mut reader: R,
     total: Arc<AtomicUsize>,
     overflow: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
     limit: usize,
     tail_limit: usize,
     retain: bool,
-) -> std::thread::JoinHandle<(Vec<u8>, Vec<u8>)> {
-    std::thread::spawn(move || {
-        let retained = Arc::new(Mutex::new(Vec::new()));
+) -> Result<ReaderHandle, String> {
+    set_nonblocking(reader.as_raw_fd())?;
+    Ok(std::thread::spawn(move || {
+        let mut retained = Vec::new();
         let mut tail = VecDeque::with_capacity(tail_limit);
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if cancel.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
                 Ok(n) => {
                     let before = total.fetch_add(n, Ordering::SeqCst);
                     if before.saturating_add(n) > limit {
@@ -512,7 +570,7 @@ fn read_bounded<R: Read + Send + 'static>(
                     }
                     if retain && before < limit {
                         let take = n.min(limit - before);
-                        retained.lock().unwrap().extend_from_slice(&buf[..take]);
+                        retained.extend_from_slice(&buf[..take]);
                     }
                     for byte in &buf[..n] {
                         if tail.len() == tail_limit {
@@ -523,9 +581,21 @@ fn read_bounded<R: Read + Send + 'static>(
                 }
             }
         }
-        let bytes = Arc::try_unwrap(retained).unwrap().into_inner().unwrap();
-        (bytes, tail.into_iter().collect())
-    })
+        (retained, tail.into_iter().collect())
+    }))
+}
+
+#[cfg(unix)]
+fn set_nonblocking(fd: std::os::fd::RawFd) -> Result<(), String> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        Err(format!(
+            "configure nonblocking program output: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -702,6 +772,48 @@ mod tests {
         .unwrap();
         assert!(result.output_overflow);
         assert_ne!(result.code, 0);
+    }
+
+    #[test]
+    fn descendant_held_pipes_are_bounded_and_report_timeout() {
+        let inventory = crate::runtime::inventory();
+        if !inventory.available {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let config = ProgramConfig {
+            timeout_secs: 1,
+            child_processes: 4096,
+            ..ProgramConfig::default()
+        };
+        let started = Instant::now();
+        let result = execute(Request {
+            proposal: &proposal(
+                "import os,time\npid=os.fork()\nif pid == 0:\n time.sleep(30)\n os._exit(0)\nprint('primary done')",
+            ),
+            python: &inventory,
+            stdin: None,
+            cwd: &cwd,
+            config: &config,
+            retain_workspace: false,
+            recovery: None,
+        })
+        .unwrap();
+        assert!(result.timed_out);
+        assert_eq!(result.code, 124);
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_measurement_never_follows_symlinks() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        symlink("/", dir.path().join("outside")).unwrap();
+        assert!(directory_size(dir.path(), 1024).is_err());
+        let loop_link = dir.path().join("loop");
+        symlink(&loop_link, &loop_link).unwrap();
+        assert!(directory_size(dir.path(), 1024).is_err());
     }
 
     #[test]

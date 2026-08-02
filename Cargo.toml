@@ -1,6 +1,6 @@
 [package]
 name = "uhm-cli"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 rust-version = "1.82"
 authors = ["Nikola Balic"]
@@ -13,20 +13,29 @@ documentation = "https://github.com/nibzard/uhm#readme"
 keywords = ["cli", "terminal", "openai", "shell", "productivity"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
-  "src/**",
-  "assets/shell/**",
-  "tests/**",
-  "Cargo.toml",
-  "Cargo.lock",
-  "README.md",
-  "LICENSE",
-  "SECURITY.md",
-  "PRIVACY.md",
-  "config.example.yaml",
-  "docs/behavior-contract.md",
-  "docs/local-history.md",
-  "docs/recovery.md",
-  "docs/shell-integration.md",
+  "/src/*.rs",
+  "/src/render/*.rs",
+  "/assets/shell/uhm.bash",
+  "/assets/shell/uhm.fish",
+  "/assets/shell/uhm.zsh",
+  "/tests/*.rs",
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/LICENSE",
+  "/SECURITY.md",
+  "/PRIVACY.md",
+  "/AI_POLICY.md",
+  "/CONTRIBUTING.md",
+  "/config.example.yaml",
+  "/docs/behavior-contract.md",
+  "/docs/comparison.md",
+  "/docs/demo/README.md",
+  "/docs/demo/uhm-demo.gif",
+  "/docs/demo/uhm-demo.svg",
+  "/docs/local-history.md",
+  "/docs/recovery.md",
+  "/docs/shell-integration.md",
 ]
 
 [[bin]]

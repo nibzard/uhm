@@ -62,7 +62,7 @@ execution:
   deny_env: []              # additional names removed from the child env
 ```
 
-`OPENAI_API_KEY`, cloud credentials, and other inherited secrets are removed from the child environment regardless of `deny_env`. These are operational guardrails, not a sandbox.
+`OPENAI_API_KEY` and uhm's private control variables are removed automatically. Add any other credential names (for example cloud-provider tokens) to `deny_env`; arbitrary inherited secrets cannot be identified reliably. These are operational guardrails, not a sandbox.
 
 ## `program` — Python 3 microprogram limits
 
@@ -139,7 +139,7 @@ install -m 600 /dev/null "$(uhm doctor 2>/dev/null | grep -o '/[^ ]*secrets[^ ]*
 # then edit that file to contain: OPENAI_API_KEY=sk-...
 ```
 
-The key is never passed to a child command's environment.
+The OpenAI key is never passed to a child command's environment. Other inherited credentials require explicit `execution.deny_env` entries.
 
 ## See also
 

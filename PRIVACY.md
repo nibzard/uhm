@@ -21,7 +21,7 @@ Use `uhm context show minimal|standard|full` before a request to inspect the exa
 
 `uhm` does not automatically add environment values, secrets, file contents, Git remotes, Git diffs, local receipts, cached proposals, stdout, stderr, or clipboard data. The generated command may read files or contact services when executed; that behavior belongs to the command and is described by its declared and detected effects.
 
-`uhm recover` is the one explicit exception for local receipts. It prints the exact bounded subset before sending, requires terminal approval, and sends only the retained original intent, typed proposal, coarse outcome, optional guidance, and a fixed best-effort label. The selected current context is also sent under the normal context policy. It never sends the full journal, unrelated runs, recovery manifests, snapshot paths, or snapshot bytes.
+`uhm repair` and `uhm recover` are explicit exceptions for local receipts. Each prints the exact bounded subset and fixed instruction before sending, requires affirmative terminal approval, and sends only the retained original intent, typed proposal, coarse outcome, and optional feedback or guidance. The selected current context is also sent under the normal context policy. Neither sends the full journal, unrelated runs, recovery manifests, snapshot paths, or snapshot bytes.
 
 OpenAI's terms and retention controls can change. The linked provider documentation, not this repository, is authoritative for provider-side handling.
 

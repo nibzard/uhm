@@ -6,12 +6,15 @@ use std::io::Write;
 pub const NOTICE_REVISION: u8 = 3;
 pub const RENDERED_MARKER: &str = "first-use-notice-v3-rendered";
 
-pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, String> {
-    let marker = config.paths.data_dir.join("notice-revision");
-    if std::fs::read_to_string(&marker)
+pub fn is_current(config: &Config) -> bool {
+    std::fs::read_to_string(config.paths.data_dir.join("notice-revision"))
         .ok()
         .is_some_and(|value| value.trim() == NOTICE_REVISION.to_string())
-    {
+}
+
+pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, String> {
+    let marker = config.paths.data_dir.join("notice-revision");
+    if is_current(config) {
         return Ok(RENDERED_MARKER);
     }
 

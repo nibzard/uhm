@@ -286,26 +286,23 @@ pub fn complete(config: &Config, resolved_policy: &Policy, interaction: Interact
     if event.validate().is_err() {
         return;
     }
-    if event.parent_action == "unknown" {
-        if !policy(config, false).enabled {
-            return;
-        }
-        let _ = enqueue(config, &run_id, &event);
-        return;
-    }
     let Ok(send_lock) = open_lock(&telemetry_root(config), "send.lock") else {
         return;
     };
-    if send_lock.try_lock_exclusive().is_err() {
-        let _ = enqueue(config, &run_id, &event);
+    if send_lock.lock_exclusive().is_err() {
         return;
     }
     if !policy(config, false).enabled {
         let _ = fs2::FileExt::unlock(&send_lock);
         return;
     }
+    if event.parent_action == "unknown" || !crate::first_run::is_current(config) {
+        let _ = enqueue(config, &run_id, &event);
+        let _ = fs2::FileExt::unlock(&send_lock);
+        return;
+    }
     if network_bound {
-        flush_older(config, Duration::from_millis(200));
+        flush_older_locked(config, Duration::from_millis(200));
     }
     match send(&event, Duration::from_millis(100)) {
         SendResult::Accepted | SendResult::Ambiguous | SendResult::Rejected => {}
@@ -373,6 +370,15 @@ pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::Co
         return;
     }
     let event = feedback_event(receipt);
+    if event.validate().is_err() {
+        let _ = fs2::FileExt::unlock(&send_lock);
+        return;
+    }
+    if !crate::first_run::is_current(config) {
+        let _ = enqueue(config, &format!("feedback-{}", history::run_id()), &event);
+        let _ = fs2::FileExt::unlock(&send_lock);
+        return;
+    }
     match send(&event, Duration::from_millis(100)) {
         SendResult::PreSend => {
             let _ = enqueue(config, &format!("feedback-{}", history::run_id()), &event);
@@ -409,10 +415,24 @@ pub fn ack_parent(config: &Config, resolved_policy: &Policy, run_id: &str, statu
     if !resolved_policy.enabled || !matches!(status, "applied" | "failed") {
         return;
     }
-    if !update_parent_candidate(config, run_id, status) {
+    let root = telemetry_root(config);
+    let Ok(send_lock) = open_lock(&root, "send.lock") else {
+        return;
+    };
+    if send_lock.lock_exclusive().is_err() {
         return;
     }
-    flush_older(config, Duration::from_millis(300));
+    if !policy(config, false).enabled || !update_parent_candidate(config, run_id, status) {
+        let _ = fs2::FileExt::unlock(&send_lock);
+        return;
+    }
+    // Acknowledgement is an internal/local command. If the notice marker was
+    // restored without its queue (or belongs to an older revision), update the
+    // queued outcome but defer all network activity until a disclosed send.
+    if crate::first_run::is_current(config) {
+        flush_older_locked(config, Duration::from_millis(300));
+    }
+    let _ = fs2::FileExt::unlock(&send_lock);
 }
 
 fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool {
@@ -466,10 +486,7 @@ fn send_to(endpoint: &str, event: &Event, timeout: Duration) -> SendResult {
         Ok(value) => value,
         Err(_) => return SendResult::PreSend,
     };
-    let agent = ureq::AgentBuilder::new()
-        .try_proxy_from_env(true)
-        .timeout(timeout)
-        .build();
+    let agent = crate::http::agent(timeout);
     match agent
         .post(endpoint)
         .set("Content-Type", "application/json")
@@ -504,7 +521,9 @@ fn enqueue(config: &Config, run_id: &str, event: &Event) -> Result<(), String> {
     fs2::FileExt::unlock(&lock).map_err(|e| e.to_string())
 }
 
-fn flush_older(config: &Config, budget: Duration) {
+/// Flush queued events while the caller holds `send.lock` and has rechecked
+/// policy plus the current first-use notice.
+fn flush_older_locked(config: &Config, budget: Duration) {
     let started = Instant::now();
     let root = telemetry_root(config);
     let Ok(lock) = open_lock(&root, "queue.lock") else {
@@ -668,7 +687,7 @@ fn latency(value: Duration) -> &'static str {
 fn dominant_effect(effects: &[Effect]) -> &'static str {
     effects
         .iter()
-        .map(Effect::label)
+        .map(Effect::wire_name)
         .max_by_key(|v| EFFECTS.iter().position(|e| e == v).unwrap_or(0))
         .unwrap_or("none")
 }
@@ -677,7 +696,7 @@ fn receipt_effect(receipt: &history::CoarseReceipt) -> &'static str {
         .declared_effects
         .iter()
         .chain(&receipt.detected_effects)
-        .filter_map(|v| EFFECTS.iter().copied().find(|e| *e == v))
+        .filter_map(|value| normalize_receipt_effect(value))
         .max_by_key(|v| EFFECTS.iter().position(|e| e == v).unwrap_or(0))
         .unwrap_or("none")
 }
@@ -685,11 +704,32 @@ fn receipt_route(value: &str) -> &'static str {
     match value {
         "return_answer" | "answer" | "ask" | "explain" => "answer",
         "run_shell" | "shell" => "shell",
+        "run_program" | "program" => "program",
         "require_parent_shell" => "parent_shell",
         "request_clarification" => "clarification",
         _ => "unknown",
     }
 }
+
+fn normalize_receipt_effect(value: &str) -> Option<&'static str> {
+    EFFECTS
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == value)
+        .or(match value {
+            "reads local data" => Some("read_local"),
+            "writes local data" => Some("write_local"),
+            "deletes local data" => Some("delete_local"),
+            "uses the network" => Some("network_read"),
+            "changes remote state" => Some("remote_mutation"),
+            "uses elevated privileges" => Some("privilege_elevation"),
+            "controls processes" => Some("process_control"),
+            "changes the parent shell" => Some("shell_state"),
+            "has effects uhm could not classify" => Some("unknown"),
+            _ => None,
+        })
+}
+
 fn receipt_decision(value: &str) -> &'static str {
     match value {
         "completed" | "failed" | "timed_out" => "ran",
@@ -753,6 +793,46 @@ mod tests {
         ] {
             assert!(value.get(prohibited).is_none());
         }
+    }
+
+    #[test]
+    fn every_typed_effect_projects_to_a_valid_wire_enum() {
+        for effect in [
+            Effect::ReadLocal,
+            Effect::WriteLocal,
+            Effect::DeleteLocal,
+            Effect::NetworkRead,
+            Effect::RemoteMutation,
+            Effect::PrivilegeElevation,
+            Effect::ProcessControl,
+            Effect::ShellState,
+            Effect::Unknown,
+        ] {
+            let mut interaction = Interaction::new("auto", false, true);
+            interaction.effects(&[effect]);
+            interaction.event.as_ref().unwrap().validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn feedback_preserves_program_route_and_effect_projection() {
+        let receipt = history::CoarseReceipt {
+            mode: "auto".into(),
+            route: "run_program".into(),
+            declared_effects: vec!["writes local data".into()],
+            detected_effects: vec!["network_read".into()],
+            decision: "completed".into(),
+            execution_attempted: true,
+            exit_category: "success".into(),
+            signal: None,
+            latency_bucket: "lt_1s".into(),
+            cache_state: "miss".into(),
+            user_feedback: "good".into(),
+        };
+        let event = feedback_event(&receipt);
+        assert_eq!(event.route, "program");
+        assert_eq!(event.effects, "network_read");
+        event.validate().unwrap();
     }
 
     #[test]
@@ -843,6 +923,29 @@ mod tests {
                 .unwrap();
         assert_eq!(updated.parent_action, "failed");
         assert!(!update_parent_candidate(&config, "parent-run", "applied"));
+    }
+
+    #[test]
+    fn parent_ack_without_current_notice_updates_queue_but_never_claims_it() {
+        let root = tempfile::tempdir().unwrap();
+        let config = config(root.path());
+        let mut event = preview("auto", false);
+        event.parent_action = "unknown".into();
+        enqueue(&config, "notice-parent", &event).unwrap();
+        ack_parent(
+            &config,
+            &Policy {
+                enabled: true,
+                reason: "test",
+            },
+            "notice-parent",
+            "applied",
+        );
+        let queued = queue_path(&config, "notice-parent");
+        assert!(queued.exists());
+        let updated: Event = serde_json::from_slice(&std::fs::read(queued).unwrap()).unwrap();
+        assert_eq!(updated.parent_action, "applied");
+        assert!(event_files(&telemetry_root(&config).join("claimed")).is_empty());
     }
 
     #[test]

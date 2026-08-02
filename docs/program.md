@@ -32,7 +32,7 @@ The program runs under fixed limits:
 | CPU | 5 seconds |
 | Combined output | 16 MiB |
 
-`uhm` also applies best-effort host resource limits. These caps bound a runaway program; they are not a security boundary.
+The wall deadline includes primary-process waiting, inherited stdout/stderr drainage, and bounded descendant cleanup. A descendant that keeps an inherited pipe open is classified as a timeout. `uhm` also applies best-effort host resource limits. These caps bound a runaway program; they are not a security boundary.
 
 ## This is not a sandbox
 
@@ -47,6 +47,8 @@ When a program produces files, `uhm` stages them to collision-resistant sibling 
 1. After a zero exit, `uhm` verifies each declared artifact is a regular file.
 2. It checks sizes and `fsync`s.
 3. It renames each artifact into place independently.
+
+Workspace size measurement never follows symlinks; a symlink anywhere in a successful workspace is rejected.
 
 A failed program commits **none** of its declared artifacts. But unrelated side effects the program caused — a network call, a file it wrote outside staging — cannot be rolled back. Multifile commits are not transactional.
 

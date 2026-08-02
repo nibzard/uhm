@@ -384,7 +384,9 @@ pub fn record_request(
     }
     validate_id(run)?;
     let value = if cfg.detail == HistoryDetail::Full {
-        json!({"intent": redact(intent, cfg.redact_paths), "intent_truncated": intent.len() > cfg.artifact_max_bytes})
+        let redacted = redact(intent, cfg.redact_paths);
+        let (retained, truncated) = truncate_utf8(&redacted, cfg.artifact_max_bytes);
+        json!({"intent": retained, "intent_truncated": truncated, "intent_bytes": intent.len(), "retained_bytes": retained.len()})
     } else {
         json!({"intent_hash": blake3::hash(intent.as_bytes()).to_hex().to_string(), "bytes": intent.len()})
     };
@@ -594,6 +596,17 @@ fn redact(value: &str, redact_paths: bool) -> String {
         .join(" ")
 }
 
+fn truncate_utf8(value: &str, max_bytes: usize) -> (&str, bool) {
+    if value.len() <= max_bytes {
+        return (value, false);
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&value[..end], true)
+}
+
 pub fn append_receipt(data: &Path, cfg: &HistoryConfig, receipt: &Receipt) -> Result<(), String> {
     if !cfg.enabled {
         return Ok(());
@@ -714,6 +727,12 @@ pub fn repair_seed(
 ) -> Result<(String, String), String> {
     let id = resolve_run(data, id)?;
     let events = events_for(data, &id)?;
+    if events.iter().any(|event| {
+        event.kind == EventKind::RequestCreated
+            && event.data.get("intent_truncated").and_then(Value::as_bool) == Some(true)
+    }) {
+        return Err("repair unavailable: the retained intent was truncated".into());
+    }
     let intent = events.iter().find(|e| e.kind == EventKind::RequestCreated).and_then(|e| e.data.get("intent")).and_then(Value::as_str)
         .ok_or("repair unavailable: the original intent was not retained; set history.detail to full for future runs")?;
     let (_, action) = load_proposal(data, &id)?;
@@ -739,6 +758,12 @@ pub fn recovery_seed(
 ) -> Result<(String, String), String> {
     let id = resolve_run(data, id)?;
     let events = events_for(data, &id)?;
+    if events.iter().any(|event| {
+        event.kind == EventKind::RequestCreated
+            && event.data.get("intent_truncated").and_then(Value::as_bool) == Some(true)
+    }) {
+        return Err("best-effort recovery unavailable: the retained intent was truncated".into());
+    }
     if events.iter().any(|event| event.route == "recover")
         || events
             .first()
@@ -955,7 +980,7 @@ pub fn prune(data: &Path, cfg: &HistoryConfig, dry_run: bool) -> Result<(usize, 
     prune_locked(data, cfg, dry_run)
 }
 
-pub fn clear(data: &Path) -> Result<(), String> {
+pub fn clear(data: &Path) -> Result<usize, String> {
     if !data.is_absolute() || data.parent().is_none() {
         return Err("refusing to clear an unsafe history root".into());
     }
@@ -970,9 +995,32 @@ pub fn clear(data: &Path) -> Result<(), String> {
         {
             return Err("refusing to clear a symlinked history run root".into());
         }
-        std::fs::remove_dir_all(&root).map_err(|e| e.to_string())?;
+        let mut preserved = 0usize;
+        for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_type().map_err(|e| e.to_string())?.is_symlink() {
+                return Err(
+                    "refusing to clear through a symlink under the history run root".into(),
+                );
+            }
+            if entry
+                .path()
+                .join("recovery.json")
+                .symlink_metadata()
+                .is_ok()
+            {
+                preserved += 1;
+            } else if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                std::fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+            } else {
+                std::fs::remove_file(entry.path()).map_err(|e| e.to_string())?;
+            }
+        }
+        write_private_atomic(&journal_path(data), b"")?;
+        return Ok(preserved);
     }
-    write_private_atomic(&journal_path(data), b"")
+    write_private_atomic(&journal_path(data), b"")?;
+    Ok(0)
 }
 
 pub fn clear_before(data: &Path, cutoff: u64) -> Result<usize, String> {
@@ -1018,30 +1066,11 @@ pub fn export(data: &Path, output: &Path, include_content: bool) -> Result<usize
         .events
         .iter()
         .map(|e| {
-            let mut value = serde_json::to_value(e).unwrap_or_default();
-            if !include_content {
-                if let Some(data) = value.get_mut("data").and_then(Value::as_object_mut) {
-                    for key in [
-                        "intent",
-                        "intent_hash",
-                        "intent_truncated",
-                        "proposal",
-                        "source",
-                        "stdout",
-                        "stderr",
-                        "diagnostics",
-                        "path",
-                        "artifact",
-                    ] {
-                        data.remove(key);
-                    }
-                }
-                if let Some(object) = value.as_object_mut() {
-                    object.remove("run_id");
-                    object.remove("related_run_id");
-                }
+            if include_content {
+                serde_json::to_value(e).unwrap_or_default()
+            } else {
+                redacted_export_event(e)
             }
-            value
         })
         .collect();
     let mut bytes = Vec::new();
@@ -1051,6 +1080,50 @@ pub fn export(data: &Path, output: &Path, include_content: bool) -> Result<usize
     }
     write_private_atomic(output, &bytes)?;
     Ok(values.len())
+}
+
+fn redacted_export_event(event: &Event) -> Value {
+    const DATA_KEYS: &[&str] = &[
+        "bytes",
+        "retained_bytes",
+        "level",
+        "proposal_kind",
+        "runtime",
+        "declared_effects",
+        "detected_effects",
+        "decision",
+        "execution_attempted",
+        "exit_category",
+        "signal",
+        "latency_bucket",
+        "cache_state",
+        "second_turn_used",
+        "user_feedback",
+        "result",
+        "state",
+        "item_count",
+        "attempt",
+    ];
+    let mut data = serde_json::Map::new();
+    if let Some(source) = event.data.as_object() {
+        for key in DATA_KEYS {
+            if let Some(value) = source.get(*key) {
+                data.insert((*key).into(), value.clone());
+            }
+        }
+    }
+    json!({
+        "export_schema_version": 1,
+        "schema_version": event.schema_version,
+        "timestamp": event.timestamp,
+        "app_version": event.app_version,
+        "prompt_schema_version": event.prompt_schema_version,
+        "route": event.route,
+        "mode": event.mode,
+        "context_mode": event.context_mode,
+        "kind": event.kind,
+        "data": data,
+    })
 }
 
 pub fn set_feedback(
@@ -1446,6 +1519,44 @@ mod tests {
         assert!(!text.contains("abcdefgh1234"));
         assert!(!text.contains("intent"));
         assert!(!text.contains("/secret"));
+        assert!(!text.contains("checksum"));
+        assert!(!text.contains("intent_hash"));
+    }
+    #[test]
+    fn full_intent_is_utf8_bounded_and_truncated_seed_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let mut config = cfg(HistoryDetail::Full);
+        config.artifact_max_bytes = 5;
+        record_request(
+            d.path(),
+            &config,
+            "bounded00001",
+            "run_shell",
+            "auto",
+            "minimal",
+            "éééé",
+            None,
+        )
+        .unwrap();
+        let events = events_for(d.path(), "bounded00001").unwrap();
+        let intent = events[0].data["intent"].as_str().unwrap();
+        assert!(intent.len() <= 5);
+        assert!(events[0].data["intent_truncated"].as_bool().unwrap());
+        assert!(repair_seed(d.path(), "bounded00001", None).is_err());
+    }
+
+    #[test]
+    fn clear_preserves_recovery_owned_run_directories() {
+        let d = tempfile::tempdir().unwrap();
+        let recovery = runs_path(d.path()).join("recover00001");
+        std::fs::create_dir_all(&recovery).unwrap();
+        std::fs::write(recovery.join("recovery.json"), b"evidence").unwrap();
+        let ordinary = runs_path(d.path()).join("ordinary001");
+        std::fs::create_dir_all(&ordinary).unwrap();
+        std::fs::write(ordinary.join("proposal.json"), b"content").unwrap();
+        assert_eq!(clear(d.path()).unwrap(), 1);
+        assert!(recovery.join("recovery.json").exists());
+        assert!(!ordinary.exists());
     }
     #[test]
     fn feedback_is_immutable_event() {

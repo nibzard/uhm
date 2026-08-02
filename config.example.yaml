@@ -6,7 +6,7 @@
 # reasoning_effort: low          # none | minimal | low | medium | high | xhigh
 # stream: true
 
-# shell: auto                    # auto | bash | zsh | fish | pwsh
+# shell: auto                    # auto | sh | bash | zsh | fish | pwsh | powershell
 # context_mode: standard         # minimal | standard | full
 # context_timeout_ms: 150        # one shared context-probe deadline
 

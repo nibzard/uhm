@@ -272,10 +272,7 @@ fn network_check() -> Check {
             next: Some("configure the key, then rerun `uhm doctor network`".into()),
         };
     };
-    let agent = ureq::AgentBuilder::new()
-        .try_proxy_from_env(true)
-        .timeout(Duration::from_secs(3))
-        .build();
+    let agent = crate::http::agent(Duration::from_secs(3));
     match agent
         .get("https://api.openai.com/v1/models")
         .set("Authorization", &format!("Bearer {}", key))

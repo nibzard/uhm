@@ -55,7 +55,7 @@ fn run(argv: Vec<String>) -> i32 {
         return 0;
     }
     if args.subcommand.as_deref() == Some("shell-init") {
-        let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+        let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
         return match words.as_slice() {
             [shell] => match shell_integration::ShellFamily::parse(shell) {
                 Ok(shell) => {
@@ -104,7 +104,9 @@ fn run(argv: Vec<String>) -> i32 {
             )
         }
     };
-    let approved_history = if let Some(entry) = args.last_history_entry.as_deref() {
+    let approved_history = if args.is_local_only() {
+        None
+    } else if let Some(entry) = args.last_history_entry.as_deref() {
         if !config.shell_context.last_history_entry {
             return app_error(
                 &args,
@@ -158,7 +160,7 @@ fn run(argv: Vec<String>) -> i32 {
     let mut preset_action = None;
     let mut related_run_id = None;
     if args.subcommand.as_deref() == Some("history") {
-        let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+        let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
         if words.first() == Some(&"replay") {
             if words.len() != 3 || words[2] != "--review" {
                 return app_error(
@@ -182,9 +184,17 @@ fn run(argv: Vec<String>) -> i32 {
         }
     }
     if args.subcommand.as_deref() == Some("repair") {
-        let mut parts = args.prompt.splitn(2, " -- ");
-        let selected = parts.next().unwrap_or("last").trim();
-        let feedback = parts.next().map(str::trim).filter(|v| !v.is_empty());
+        let selected = args.operands.first().map(String::as_str).unwrap_or("last");
+        let feedback_text = args
+            .operands
+            .get(1..)
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str)
+            .filter(|value| *value != "--")
+            .collect::<Vec<_>>()
+            .join(" ");
+        let feedback = (!feedback_text.is_empty()).then_some(feedback_text.as_str());
         match history::repair_seed(
             &config.paths.data_dir,
             if selected.is_empty() {
@@ -195,10 +205,35 @@ fn run(argv: Vec<String>) -> i32 {
             feedback,
         ) {
             Ok((id, seed)) => {
-                eprintln!("uhm: repair will send only the retained original intent, typed proposal, coarse outcome, and supplied feedback for run {}", id);
+                let request = format!(
+                    "Repair the retained action using only this bounded receipt subset.\n{seed}"
+                );
+                eprintln!("uhm: exact retained subset and repair instruction that will be sent to OpenAI:\n{}", ansi::sanitize_untrusted(&request));
+                eprintln!("uhm: the selected current machine context will also be sent under the normal context policy. Snapshots and the full journal will not be sent.");
+                if !std::io::stderr().is_terminal() {
+                    return app_error(
+                        &args,
+                        outcome::NOT_EXECUTED,
+                        "repair_cancelled",
+                        "a terminal is required to approve the bounded repair request",
+                    );
+                }
+                eprint!("Send this repair request? [y/N] ");
+                let _ = std::io::stderr().flush();
+                if !tty::read_line_cooked()
+                    .is_some_and(|value| matches!(value.as_str(), "y" | "yes"))
+                {
+                    return app_error(
+                        &args,
+                        outcome::NOT_EXECUTED,
+                        "repair_cancelled",
+                        "repair request was not sent",
+                    );
+                }
                 related_run_id = Some(id);
-                args.prompt = seed;
+                args.prompt = request;
                 args.review = true;
+                args.fresh = true;
             }
             Err(e) => return app_error(&args, outcome::NOT_EXECUTED, "repair_unavailable", &e),
         }
@@ -212,12 +247,17 @@ fn run(argv: Vec<String>) -> i32 {
                 "recover always requires review; --force is not accepted",
             );
         }
-        let mut parts = args.prompt.splitn(2, " -- ");
-        let selected = parts.next().unwrap_or("last").trim();
-        let guidance = parts
-            .next()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
+        let selected = args.operands.first().map(String::as_str).unwrap_or("last");
+        let guidance_text = args
+            .operands
+            .get(1..)
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str)
+            .filter(|value| *value != "--")
+            .collect::<Vec<_>>()
+            .join(" ");
+        let guidance = (!guidance_text.is_empty()).then_some(guidance_text.as_str());
         match history::recovery_seed(
             &config.paths.data_dir,
             if selected.is_empty() {
@@ -275,7 +315,13 @@ fn run(argv: Vec<String>) -> i32 {
                 | "recovery"
         )
     ) {
-        return management(&args, &config, &telemetry_policy);
+        return management(
+            &args,
+            &config,
+            &telemetry_policy,
+            integration.as_ref(),
+            approved_history,
+        );
     }
     let stdin = match input::Spool::read(config.stdin_max_bytes) {
         Ok(v) => v,
@@ -356,7 +402,7 @@ fn integration_management(
     policy: &telemetry::Policy,
 ) -> Option<i32> {
     let verb = args.subcommand.as_deref()?;
-    let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+    let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
     let fail = |name: &str, message: &str| app_error(args, outcome::CONFIG, name, message);
     match verb {
         "shell-control-open" => Some(match words.as_slice() {
@@ -501,11 +547,13 @@ fn management(
     args: &args::Args,
     config: &config::Config,
     telemetry_policy: &telemetry::Policy,
+    integration: Option<&shell_integration::Session>,
+    approved_history: Option<&str>,
 ) -> i32 {
     match args.subcommand.as_deref().unwrap_or("") {
         "undo" | "restore" => {
             let verb = args.subcommand.as_deref().unwrap_or("undo");
-            let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+            let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
             let Some(selected) = words.first().copied() else {
                 return app_error(
                     args,
@@ -689,7 +737,7 @@ fn management(
             }
         }
         "recovery" => {
-            let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+            let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
             let op = words.first().copied().unwrap_or("status");
             match op {
                 "on" if words.len() == 1 => {
@@ -761,7 +809,7 @@ fn management(
             }
         }
         "config" => {
-            let op = args.prompt.split_whitespace().next().unwrap_or("show");
+            let op = args.operands.first().map(String::as_str).unwrap_or("show");
             if op == "check" {
                 println!("config OK: {}", config.paths.config_file.display());
                 return 0;
@@ -788,7 +836,7 @@ fn management(
             0
         }
         "history" => {
-            let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+            let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
             let op = words.first().copied().unwrap_or("status");
             match op {
                 "status" | "" => match history::status(&config.paths.data_dir, &config.history) {
@@ -897,11 +945,16 @@ fn management(
                     }
                 }
                 "search" => {
-                    let needle = args
-                        .prompt
-                        .strip_prefix("search -- ")
-                        .or_else(|| args.prompt.strip_prefix("search "))
-                        .unwrap_or("");
+                    let needle_text = args
+                        .operands
+                        .get(1..)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(String::as_str)
+                        .filter(|value| *value != "--")
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let needle = needle_text.as_str();
                     if needle.is_empty() {
                         return app_error(
                             args,
@@ -983,14 +1036,14 @@ fn management(
                         }
                     };
                     match history::clear(&config.paths.data_dir) {
-                        Ok(()) => {
+                        Ok(preserved) => {
                             if args.json {
                                 println!(
                                     "{}",
-                                    serde_json::json!({"namespace":"uhm","outcome":"history_cleared","exit_code":0})
+                                    serde_json::json!({"namespace":"uhm","outcome":"history_cleared","recovery_runs_preserved":preserved,"exit_code":0})
                                 )
                             } else {
-                                println!("history cleared")
+                                println!("history cleared; {preserved} recovery runs preserved")
                             };
                             0
                         }
@@ -1031,7 +1084,7 @@ fn management(
             }
         }
         "context" => {
-            let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+            let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
             let mode_text = match words.as_slice() {
                 [] | ["show"] => args.context.as_deref().unwrap_or(&config.context_mode),
                 ["show", mode] => mode,
@@ -1048,14 +1101,24 @@ fn management(
                 Ok(v) => v,
                 Err(e) => return app_error(args, outcome::USAGE, "usage_error", &e),
             };
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-            let snapshot = context::gather(mode, &shell, config.context_timeout_ms);
+            let shell = match command::target_shell(config, args.shell.as_deref()) {
+                Ok(value) => value,
+                Err(error) => return app_error(args, outcome::USAGE, "usage_error", &error),
+            };
+            let mut snapshot = context::gather(mode, &shell, config.context_timeout_ms);
+            if let Some(session) = integration {
+                context::add_shell_invocation(&mut snapshot, session, approved_history);
+            }
             let value = serde_json::json!({"prompt":"<user intent>","stdin":{"present":"<depends on invocation>"},"context":snapshot,"disclosure":context::disclosure_payload()});
             println!("{}", serde_json::to_string_pretty(&value).unwrap());
             0
         }
         "telemetry" => {
-            let op = args.prompt.split_whitespace().next().unwrap_or("status");
+            let op = args
+                .operands
+                .first()
+                .map(String::as_str)
+                .unwrap_or("status");
             match op {
                 "status" | "" => {
                     let value = serde_json::json!({
@@ -1117,7 +1180,7 @@ fn management(
             }
         }
         "feedback" => {
-            let words = args.prompt.split_whitespace().collect::<Vec<_>>();
+            let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
             let feedback = words.first().copied().unwrap_or("");
             if !matches!(feedback, "good" | "bad") {
                 return app_error(

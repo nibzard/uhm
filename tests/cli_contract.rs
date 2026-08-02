@@ -329,6 +329,29 @@ fn local_command_on_a_fresh_config_skips_the_first_use_notice() {
 }
 
 #[test]
+fn history_replay_restores_the_notice_gate_before_completion_telemetry() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "history:\n  detail: diagnostic\naliases:\n  replay-noop: true\n";
+    let original = configured_fresh(temp.path(), yaml, &["--plain", "replay-noop"]);
+    assert_eq!(original.status.code(), Some(0));
+
+    let marker = temp.path().join("data/uhm/notice-revision");
+    fs::remove_file(&marker).unwrap();
+    let replay = configured_fresh(
+        temp.path(),
+        yaml,
+        &["--plain", "history", "replay", "last", "--review"],
+    );
+
+    assert_eq!(replay.status.code(), Some(11));
+    assert!(
+        String::from_utf8_lossy(&replay.stderr).contains("OpenAI receives"),
+        "replay must render the disclosure before its completion path can send telemetry"
+    );
+    assert!(marker.exists(), "replay must persist the notice marker");
+}
+
+#[test]
 fn recovery_is_off_by_default_and_enablement_is_explicit() {
     let temp = tempfile::tempdir().unwrap();
     let status = configured(temp.path(), "", &["--json", "recovery", "status"]);

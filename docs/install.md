@@ -16,25 +16,31 @@ Each release publishes four native archives with SHA-256 checksums (`SHA256SUMS`
 
 | Archive | Target |
 |---|---|
-| `uhm-v0.2.1-x86_64-unknown-linux-musl.tar.gz` | Linux, Intel/AMD 64-bit |
-| `uhm-v0.2.1-aarch64-unknown-linux-musl.tar.gz` | Linux, ARM 64-bit |
-| `uhm-v0.2.1-x86_64-apple-darwin.tar.gz` | macOS, Intel |
-| `uhm-v0.2.1-aarch64-apple-darwin.tar.gz` | macOS, Apple Silicon |
+| `uhm-v0.2.2-x86_64-unknown-linux-musl.tar.gz` | Linux, Intel/AMD 64-bit |
+| `uhm-v0.2.2-aarch64-unknown-linux-musl.tar.gz` | Linux, ARM 64-bit |
+| `uhm-v0.2.2-x86_64-apple-darwin.tar.gz` | macOS, Intel |
+| `uhm-v0.2.2-aarch64-apple-darwin.tar.gz` | macOS, Apple Silicon |
 
-Download from the [v0.2.1 release page](https://github.com/nibzard/uhm/releases/tag/v0.2.1), then verify and extract:
+Download from the [v0.2.2 release page](https://github.com/nibzard/uhm/releases/tag/v0.2.2), then verify and extract:
 
 ```sh
 # choose the archive that matches your machine
-archive=uhm-v0.2.1-x86_64-unknown-linux-musl.tar.gz
+archive=uhm-v0.2.2-x86_64-unknown-linux-musl.tar.gz
 
-curl -LO "https://github.com/nibzard/uhm/releases/download/v0.2.1/${archive}"
-curl -LO "https://github.com/nibzard/uhm/releases/download/v0.2.1/SHA256SUMS"
-sha256sum --ignore-missing --check SHA256SUMS
+curl -LO "https://github.com/nibzard/uhm/releases/download/v0.2.2/${archive}"
+curl -LO "https://github.com/nibzard/uhm/releases/download/v0.2.2/SHA256SUMS"
+grep -F "  ${archive}" SHA256SUMS > "${archive}.sha256"
+if [ "$(uname -s)" = Darwin ]; then
+  shasum -a 256 -c "${archive}.sha256"
+else
+  sha256sum -c "${archive}.sha256"
+fi
 tar -xzf "${archive}"
-install -m 0755 uhm-v0.2.1-*/uhm "${HOME}/.local/bin/uhm"
+mkdir -p "${HOME}/.local/bin"
+install -m 0755 uhm-v0.2.2-*/uhm "${HOME}/.local/bin/uhm"
 ```
 
-`sha256sum` prints `<archive>: OK` when the download matches the manifest. Use `shasum -a 256` on macOS if `sha256sum` is unavailable.
+The checksum command prints `<archive>: OK` when the download matches the manifest.
 
 ### macOS quarantine
 
@@ -49,7 +55,11 @@ xattr -d com.apple.quarantine "${HOME}/.local/bin/uhm"
 Ensure the install directory is on your `PATH`:
 
 ```sh
+# bash or zsh
 echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "${HOME}/.${SHELL##*/}rc"
+
+# fish (run from fish)
+fish_add_path "${HOME}/.local/bin"
 ```
 
 ## Option 2 — build from source
@@ -57,17 +67,17 @@ echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "${HOME}/.${SHELL##*/}rc"
 With Rust 1.82 or newer:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.2.1 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.2.2 uhm-cli
 ```
 
 This builds the `uhm-cli` crate and installs the `uhm` binary into `~/.cargo/bin`, which `cargo` already manages on your `PATH`. `--locked` uses the exact pinned dependencies from `Cargo.lock`.
 
-The crate passes `cargo publish --dry-run`, but publishing to crates.io is deferred for v0.2.1; GitHub binaries and `cargo install --git` are the supported channels.
+The crate passes `cargo publish --dry-run`, but publishing to crates.io is deferred for v0.2.2; GitHub binaries and `cargo install --git` are the supported channels.
 
 ## Verify
 
 ```sh
-uhm --version        # uhm 0.2.1
+uhm --version        # uhm 0.2.2
 uhm doctor           # local configuration and terminal checks
 uhm doctor network   # confirm OpenAI is reachable and the key works
 ```

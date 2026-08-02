@@ -4,6 +4,9 @@
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Args {
     pub subcommand: Option<String>,
+    /// Exact management operands after the command verb. Unlike `prompt`, this
+    /// preserves argv boundaries (notably paths containing spaces).
+    pub operands: Vec<String>,
     pub prompt: String,
     pub model: Option<String>,
     pub shell: Option<String>,
@@ -39,14 +42,26 @@ impl Args {
     /// model-routed verb (`run`/`ask`/`explain`/`repair`/`recover`/bare intent)
     /// send data and return false.
     pub fn is_local_only(&self) -> bool {
+        let first_operand = self
+            .operands
+            .first()
+            .map(String::as_str)
+            .or_else(|| self.prompt.split_whitespace().next());
         match self.subcommand.as_deref() {
-            Some(
-                "config" | "context" | "history" | "telemetry" | "undo" | "restore" | "recovery",
-            ) => true,
-            Some("doctor") => !self
-                .prompt
-                .split_whitespace()
-                .any(|value| value == "network"),
+            Some("config" | "context" | "telemetry" | "undo" | "restore" | "recovery") => true,
+            // Replay leaves the management path and completes a retained action;
+            // its interaction summary may be sent after execution or review.
+            Some("history") => first_operand != Some("replay"),
+            Some("doctor") => {
+                if self.operands.is_empty() {
+                    !self
+                        .prompt
+                        .split_whitespace()
+                        .any(|value| value == "network")
+                } else {
+                    !self.operands.iter().any(|value| value == "network")
+                }
+            }
             _ => false,
         }
     }
@@ -242,6 +257,7 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
     if let Some(context) = &out.context {
         crate::context::Mode::parse(context)?;
     }
+    out.operands = intent.clone();
     out.prompt = intent.join(" ");
     Ok(out)
 }
@@ -331,6 +347,18 @@ mod tests {
         let a = pv(&["uhm", "config", "show", "--raw"]).unwrap();
         assert_eq!(a.subcommand.as_deref(), Some("config"));
         assert_eq!(a.prompt, "show --raw");
+        let export = pv(&[
+            "uhm",
+            "history",
+            "export",
+            "--output",
+            "/tmp/a path/out.jsonl",
+        ])
+        .unwrap();
+        assert_eq!(
+            export.operands,
+            ["export", "--output", "/tmp/a path/out.jsonl"]
+        );
     }
 
     #[test]
@@ -408,7 +436,6 @@ mod tests {
         for sub in [
             "config",
             "context",
-            "history",
             "telemetry",
             "undo",
             "restore",
@@ -416,6 +443,16 @@ mod tests {
         ] {
             assert!(local(sub).is_local_only(), "{sub}");
         }
+        assert!(local("history").is_local_only(), "ordinary history command");
+        let history_replay = Args {
+            subcommand: Some("history".into()),
+            prompt: "replay last --review".into(),
+            ..Default::default()
+        };
+        assert!(
+            !history_replay.is_local_only(),
+            "history replay may send completion telemetry"
+        );
         assert!(local("doctor").is_local_only(), "doctor without network");
 
         let doctor_network = Args {

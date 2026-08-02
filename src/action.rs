@@ -17,6 +17,21 @@ pub enum Effect {
 }
 
 impl Effect {
+    /// Stable, content-free identifier used by history and telemetry schemas.
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            Self::ReadLocal => "read_local",
+            Self::WriteLocal => "write_local",
+            Self::DeleteLocal => "delete_local",
+            Self::NetworkRead => "network_read",
+            Self::RemoteMutation => "remote_mutation",
+            Self::PrivilegeElevation => "privilege_elevation",
+            Self::ProcessControl => "process_control",
+            Self::ShellState => "shell_state",
+            Self::Unknown => "unknown",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::ReadLocal => "reads local data",

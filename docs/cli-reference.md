@@ -139,7 +139,7 @@ Emit the optional wrapper that can apply one accepted typed parent-shell action 
 uhm doctor [network]
 ```
 
-Local configuration and terminal checks. `network` performs an explicit OpenAI reachability and authentication check.
+Local configuration and terminal checks. `network` performs an explicit OpenAI reachability and authentication check. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.
 
 ### help and version
 

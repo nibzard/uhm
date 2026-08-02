@@ -650,6 +650,37 @@ pub fn handle(
                     && budget.executions < 2
                     && tty_available()
                 {
+                    let record_failed_attempt = || {
+                        let _ = history::record_output(
+                            &config.paths.data_dir,
+                            &config.history,
+                            &run_id,
+                            "run_program",
+                            mode.as_str(),
+                            Some(&result.stdout_tail),
+                            Some(&result.stderr_tail),
+                            true,
+                        );
+                        receipt(
+                            config,
+                            &run_id,
+                            route,
+                            mode,
+                            "run_program",
+                            if result.timed_out {
+                                "timed_out"
+                            } else {
+                                "failed"
+                            },
+                            true,
+                            result.code,
+                            result.signal,
+                            started.elapsed(),
+                            budget.second_used(),
+                            &proposal.effects,
+                            &detected,
+                        );
+                    };
                     let diagnostics =
                         ansi::sanitize_untrusted(&String::from_utf8_lossy(&result.stderr_tail));
                     eprintln!("uhm: program exited {} ({})", result.code, diagnostics);
@@ -661,6 +692,7 @@ pub fn handle(
                         .as_str()
                     {
                         "r" | "repair" | "y" | "yes" => {
+                            record_failed_attempt();
                             let _ = budget.replace_with_model(Replacement::Repair);
                             action = match propose(
                                 args,
@@ -673,9 +705,11 @@ pub fn handle(
                                     args.local_input,
                                     args.input_format.as_deref(),
                                 ),
-                                Some(
-                                    json!({"kind":"repair","prior_action":{"kind":"program","program":proposal},"exit_code":result.code,"signal":result.signal,"stderr":diagnostics}),
-                                ),
+                                Some(program_repair_payload(
+                                    &proposal,
+                                    &result,
+                                    (!args.local_input).then_some(diagnostics.as_str()),
+                                )),
                                 &shell_name,
                             ) {
                                 Ok((value, _)) => value,
@@ -687,6 +721,7 @@ pub fn handle(
                         }
                         "e" | "edit" => match edit(&proposal.source) {
                             Ok(source) => {
+                                record_failed_attempt();
                                 proposal.source = source;
                                 action = match (ProposedAction::Program { program: proposal })
                                     .validate()
@@ -869,7 +904,7 @@ pub fn handle(
                 return result.code;
             }
             ProposedAction::Shell {
-                mut command,
+                command,
                 metadata,
                 stdin_mode,
             } => {
@@ -1017,8 +1052,33 @@ pub fn handle(
                         }
                         "e" | "edit" if budget.replacement.is_none() => match edit(&command) {
                             Ok(v) => {
-                                command = v;
                                 let _ = budget.replace_with_edit();
+                                action = match (ProposedAction::Shell {
+                                    command: v,
+                                    // Provider claims no longer describe edited
+                                    // bytes; the next loop re-detects effects,
+                                    // parent-shell requirements, and warnings.
+                                    metadata: crate::action::ProposalMetadata {
+                                        summary: "user-edited command".into(),
+                                        assumptions: Vec::new(),
+                                        effects: Vec::new(),
+                                        requirements: Vec::new(),
+                                    },
+                                    stdin_mode,
+                                })
+                                .validate()
+                                {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        return app_error(
+                                            args,
+                                            outcome::NOT_EXECUTED,
+                                            "edit_error",
+                                            &error,
+                                        )
+                                    }
+                                };
+                                continue;
                             }
                             Err(e) => {
                                 return app_error(args, outcome::NOT_EXECUTED, "edit_error", &e)
@@ -1069,6 +1129,37 @@ pub fn handle(
                     && budget.executions < 2
                     && tty_available()
                 {
+                    let record_failed_attempt = || {
+                        let _ = history::record_output(
+                            &config.paths.data_dir,
+                            &config.history,
+                            &run_id,
+                            "run_shell",
+                            mode.as_str(),
+                            result.stdout_tail.as_deref(),
+                            result.stderr_tail.as_deref(),
+                            true,
+                        );
+                        receipt(
+                            config,
+                            &run_id,
+                            route,
+                            mode,
+                            "run_shell",
+                            if result.timed_out {
+                                "timed_out"
+                            } else {
+                                "failed"
+                            },
+                            true,
+                            result.code,
+                            result.signal,
+                            started.elapsed(),
+                            budget.second_used(),
+                            &effects,
+                            &detected,
+                        );
+                    };
                     let available = result
                         .stderr_tail
                         .as_ref()
@@ -1086,6 +1177,7 @@ pub fn handle(
                         .as_str()
                     {
                         "r" | "repair" | "y" | "yes" => {
+                            record_failed_attempt();
                             let _ = budget.replace_with_model(Replacement::Repair);
                             action = match propose(
                                 args,
@@ -1112,11 +1204,29 @@ pub fn handle(
                         }
                         "e" | "edit" => match edit(&command) {
                             Ok(replacement) => {
+                                record_failed_attempt();
                                 let _ = budget.replace_with_edit();
-                                action = ProposedAction::Shell {
+                                action = match (ProposedAction::Shell {
                                     command: replacement,
-                                    metadata,
+                                    metadata: crate::action::ProposalMetadata {
+                                        summary: "user-edited command".into(),
+                                        assumptions: Vec::new(),
+                                        effects: Vec::new(),
+                                        requirements: Vec::new(),
+                                    },
                                     stdin_mode,
+                                })
+                                .validate()
+                                {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        return app_error(
+                                            args,
+                                            outcome::NOT_EXECUTED,
+                                            "edit_error",
+                                            &error,
+                                        )
+                                    }
                                 };
                                 continue;
                             }
@@ -1209,6 +1319,40 @@ pub fn handle(
             }
         }
     }
+}
+
+/// Build the only model-visible program failure payload. Child-derived text is
+/// a separate optional input so local-input callers cannot accidentally include
+/// it by interpolating a diagnostic string into the coarse outcome.
+fn program_repair_payload(
+    proposal: &crate::action::ProgramProposal,
+    result: &program::ExecutionResult,
+    diagnostic: Option<&str>,
+) -> Value {
+    let failure_class = if result.timed_out {
+        "timeout"
+    } else if result.output_overflow {
+        "output_overflow"
+    } else if result.signal.is_some() {
+        "signal"
+    } else {
+        "exit_nonzero"
+    };
+    let mut value = json!({
+        "kind":"repair",
+        "prior_action":{"kind":"program","program":proposal},
+        "failure":{
+            "class":failure_class,
+            "exit_code":result.code,
+            "signal":result.signal,
+            "timed_out":result.timed_out,
+            "output_overflow":result.output_overflow
+        }
+    });
+    if let Some(diagnostic) = diagnostic {
+        value["diagnostic"] = Value::String(diagnostic.to_owned());
+    }
+    value
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1345,8 +1489,8 @@ fn receipt(
         }
         .into(),
         prompt_schema_version: prompt::PROMPT_VERSION,
-        declared_effects: declared.iter().map(|e| e.label().into()).collect(),
-        detected_effects: detected.iter().map(|e| e.label().into()).collect(),
+        declared_effects: declared.iter().map(|e| e.wire_name().into()).collect(),
+        detected_effects: detected.iter().map(|e| e.wire_name().into()).collect(),
         decision: decision.into(),
         execution_attempted: attempted,
         exit_category: if !attempted {
@@ -1550,7 +1694,7 @@ fn app_error(args: &Args, code: i32, name: &str, message: &str) -> i32 {
     }
     code
 }
-fn target_shell(config: &Config, over: Option<&str>) -> Result<String, String> {
+pub(crate) fn target_shell(config: &Config, over: Option<&str>) -> Result<String, String> {
     normalize_shell(
         over.unwrap_or(&config.shell),
         &std::env::var("SHELL").unwrap_or_default(),
@@ -1580,6 +1724,39 @@ fn normalize_shell(requested: &str, detected: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_input_repair_payload_cannot_contain_child_diagnostics() {
+        let proposal = crate::action::ProgramProposal {
+            runtime: crate::action::ProgramRuntime::Python3,
+            source: "raise SystemExit(1)".into(),
+            summary: "test".into(),
+            assumptions: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            effects: vec![],
+            result_mode: crate::action::ProgramResultMode::Stdout,
+        };
+        let result = program::ExecutionResult {
+            code: 1,
+            signal: None,
+            stdout: vec![],
+            stdout_tail: vec![],
+            stderr_tail: b"LOCAL-INPUT-SENTINEL".to_vec(),
+            timed_out: false,
+            output_overflow: false,
+            duration: std::time::Duration::ZERO,
+            artifacts: vec![],
+            retained_workspace: None,
+            recovery_prepared: false,
+            recovery_state: None,
+            recovery_reason: None,
+        };
+        let local = program_repair_payload(&proposal, &result, None).to_string();
+        assert!(!local.contains("LOCAL-INPUT-SENTINEL"));
+        let ordinary =
+            program_repair_payload(&proposal, &result, Some("LOCAL-INPUT-SENTINEL")).to_string();
+        assert!(ordinary.contains("LOCAL-INPUT-SENTINEL"));
+    }
     #[test]
     fn gate_blocks_missing_marker() {
         assert!(ensure_disclosure(None).is_err());

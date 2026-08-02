@@ -23,6 +23,6 @@
   - [Responses result loop](architecture/0002-responses-result-loop.md)
   - [Content-free telemetry](architecture/0003-content-free-telemetry.md)
   - [Bounded evidence recovery](architecture/0004-bounded-evidence-recovery.md)
-- [Releases](releases/v0.2.1.md)
+- [Releases](releases/v0.2.2.md)
 - [Demo ↗](https://nibzard.github.io/uhm/demo/)
 - [Source ↗](https://github.com/nibzard/uhm)

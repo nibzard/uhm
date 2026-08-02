@@ -101,6 +101,10 @@ pub struct RecoveryManifest {
     pub state: RecoveryState,
     pub pinned: bool,
     pub forced_restore: bool,
+    /// Unix deadline after which a `preparing` capture can no longer belong to
+    /// a live bounded program execution. Zero on legacy manifests is expired.
+    #[serde(default)]
+    pub preparation_lease_until: u64,
     pub items: Vec<RecoveryItem>,
     pub reason: Option<String>,
 }
@@ -512,17 +516,33 @@ fn inspect_eligibility(destination: &Path, config: &RecoveryConfig) -> Result<(b
     }
 }
 
-pub fn prepare(
+#[cfg(test)]
+fn prepare(
     data: &Path,
     run: &str,
     config: &RecoveryConfig,
     outputs: &[(PathBuf, PathBuf)],
 ) -> Result<Coordinator, String> {
+    prepare_with_lease(data, run, config, outputs, 60)
+}
+
+pub fn prepare_with_lease(
+    data: &Path,
+    run: &str,
+    config: &RecoveryConfig,
+    outputs: &[(PathBuf, PathBuf)],
+    lease_secs: u64,
+) -> Result<Coordinator, String> {
     validate_run_id(run)?;
     if outputs.is_empty() || outputs.len() > 16 {
         return Err("recovery capture requires 1..16 managed outputs".into());
     }
+    // Enforce age before admitting another capture. The subsequent locked
+    // usage calculation still fails closed if another process changes usage
+    // between this prune and our lock acquisition.
+    prune(data, config, false, false)?;
     let _guard = lock(data)?;
+    let retained_before = retained_snapshot_bytes(data, config.scan_limit)?;
     let run_path = run_dir(data, run);
     dirs::ensure_private_dir(&run_path)?;
     let snapshots = run_path.join(SNAPSHOTS);
@@ -539,11 +559,12 @@ pub fn prepare(
         state: RecoveryState::Preparing,
         pinned: false,
         forced_restore: false,
+        preparation_lease_until: now.saturating_add(lease_secs),
         items: Vec::new(),
         reason: None,
     };
     let mut prepared = Vec::new();
-    let mut total_snapshot_bytes = 0u64;
+    let mut total_snapshot_bytes = retained_before;
     for (index, (destination, staging)) in outputs.iter().enumerate() {
         inspect_eligibility(destination, config)?;
         let parent_path = destination
@@ -570,7 +591,7 @@ pub fn prepare(
                 let snapshot_name = format!("{id}.preimage");
                 total_snapshot_bytes = total_snapshot_bytes.saturating_add(identity.len);
                 if total_snapshot_bytes > config.max_total_bytes {
-                    return Err("preimages exceed the configured total recovery byte limit".into());
+                    return Err("global retained preimages would exceed recovery.max_total_bytes; prune unpinned recovery data or raise the bound".into());
                 }
                 manifest.items.push(RecoveryItem {
                     id,
@@ -653,6 +674,38 @@ pub fn prepare(
         manifest,
         prepared,
     })
+}
+
+fn retained_snapshot_bytes(data: &Path, scan_limit: usize) -> Result<u64, String> {
+    let entries = match std::fs::read_dir(runs_dir(data)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("scan retained recovery usage: {error}")),
+    };
+    let mut total = 0u64;
+    for (index, entry) in entries.enumerate() {
+        if index >= scan_limit {
+            return Err("cannot prove recovery capacity within recovery.scan_limit; prune retained runs or raise the scan bound".into());
+        }
+        let entry = entry.map_err(|error| format!("scan retained recovery usage: {error}"))?;
+        let Some(run) = entry.file_name().to_str().map(str::to_owned) else {
+            return Err("cannot prove recovery capacity: non-UTF-8 run directory".into());
+        };
+        let path = manifest_path(data, &run);
+        if !path.exists() {
+            continue;
+        }
+        let manifest = read_manifest(data, &run)?;
+        total = total.saturating_add(
+            manifest
+                .items
+                .iter()
+                .filter(|item| item.snapshot_file.is_some() && item.state != ItemState::Expired)
+                .map(|item| item.preimage_bytes)
+                .sum::<u64>(),
+        );
+    }
+    Ok(total)
 }
 
 impl Coordinator {
@@ -1010,6 +1063,9 @@ pub fn restore(
     let _guard = lock(data)?;
     let source = resolve_manifest_run(data, selected, config.scan_limit)?;
     let mut manifest = read_manifest(data, &source)?;
+    // Force is irreversible provenance: a resumed ordinary `undo` must not
+    // downgrade an operation that previously crossed the force boundary.
+    let forced = forced || manifest.forced_restore;
     if !matches!(
         manifest.state,
         RecoveryState::Available
@@ -1021,6 +1077,10 @@ pub fn restore(
             "recovery manifest is {}, not restorable",
             manifest.state.as_str()
         ));
+    }
+    if forced && !manifest.forced_restore {
+        manifest.forced_restore = true;
+        write_manifest(data, &manifest)?;
     }
 
     let mut conflicts = Vec::new();
@@ -1343,6 +1403,42 @@ pub fn resume_commit(
             manifest.state.as_str()
         ));
     }
+    // `Staged` is the durable rename intent. If the staging name disappeared
+    // but the destination already matches that intent, the crash happened
+    // after rename and before item-state persistence; reconcile instead of
+    // trying (and failing) to rename a second time.
+    for index in 0..manifest.items.len() {
+        if manifest.items[index].state == ItemState::Committed {
+            continue;
+        }
+        let item = manifest.items[index].clone();
+        let parent = open_parent(
+            item.destination
+                .parent()
+                .ok_or("destination has no parent")?,
+        )?;
+        let staging_name = leaf_name(&item.staging)?;
+        match openat_read(&parent, &staging_name) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let observed = current_hash(&item, config.max_file_bytes)?;
+                let mode = current_mode(&item, config.max_file_bytes)?;
+                if observed.as_deref() == item.staged_hash.as_deref() && mode == item.postimage_mode
+                {
+                    sync_directory_handle(&parent)?;
+                    manifest.items[index].postimage_hash = observed;
+                    manifest.items[index].state = ItemState::Committed;
+                    write_manifest(data, &manifest)?;
+                } else {
+                    return Err(format!(
+                        "staging for {} is missing and destination matches neither durable staged evidence nor a resumable preimage",
+                        item.destination.display()
+                    ));
+                }
+            }
+            Err(error) => return Err(format!("inspect resume staging file: {error}")),
+        }
+    }
     let mut prepared = Vec::new();
     for item in &manifest.items {
         let parent_path = item
@@ -1491,10 +1587,12 @@ pub fn prune(
             report.retained_pinned += 1;
             continue;
         }
+        if manifest.state == RecoveryState::Preparing && now <= manifest.preparation_lease_until {
+            continue;
+        }
         if matches!(
             manifest.state,
-            RecoveryState::Preparing
-                | RecoveryState::CommitPartial
+            RecoveryState::CommitPartial
                 | RecoveryState::UndoPreflight
                 | RecoveryState::UndoInProgress
         ) {
@@ -1530,25 +1628,29 @@ pub fn prune(
             report.bytes_removed = report.bytes_removed.saturating_add(item.preimage_bytes);
             total = total.saturating_sub(item.preimage_bytes);
             if !dry_run {
-                validate_private_regular(&path, 1)?;
-                std::fs::remove_file(&path)
-                    .map_err(|error| format!("remove recovery snapshot: {error}"))?;
+                match validate_private_regular(&path, 1) {
+                    Ok(()) => std::fs::remove_file(&path)
+                        .map_err(|error| format!("remove recovery snapshot: {error}"))?,
+                    Err(_) if manifest.state == RecoveryState::Preparing && !path.exists() => {}
+                    Err(error) => return Err(error),
+                }
                 item.state = ItemState::Expired;
                 changed = true;
             }
         }
-        if changed
-            || manifest
-                .items
-                .iter()
-                .all(|item| item.snapshot_file.is_none())
-        {
+        let expires_without_snapshot = manifest
+            .items
+            .iter()
+            .all(|item| item.snapshot_file.is_none());
+        if changed || expires_without_snapshot {
             report.expired_runs.push(manifest.run_id.clone());
-            if !matches!(manifest.state, RecoveryState::Expired) {
-                transition(&mut manifest, RecoveryState::Expired)?;
+            if !dry_run {
+                if !matches!(manifest.state, RecoveryState::Expired) {
+                    transition(&mut manifest, RecoveryState::Expired)?;
+                }
+                manifest.reason = Some("retained snapshots expired or were pruned".into());
+                write_manifest(data, &manifest)?;
             }
-            manifest.reason = Some("retained snapshots expired or were pruned".into());
-            write_manifest(data, &manifest)?;
         }
     }
     Ok(report)
@@ -1558,7 +1660,7 @@ fn transition(manifest: &mut RecoveryManifest, next: RecoveryState) -> Result<()
     use RecoveryState::*;
     let legal = matches!(
         (manifest.state, next),
-        (Preparing, CommitPartial | Conflicted | Corrupt)
+        (Preparing, CommitPartial | Conflicted | Corrupt | Expired)
             | (CommitPartial, Available | Conflicted | Corrupt)
             | (Available, UndoPreflight | Expired | Corrupt)
             | (UndoPreflight, UndoInProgress | Conflicted | Corrupt)
@@ -2142,6 +2244,21 @@ mod tests {
     }
 
     #[test]
+    fn forced_restore_provenance_is_sticky_across_ordinary_resume() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        std::fs::write(&destination, b"later work").unwrap();
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        manifest.forced_restore = true;
+        manifest.state = RecoveryState::UndoInProgress;
+        manifest.items[0].state = ItemState::UndoPending;
+        write_manifest(&data, &manifest).unwrap();
+        let report = restore(&data, &run, "undo-ordinary1", &config, false).unwrap();
+        assert_eq!(report.outcome, "forced_restore");
+        assert!(read_manifest(&data, &run).unwrap().forced_restore);
+    }
+
+    #[test]
     fn permission_changes_conflict_and_force_rejects_a_symlink_swap() {
         let (root, data, config, run) = committed_replacement();
         let destination = root.path().join("document.txt");
@@ -2225,6 +2342,9 @@ mod tests {
             coordinator.manifest.items[index].state = ItemState::Staged;
         }
         transition(&mut coordinator.manifest, RecoveryState::CommitPartial).unwrap();
+        // Durable intent exists, then simulate a crash after rename and before
+        // the committed item state is persisted.
+        write_manifest(&data, &coordinator.manifest).unwrap();
         let prepared = &coordinator.prepared[0];
         rename_replace(
             &prepared.parent,
@@ -2232,10 +2352,6 @@ mod tests {
             &prepared.destination_name,
         )
         .unwrap();
-        coordinator.manifest.items[0].postimage_hash =
-            coordinator.manifest.items[0].staged_hash.clone();
-        coordinator.manifest.items[0].state = ItemState::Committed;
-        write_manifest(&data, &coordinator.manifest).unwrap();
         drop(coordinator);
 
         assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
@@ -2283,6 +2399,59 @@ mod tests {
     }
 
     #[test]
+    fn prune_dry_run_does_not_expire_new_file_only_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig {
+            max_age_days: 1,
+            ..RecoveryConfig::default()
+        };
+        let run = "run-00000011";
+        let (destination, staging) = paths(root.path(), "created-only");
+        let mut coordinator =
+            prepare(&data, run, &config, &[(destination, staging.clone())]).unwrap();
+        std::fs::write(&staging, b"new").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.created_at = crate::history::now_secs().saturating_sub(2 * 86_400);
+        write_manifest(&data, &manifest).unwrap();
+        let path = manifest_path(&data, run);
+        let before = std::fs::read(&path).unwrap();
+        let report = prune(&data, &config, true, false).unwrap();
+        assert!(report.expired_runs.contains(&run.to_string()));
+        assert_eq!(std::fs::read(path).unwrap(), before);
+    }
+
+    #[test]
+    fn recovery_total_byte_limit_is_global_across_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig {
+            max_total_bytes: 6,
+            max_file_bytes: 6,
+            ..RecoveryConfig::default()
+        };
+        let (first, first_stage) = paths(root.path(), "cap-first");
+        std::fs::write(&first, b"four").unwrap();
+        let mut first_run = prepare(
+            &data,
+            "cap-run-0001",
+            &config,
+            &[(first, first_stage.clone())],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"next").unwrap();
+        first_run.commit(config.max_total_bytes).unwrap();
+        let (second, second_stage) = paths(root.path(), "cap-second");
+        std::fs::write(&second, b"four").unwrap();
+        let error = match prepare(&data, "cap-run-0002", &config, &[(second, second_stage)]) {
+            Ok(_) => panic!("global cap unexpectedly accepted a second snapshot"),
+            Err(error) => error,
+        };
+        assert!(error.contains("global retained preimages"), "{error}");
+    }
+
+    #[test]
     fn state_machine_rejects_false_success_transitions() {
         let mut manifest = RecoveryManifest {
             schema_version: SCHEMA_VERSION,
@@ -2292,6 +2461,7 @@ mod tests {
             state: RecoveryState::Preparing,
             pinned: false,
             forced_restore: false,
+            preparation_lease_until: 0,
             items: vec![],
             reason: None,
         };

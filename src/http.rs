@@ -9,6 +9,15 @@ pub struct Response {
     pub reader: Box<dyn Read + Send>,
 }
 
+/// Shared short-request agent policy. Every outbound HTTP caller goes through
+/// this constructor so proxy discovery and deadlines cannot drift by module.
+pub fn agent(timeout: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .try_proxy_from_env(true)
+        .timeout(timeout)
+        .build()
+}
+
 /// POST `body` (JSON) with bearer auth. Returns a streaming reader on 2xx,
 /// or an error message (with the server's message if we can parse it) on 4xx/5xx.
 pub fn post_stream(url: &str, auth: &str, body: &str) -> Result<Response, String> {

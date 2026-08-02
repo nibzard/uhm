@@ -277,10 +277,13 @@ pub fn fallback(action: &ParentAction, shell_name: &str) -> Result<String, Strin
         .file_name()
         .and_then(|v| v.to_str())
         .unwrap_or(shell_name);
-    render(
-        action,
-        ShellFamily::parse(name).unwrap_or(ShellFamily::Bash),
-    )
+    let shell = ShellFamily::parse(name).map_err(|_| {
+        format!(
+            "parent-shell actions are supported only for bash, zsh, and fish; '{}' cannot receive a safe fallback",
+            name
+        )
+    })?;
+    render(action, shell)
 }
 
 pub fn clean(config: &Config, dir: &Path, nonce_value: &str) -> Result<(), String> {
