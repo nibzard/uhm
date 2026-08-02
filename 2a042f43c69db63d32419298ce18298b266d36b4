@@ -1,0 +1,18 @@
+# Design: Make intent the default CLI path
+
+## Problem
+The documented demo led with `--context minimal --`, forcing users to learn configuration and separator syntax before seeing value. That contradicted uhm's one-step, result-first promise.
+
+## Approach
+Treat bare natural language (`uhm list the three biggest files`) as the canonical interface everywhere. Keep `--` only as an escape hatch when the first intent token starts with a dash. The demo now progresses from a bare read to piped input, an ad hoc multifile computation, prose-only explanation, dry-run preview, and an explicitly forced consequential action.
+
+The runtime also rejects executable proposals on `ask` and `explain`, so a model contract violation cannot turn a prose-only route into local execution.
+
+## Key Trade-offs
+- Advanced controls remain available but no longer compete with the first-use path.
+- The demo uses standard context implicitly to represent normal product behavior.
+- `--force` demonstrates the high-trust path while still displaying consequential-action information.
+- The separator remains supported for ambiguous flag-leading intents.
+
+## Verification
+Formatting, clippy with warnings denied, 141 tests, demo privacy scan, deterministic asset rendering, and desktop/mobile browser checks passed locally. The recorded session is 36.54 seconds at 80x24.
