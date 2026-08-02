@@ -1,0 +1,3 @@
+# Follow-up
+
+Add an explicit bounded timeout for OpenAI proposal generation. A dry-run request during recording waited beyond the existing 300-second execution timeout because that setting currently applies only after proposal generation. This was intentionally not folded into Plan 8 runtime behavior.
