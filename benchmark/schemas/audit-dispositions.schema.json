@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhm.invalid/schemas/qualification-audit-dispositions-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "reviewer", "rubric_version", "items"],
+  "properties": {
+    "version": {"const": 1},
+    "reviewer": {"type": "string", "minLength": 1, "maxLength": 200},
+    "rubric_version": {"const": 1},
+    "items": {
+      "type": "array",
+      "minItems": 20,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["audit_id", "disposition", "rationale"],
+        "properties": {
+          "audit_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+          "disposition": {"enum": ["agree", "minor", "material_error", "critical_error"]},
+          "rationale": {"type": "string", "minLength": 1, "maxLength": 2000}
+        }
+      }
+    }
+  }
+}

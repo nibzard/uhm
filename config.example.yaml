@@ -1,7 +1,12 @@
 # uhm configuration — copy to the path shown by `uhm config show`
 # Every key is optional; uncomment to override a default.
 
+# provider: openai               # openai | cerebras; never inferred from model
 # model: gpt-5.6-terra
+# selection:
+#   mode: fixed                  # fixed | evidence
+#   alternate: null             # or { provider: cerebras, model: gpt-oss-120b }
+#   fallback_on: []              # rate_limited | transient | timeout | incomplete | malformed
 # max_completion_tokens: 8192
 # reasoning_effort: low          # none | minimal | low | medium | high | xhigh
 # stream: true

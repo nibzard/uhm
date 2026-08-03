@@ -21,7 +21,7 @@ function event(overrides = {}) {
     cache: "miss",
     parent_action: "not_applicable",
     interactive: true,
-    notice_revision: 3,
+    notice_revision: 5,
     ...overrides,
   };
 }
@@ -54,7 +54,7 @@ test("accepts the exact v2 schema and preserves WAE ordering", async () => {
   assert.deepEqual(points[0], eventToPoint(event()));
   assert.deepEqual(points[0].indexes, ["interaction_summary"]);
   assert.equal(points[0].blobs[5], "shell");
-  assert.deepEqual(points[0].doubles, [1, 3, 2]);
+  assert.deepEqual(points[0].doubles, [1, 5, 2]);
   assert.equal(validateEvent(event({ route: "program", execution_outcome: "output_overflow" })), true);
 });
 
@@ -70,7 +70,7 @@ test("rejects unknown keys, values, versions, and arbitrary strings", async () =
     event({ prompt: "private" }),
     event({ route: "/home/person/repository" }),
     event({ v: 3 }),
-    event({ notice_revision: 4 }),
+    event({ notice_revision: 6 }),
     event({ interactive: "yes" }),
   ]) {
     assert.equal(validateEvent(invalid), false);

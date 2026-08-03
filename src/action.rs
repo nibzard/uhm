@@ -74,36 +74,75 @@ pub enum ProgramRuntime {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProgramInputAccess {
+pub enum ProgramFileAccess {
     ReadOnly,
-    Replace,
+    WriteOnly,
+    ReadWrite,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProgramInput {
+pub struct ProgramFile {
+    pub id: String,
     pub path: String,
-    pub access: ProgramInputAccess,
+    pub access: ProgramFileAccess,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProgramResultMode {
-    Stdout,
-    Artifacts,
+pub enum ProgramStdinMode {
+    None,
+    LocalPath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProgramProposal {
+pub struct HelperProgramProposalV2 {
+    pub runtime: ProgramRuntime,
+    pub contract: String,
+    pub source: String,
+    pub summary: String,
+    pub assumptions: Vec<String>,
+    pub stdin_mode: ProgramStdinMode,
+    pub files: Vec<ProgramFile>,
+    pub effects: Vec<Effect>,
+}
+
+pub type ProgramProposal = HelperProgramProposalV2;
+
+/// Exact schema-v3 program shape retained solely for history compatibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyProgramProposalV1 {
     pub runtime: ProgramRuntime,
     pub source: String,
     pub summary: String,
     pub assumptions: Vec<String>,
-    pub inputs: Vec<ProgramInput>,
+    pub inputs: Vec<LegacyProgramInputV1>,
     pub outputs: Vec<String>,
     pub effects: Vec<Effect>,
-    pub result_mode: ProgramResultMode,
+    pub result_mode: LegacyProgramResultModeV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyProgramInputV1 {
+    pub path: String,
+    pub access: LegacyProgramInputAccessV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyProgramInputAccessV1 {
+    ReadOnly,
+    Replace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyProgramResultModeV1 {
+    Stdout,
+    Artifacts,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +321,9 @@ impl ProposedAction {
                 metadata(value)?;
             }
             Self::Program { program } => {
+                if program.contract != "uhm_helper_v1" {
+                    return Err("new programs must name contract uhm_helper_v1".into());
+                }
                 text(&program.source, "program source", MAX_SOURCE)?;
                 text(&program.summary, "program summary", MAX_ITEM)?;
                 if program.assumptions.len() > MAX_ITEMS {
@@ -290,61 +332,22 @@ impl ProposedAction {
                 for assumption in &program.assumptions {
                     text(assumption, "program assumption", MAX_ITEM)?;
                 }
-                if program.inputs.len() > 64 {
-                    return Err("program inputs contains too many paths".into());
+                if program.files.len() > 64 {
+                    return Err("program files contains too many resources".into());
                 }
-                if program.outputs.len() > 16 {
-                    return Err("program outputs contains too many paths".into());
-                }
-                let mut seen = std::collections::BTreeSet::new();
-                for input in &program.inputs {
-                    path(&input.path, "program input path")?;
-                    if !seen.insert(format!("input:{}", input.path)) {
-                        return Err("program inputs contains a duplicate path".into());
-                    }
-                }
-                let mut output_seen = std::collections::BTreeSet::new();
-                for output in &program.outputs {
-                    path(output, "program output path")?;
-                    if output == "stdin" {
-                        return Err("stdin is a special input path, not an artifact output".into());
-                    }
-                    if !output_seen.insert(output) {
-                        return Err("program outputs contains a duplicate path".into());
+                for file in &program.files {
+                    path(&file.path, "program file path")?;
+                    let valid_id = file.id.len() <= 32
+                        && file.id.bytes().enumerate().all(|(index, byte)| {
+                            byte.is_ascii_lowercase()
+                                || (index > 0 && (byte.is_ascii_digit() || byte == b'_'))
+                        });
+                    if !valid_id || file.id.is_empty() {
+                        return Err("program resource id is invalid".into());
                     }
                 }
                 if program.effects.len() > MAX_ITEMS {
                     return Err("program effects contains too many items".into());
-                }
-                match program.result_mode {
-                    ProgramResultMode::Stdout if !program.outputs.is_empty() => {
-                        return Err("stdout programs must not declare artifact outputs".into())
-                    }
-                    ProgramResultMode::Artifacts if program.outputs.is_empty() => {
-                        return Err("artifact programs must declare at least one output".into())
-                    }
-                    _ => {}
-                }
-                for input in &program.inputs {
-                    if input.access == ProgramInputAccess::Replace
-                        && !program.outputs.contains(&input.path)
-                    {
-                        return Err(format!(
-                            "replacement input '{}' must also be a declared output",
-                            input.path
-                        ));
-                    }
-                }
-                for manifest_path in program
-                    .inputs
-                    .iter()
-                    .map(|input| input.path.as_str())
-                    .chain(program.outputs.iter().map(String::as_str))
-                    .filter(|value| *value != "stdin")
-                {
-                    if program.source.contains(manifest_path) {
-                        return Err("program source must receive manifest paths through UHM_PROGRAM_INPUTS/UHM_PROGRAM_OUTPUTS, not embed them".into());
-                    }
                 }
             }
         }
@@ -375,17 +378,14 @@ mod tests {
         let valid = ProposedAction::Program {
             program: ProgramProposal {
                 runtime: ProgramRuntime::Python3,
-                source: "import os, json\nprint(len(json.loads(os.environ['UHM_PROGRAM_INPUTS'])))"
+                contract: "uhm_helper_v1".into(),
+                source: "from uhm_runtime import stdin_path\nprint(stdin_path.stat().st_size)"
                     .into(),
                 summary: "Count declared inputs.".into(),
                 assumptions: vec![],
-                inputs: vec![ProgramInput {
-                    path: "stdin".into(),
-                    access: ProgramInputAccess::ReadOnly,
-                }],
-                outputs: vec![],
+                stdin_mode: ProgramStdinMode::LocalPath,
+                files: vec![],
                 effects: vec![Effect::ReadLocal],
-                result_mode: ProgramResultMode::Stdout,
             },
         };
         assert!(valid.validate().is_ok());
@@ -393,18 +393,59 @@ mod tests {
         let embedded = ProposedAction::Program {
             program: ProgramProposal {
                 runtime: ProgramRuntime::Python3,
+                contract: "uhm_helper_v1".into(),
                 source: "open('private.txt').read()".into(),
                 summary: "Read a file.".into(),
                 assumptions: vec![],
-                inputs: vec![ProgramInput {
+                stdin_mode: ProgramStdinMode::None,
+                files: vec![ProgramFile {
+                    id: "source".into(),
                     path: "private.txt".into(),
-                    access: ProgramInputAccess::ReadOnly,
+                    access: ProgramFileAccess::ReadOnly,
                 }],
-                outputs: vec![],
                 effects: vec![Effect::ReadLocal],
-                result_mode: ProgramResultMode::Stdout,
             },
         };
-        assert!(embedded.validate().is_err());
+        assert!(embedded.validate().is_ok());
+    }
+
+    #[test]
+    fn helper_resources_require_contract_ids_and_unique_semantics_are_preflighted() {
+        for access in [
+            ProgramFileAccess::ReadOnly,
+            ProgramFileAccess::WriteOnly,
+            ProgramFileAccess::ReadWrite,
+        ] {
+            let action = ProposedAction::Program {
+                program: ProgramProposal {
+                    runtime: ProgramRuntime::Python3,
+                    contract: "uhm_helper_v1".into(),
+                    source: "from uhm_runtime import resource\nprint(resource('item'))".into(),
+                    summary: "Use one resource".into(),
+                    assumptions: vec![],
+                    stdin_mode: ProgramStdinMode::None,
+                    files: vec![ProgramFile {
+                        id: "item_1".into(),
+                        path: "-- café/file.txt".into(),
+                        access,
+                    }],
+                    effects: vec![Effect::ReadLocal],
+                },
+            };
+            assert!(action.validate().is_ok());
+        }
+        let wrong_contract = ProposedAction::Program {
+            program: ProgramProposal {
+                runtime: ProgramRuntime::Python3,
+                contract: "manifest_env_v1".into(),
+                source: "print('x')".into(),
+                summary: "Print".into(),
+                assumptions: vec![],
+                stdin_mode: ProgramStdinMode::None,
+                files: vec![],
+                effects: vec![],
+            },
+        };
+        assert!(wrong_contract.validate().is_err());
     }
 }

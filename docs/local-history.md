@@ -10,7 +10,7 @@ History and telemetry are separate. Telemetry's serializer accepts only a conten
 - `diagnostic` additionally retains the exact typed proposal and bounded failure diagnostics. Set `capture_output: true` to retain available result tails too.
 - `full` additionally retains the original intent. Path-looking whitespace-delimited values are redacted by default. This level is required for explicit repair.
 
-Changing levels affects future records only. Exact replay requires `diagnostic` or `full`; repair requires `full`. Replay creates a linked run, gathers current context, validates the stored typed proposal again, and always enters review. It makes no model call before review and never auto-executes. Repair is a new bounded job and discloses the small retained subset it sends.
+Changing levels affects future records only. Exact replay requires `diagnostic` or `full`; repair requires `full`. Retained proposals use a versioned envelope and append-only `proposal-1.json`, `proposal-2.json` names, so replacement never overwrites its predecessor. A dedicated reader recognizes bare schema-v3 history as legacy and normalizes it for reviewed replay; the legacy shape is never accepted from a new provider response. Replay creates a linked run, gathers current context, validates the stored typed proposal again, and always enters review. It makes no model call before review and never auto-executes. Repair is a new bounded job and discloses the small retained subset it sends.
 
 ## Inspection and lifecycle
 

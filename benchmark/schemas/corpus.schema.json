@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhm.invalid/schemas/provider-execution-corpus-v2.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "prompt_version", "action_schema_version", "worker_contract_version", "reference_bundle", "task_count", "family_count", "route_counts", "tasks"],
+  "properties": {
+    "version": {"const": 2},
+    "prompt_version": {"type": "integer", "minimum": 1},
+    "action_schema_version": {"type": "integer", "minimum": 1},
+    "worker_contract_version": {"const": 2},
+    "reference_bundle": {"const": "provider-execution-reference-actions-v4.json"},
+    "task_count": {"type": "integer", "minimum": 1},
+    "family_count": {"type": "integer", "minimum": 1},
+    "route_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "tasks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}}
+  },
+  "$defs": {
+    "toolName": {"enum": ["run_shell", "run_program", "require_parent_shell", "request_clarification", "return_answer"]},
+    "action": {
+      "type": "object", "additionalProperties": false, "required": ["tool", "arguments"],
+      "properties": {"tool": {"$ref": "#/$defs/toolName"}, "arguments": {"type": "object"}}
+    },
+    "matcher": {
+      "type": "object", "additionalProperties": false, "required": ["matcher"],
+      "properties": {
+        "matcher": {"enum": ["exact_text", "contains_lines", "unordered_lines", "regex", "json_equals", "csv_equals", "count_map", "integer_equals", "git_status", "empty"]},
+        "value": {}, "pattern": {"type": "string"}, "lines": {"type": "array", "items": {"type": "string"}},
+        "rows": {"type": "array", "items": {"type": "array"}}
+      }
+    },
+    "task": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "family_id", "variant_id", "split", "mode", "prompt", "route_oracle", "rubric", "judge_rubric", "tags", "fixture", "limits", "expected", "reference_actions", "negative_actions", "oracle_disposition"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "family_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "variant_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "split": {"enum": ["development", "holdout"]}, "mode": {"enum": ["run", "ask"]},
+        "prompt": {"type": "string", "minLength": 1},
+        "route_oracle": {
+          "type": "object", "additionalProperties": false, "required": ["allowed", "preferred", "rationale"],
+          "properties": {"allowed": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/toolName"}}, "preferred": {"$ref": "#/$defs/toolName"}, "rationale": {"type": "string", "minLength": 1}}
+        },
+        "rubric": {"type": "string", "minLength": 1}, "judge_rubric": {"type": "string", "minLength": 1},
+        "tags": {"type": "object", "additionalProperties": false, "required": ["expected_tool", "category", "difficulty", "effects"], "properties": {"expected_tool": {"$ref": "#/$defs/toolName"}, "category": {"type": "string"}, "difficulty": {"type": "string"}, "effects": {"type": "array", "items": {"type": "string"}}, "destructive_scope_case": {"type": "boolean"}}},
+        "fixture": {"$ref": "#/$defs/fixture"}, "limits": {"$ref": "#/$defs/limits"},
+        "expected": {"type": "object", "additionalProperties": false, "required": ["exit_codes", "stdout", "stderr", "filesystem", "forbid_undeclared_changes", "parent_state"], "properties": {"exit_codes": {"type": "array", "items": {"type": "integer"}}, "stdout": {"$ref": "#/$defs/matcher"}, "stderr": {"$ref": "#/$defs/matcher"}, "filesystem": {"type": "array", "items": {"$ref": "#/$defs/filesystemAssertion"}}, "forbid_undeclared_changes": {"type": "boolean"}, "parent_state": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/parentState"}]}}},
+        "reference_actions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/action"}},
+        "negative_actions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/action"}},
+        "oracle_disposition": {"type": "string", "minLength": 1}
+      }
+    },
+    "fixture": {
+      "type": "object", "additionalProperties": false, "required": ["cwd", "stdin", "directories", "files", "symlinks", "environment", "git"],
+      "properties": {
+        "cwd": {"const": "/work"}, "stdin": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/stdin"}]},
+        "directories": {"type": "array", "items": {"type": "string"}},
+        "files": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "text", "mode"], "properties": {"path": {"type": "string"}, "text": {"type": "string"}, "mode": {"type": "string", "pattern": "^0[0-7]{3}$"}}}},
+        "symlinks": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "target"], "properties": {"path": {"type": "string"}, "target": {"type": "string"}}}},
+        "environment": {"type": "object", "additionalProperties": {"type": "string"}},
+        "git": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/gitFixture"}]}
+      }
+    },
+    "stdin": {"type": "object", "additionalProperties": false, "required": ["encoding", "declared_format", "text"], "properties": {"encoding": {"const": "utf-8"}, "declared_format": {"type": ["string", "null"]}, "text": {"type": "string"}}},
+    "gitFixture": {
+      "type": "object", "additionalProperties": false, "required": ["branch", "commits"],
+      "properties": {
+        "branch": {"type": "string"},
+        "commits": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["message", "files"], "properties": {"message": {"type": "string"}, "files": {"type": "object", "additionalProperties": {"type": "string"}}}}},
+        "staged": {"type": "object", "additionalProperties": {"type": "string"}},
+        "unstaged": {"type": "object", "additionalProperties": {"type": "string"}},
+        "untracked": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "limits": {"type": "object", "additionalProperties": false, "required": ["wall_ms", "stdout_bytes", "stderr_bytes", "workspace_bytes"], "properties": {"wall_ms": {"type": "integer", "minimum": 1}, "stdout_bytes": {"type": "integer", "minimum": 1}, "stderr_bytes": {"type": "integer", "minimum": 1}, "workspace_bytes": {"type": "integer", "minimum": 1}}},
+    "filesystemAssertion": {"type": "object", "additionalProperties": false, "required": ["path", "state"], "properties": {"path": {"type": "string"}, "state": {"enum": ["absent", "file", "directory"]}, "content": {"type": "string"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "parentState": {"type": "object", "additionalProperties": false, "properties": {"cwd": {"type": "string"}, "environment": {"type": "object", "additionalProperties": {"type": "string"}}, "environment_absent": {"type": "array", "items": {"type": "string"}}}}
+  }
+}

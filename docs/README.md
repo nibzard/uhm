@@ -25,7 +25,7 @@ It is deliberately smaller than a coding agent. One intent goes in. One bounded 
 ## Install
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.2.2 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.0 uhm-cli
 ```
 
 Prebuilt binaries with SHA256 verification are on the [Install](install.md) page. You bring your own OpenAI API key; requests use the Responses API with `store: false`. See [Getting started](getting-started.md) for the under-five-minute path.

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "valid-aliases",
+      "arguments": {"runtime":"python3","contract":"uhm_helper_v1","source":"import uhm_runtime as u\nu.resource('result').write_path.write_text(u.resource('source').read_path.read_text())","summary":"Copy","assumptions":[],"stdin_mode":"none","files":[{"id":"source","path":"input.txt","access":"read_only"},{"id":"result","path":"output.txt","access":"write_only"}],"effects":["read_local","write_local"]},
+      "piped_input_present": false,
+      "codes": []
+    },
+    {
+      "id": "invalid-syntax",
+      "arguments": {"runtime":"python3","contract":"uhm_helper_v1","source":"def broken(: pass","summary":"Broken","assumptions":[],"stdin_mode":"none","files":[],"effects":[]},
+      "piped_input_present": false,
+      "codes": ["invalid_python_syntax"]
+    },
+    {
+      "id": "closed-process-stdin",
+      "arguments": {"runtime":"python3","contract":"uhm_helper_v1","source":"import sys as s\nprint(s.__stdin__.read())\ninput()","summary":"Read","assumptions":[],"stdin_mode":"none","files":[],"effects":["read_local"]},
+      "piped_input_present": false,
+      "codes": ["builtin_input_is_unsupported","process_stdin_is_closed"]
+    },
+    {
+      "id": "direct-logical-path",
+      "arguments": {"runtime":"python3","contract":"uhm_helper_v1","source":"open('input.txt').read()","summary":"Read","assumptions":[],"stdin_mode":"none","files":[{"id":"source","path":"input.txt","access":"read_only"}],"effects":["read_local"]},
+      "piped_input_present": false,
+      "codes": ["declared_path_opened_directly","helper_not_referenced","read_resource_not_consumed"]
+    },
+    {
+      "id": "unknown-resource",
+      "arguments": {"runtime":"python3","contract":"uhm_helper_v1","source":"from uhm_runtime import resource\nprint(resource('missing').read_path)","summary":"Read","assumptions":[],"stdin_mode":"none","files":[{"id":"source","path":"input.txt","access":"read_only"}],"effects":["read_local"]},
+      "piped_input_present": false,
+      "codes": ["read_resource_not_consumed","unknown_resource"]
+    },
+    {
+      "id": "missing-consumption",
+      "arguments": {"runtime":"python3","contract":"uhm_helper_v1","source":"from uhm_runtime import resource, stdin_path\nprint('unused')","summary":"Write","assumptions":[],"stdin_mode":"local_path","files":[{"id":"source","path":"input.txt","access":"read_only"},{"id":"result","path":"output.txt","access":"write_only"}],"effects":["read_local","write_local"]},
+      "piped_input_present": true,
+      "codes": ["read_resource_not_consumed","stdin_not_consumed","write_resource_not_consumed"]
+    },
+    {
+      "id": "duplicate-resource",
+      "arguments": {"runtime":"python3","contract":"uhm_helper_v1","source":"from uhm_runtime import resource\nprint(resource('source').read_path)","summary":"Read","assumptions":[],"stdin_mode":"none","files":[{"id":"source","path":"input.txt","access":"read_only"},{"id":"source","path":"other.txt","access":"read_only"}],"effects":["read_local"]},
+      "piped_input_present": false,
+      "codes": ["duplicate_resource"]
+    }
+  ]
+}

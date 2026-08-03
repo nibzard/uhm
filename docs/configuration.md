@@ -15,16 +15,18 @@ For every key, the winner is the highest step on this list:
 
 1. **Built-in defaults**
 2. **`config.yaml`** — overrides defaults for any key you set
-3. **`OPENAI_MODEL`** environment variable — overrides `model` only
-4. **`--model` / `-m`** flag — overrides `model` for one invocation
+3. **`UHM_PROVIDER` and `UHM_MODEL`** — override provider/model independently
+4. **`--provider` and `--model` / `-m`** — override one invocation
 
-> The `OPENAI_MODEL` environment variable overrides the `model` key in `config.yaml`. This is useful for trying a different model without editing the file, but it means a stray `OPENAI_MODEL` in your shell can silently change which model answers. `uhm config show` reports the active source as `OPENAI_MODEL` when the env var is in effect.
+`OPENAI_MODEL` remains a compatibility alias only when the selected provider is OpenAI and `UHM_MODEL` is absent. A model name never selects or infers a provider.
 
 ## Top-level keys
 
 | Key | Default | Notes |
 |---|---|---|
-| `model` | `gpt-5.6-terra` | overridden by `OPENAI_MODEL`, then `--model` |
+| `provider` | `openai` | `openai\|cerebras`; fixed built-in endpoints only |
+| `model` | `gpt-5.6-terra` | bare provider-specific ID; does not change provider |
+| `selection` | fixed, no alternate/fallback | see below |
 | `max_completion_tokens` | `8192` | response token budget |
 | `reasoning_effort` | `low` | `none\|minimal\|low\|medium\|high\|xhigh` |
 | `stream` | `true` | stream the response |
@@ -62,7 +64,22 @@ execution:
   deny_env: []              # additional names removed from the child env
 ```
 
-`OPENAI_API_KEY` and uhm's private control variables are removed automatically. Add any other credential names (for example cloud-provider tokens) to `deny_env`; arbitrary inherited secrets cannot be identified reliably. These are operational guardrails, not a sandbox.
+`OPENAI_API_KEY`, `CEREBRAS_API_KEY`, and uhm's private control variables are removed automatically. Add any other credential names (for example cloud-provider tokens) to `deny_env`; arbitrary inherited secrets cannot be identified reliably. These are operational guardrails, not a sandbox.
+
+## `selection` — fixed choice or reviewed evidence
+
+```yaml
+selection:
+  mode: fixed                 # fixed | evidence
+  alternate:
+    provider: cerebras
+    model: gpt-oss-120b
+  fallback_on: []             # opt in explicitly; off by default
+```
+
+Allowed fallback triggers are `rate_limited`, `transient`, `timeout`, `incomplete`, and `malformed`. Fallback is sequential, occurs only before a proposal is accepted, and consumes the second and final model-call slot. Authentication, missing credentials, and policy rejection fail closed. Enabling a cross-provider alternate changes the first-run disclosure because both fixed endpoints become authorized destinations.
+
+Evidence mode does not score models at runtime. It requires a fresh, reviewed checked-in entry matching the exact provider, endpoint, model fingerprint, request class, and every contract/evaluation hash. The shipped manifest is empty until an untouched holdout clears the frozen policy, so evidence mode currently returns unavailable. Explicit fixed selection remains permitted and reports its qualification status.
 
 ## `program` — Python 3 microprogram limits
 
@@ -82,7 +99,7 @@ program:
   diagnostic_bytes: 1048576       # 1 MiB
 ```
 
-The only program runtime is `python3`, invoked with `-I -S` and never through a shell. CPU, address-space, open-file, and child-process controls depend on host primitives (some are not enforced on macOS) and are operational guardrails, not a sandbox. See [Behavior & exit codes](behavior-contract.md#program-execution).
+The only program runtime is `python3`, invoked with `-I -S` through UHM's trusted `uhm_helper_v1` launcher and never through a shell. `input_max_paths` bounds all declared file resources; `output_max_paths` bounds writable resources. CPU, address-space, open-file, and child-process controls depend on host primitives (some are not enforced on macOS) and are operational guardrails, not a sandbox. See [Behavior & exit codes](behavior-contract.md#program-execution).
 
 ## `recovery` — bounded snapshot capture
 

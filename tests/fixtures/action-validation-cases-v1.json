@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "action_schema_version": 3,
+  "cases": [
+    {
+      "id": "valid-shell",
+      "envelope": {"tool": "run_shell", "arguments": {"command": "git status --short", "summary": "Show status", "assumptions": [], "effects": ["read_local"], "requirements": ["git"], "stdin_mode": "none"}},
+      "valid": true,
+      "normalized": {"kind": "shell", "command": "git status --short", "metadata": {"summary": "Show status", "assumptions": [], "effects": ["read_local"], "requirements": ["git"]}, "stdin_mode": "none"}
+    },
+    {
+      "id": "unknown-field",
+      "envelope": {"tool": "return_answer", "arguments": {"text": "yes", "extra": true}},
+      "valid": false, "rejection_code": "unknown_field"
+    },
+    {
+      "id": "missing-field",
+      "envelope": {"tool": "return_answer", "arguments": {}},
+      "valid": false, "rejection_code": "missing_field"
+    },
+    {
+      "id": "unsafe-control",
+      "envelope": {"tool": "return_answer", "arguments": {"text": "bad\u001b[2J"}},
+      "valid": false, "rejection_code": "unsafe_control_bytes"
+    },
+    {
+      "id": "invalid-requirement",
+      "envelope": {"tool": "run_shell", "arguments": {"command": "ls", "summary": "List", "assumptions": [], "effects": ["read_local"], "requirements": ["/bin/ls"], "stdin_mode": "none"}},
+      "valid": false, "rejection_code": "invalid_requirement"
+    },
+    {
+      "id": "invalid-parent-operands",
+      "envelope": {"tool": "require_parent_shell", "arguments": {"kind": "unset_environment", "path": null, "name": "DEBUG", "value": "1", "summary": "Unset", "assumptions": [], "effects": ["shell_state"]}},
+      "valid": false, "rejection_code": "invalid_parent_shell"
+    },
+    {
+      "id": "duplicate-resource",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "source": "print('ok')", "summary": "Print", "assumptions": [], "inputs": [{"path": "stdin", "access": "read_only"}, {"path": "stdin", "access": "read_only"}], "outputs": [], "effects": ["read_local"], "result_mode": "stdout"}},
+      "valid": false, "rejection_code": "duplicate_resource"
+    },
+    {
+      "id": "embedded-logical-path",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "source": "print(open('input.txt').read())", "summary": "Read", "assumptions": [], "inputs": [{"path": "input.txt", "access": "read_only"}], "outputs": [], "effects": ["read_local"], "result_mode": "stdout"}},
+      "valid": false, "rejection_code": "embedded_logical_path"
+    },
+    {
+      "id": "replacement-output-mismatch",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "source": "print('ok')", "summary": "Replace", "assumptions": [], "inputs": [{"path": "input.txt", "access": "replace"}], "outputs": [], "effects": ["write_local"], "result_mode": "stdout"}},
+      "valid": false, "rejection_code": "replacement_output_mismatch"
+    },
+    {
+      "id": "result-mode-mismatch",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "source": "print('ok')", "summary": "Write", "assumptions": [], "inputs": [], "outputs": ["output.txt"], "effects": ["write_local"], "result_mode": "stdout"}},
+      "valid": false, "rejection_code": "result_mode_mismatch"
+    }
+  ]
+}

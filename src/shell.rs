@@ -60,6 +60,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
         Stdio::piped()
     });
     cmd.env_remove("OPENAI_API_KEY");
+    cmd.env_remove("CEREBRAS_API_KEY");
     for (k, _) in std::env::vars_os() {
         let key = k.to_string_lossy();
         if key.starts_with("UHM_PRIVATE_") || key.starts_with("UHM_CONTROL_") {
@@ -229,11 +230,12 @@ mod tests {
         assert_eq!(r.code, 0);
     }
     #[test]
-    fn removes_provider_secret() {
+    fn removes_all_provider_secrets() {
         std::env::set_var("OPENAI_API_KEY", "sentinel");
+        std::env::set_var("CEREBRAS_API_KEY", "cerebras-sentinel");
         let r = execute(Request {
             shell: "/bin/sh",
-            command: "test -z \"$OPENAI_API_KEY\"",
+            command: "test -z \"$OPENAI_API_KEY\" && test -z \"$CEREBRAS_API_KEY\"",
             stdin: None,
             timeout: Duration::from_secs(2),
             diagnostic_bytes: 32,
@@ -242,6 +244,7 @@ mod tests {
         .unwrap();
         assert_eq!(r.code, 0);
         std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("CEREBRAS_API_KEY");
     }
 
     #[test]

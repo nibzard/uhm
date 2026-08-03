@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhm.invalid/schemas/provider-reference-actions-v4.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "action_schema_version", "program_contract", "tasks"],
+  "properties": {
+    "version": {"const": 4},
+    "action_schema_version": {"const": 4},
+    "program_contract": {"const": "uhm_helper_v1"},
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reference_actions", "negative_actions"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "reference_actions": {"type": "array", "minItems": 1, "items": {"$ref": "corpus.schema.json#/$defs/action"}},
+          "negative_actions": {"type": "array", "minItems": 1, "items": {"$ref": "corpus.schema.json#/$defs/action"}}
+        }
+      }
+    }
+  }
+}

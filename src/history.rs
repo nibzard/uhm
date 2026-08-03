@@ -4,7 +4,10 @@
 //! run directory and only when the user explicitly selects a richer detail
 //! level; telemetry consumes `CoarseReceipt`, which cannot carry content.
 
-use crate::action::ProposedAction;
+use crate::action::{
+    HelperProgramProposalV2, LegacyProgramInputAccessV1, LegacyProgramProposalV1, ProgramFile,
+    ProgramFileAccess, ProgramStdinMode, ProposedAction,
+};
 use crate::config::{HistoryConfig, HistoryDetail};
 use crate::dirs;
 use fs2::FileExt;
@@ -47,6 +50,8 @@ pub enum EventKind {
     RequestCreated,
     ContextSelected,
     ProposalReceived,
+    ProviderAttempted,
+    ProgramPreflightFinished,
     ClarificationRequested,
     UserFeedbackReceived,
     WarningShown,
@@ -67,6 +72,105 @@ pub enum EventKind {
     ForcedRestoreFinished,
     RecoveryExpired,
     BestEffortInverseRequested,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_provider_attempts(
+    data: &Path,
+    cfg: &HistoryConfig,
+    run: &str,
+    route: &str,
+    mode: &str,
+    context_mode: &str,
+    attempts: &[crate::api::SafeAttempt],
+    selection_mode: crate::config::SelectionMode,
+    related: Option<&str>,
+) -> Result<(), String> {
+    if !cfg.enabled || attempts.is_empty() {
+        return Ok(());
+    }
+    let _guard = lock(data)?;
+    for attempt in attempts {
+        append_locked(
+            data,
+            base_event(
+                run,
+                route,
+                mode,
+                context_mode,
+                EventKind::ProviderAttempted,
+                json!({
+                    "provider":attempt.provider,
+                    "api_family":attempt.api_family,
+                    "requested_model":attempt.requested_model,
+                    "resolved_model":attempt.resolved_model,
+                    "resolved_fingerprint":attempt.resolved_fingerprint,
+                    "adapter_contract_version":attempt.adapter_contract_version,
+                    "qualification_policy_version":crate::capabilities::QUALIFICATION_POLICY_VERSION,
+                    "selection_policy_version":crate::model_selection::SELECTION_POLICY_VERSION,
+                    "selection_mode":selection_mode,
+                    "provider_attempt_index":attempt.index,
+                    "outcome":attempt.outcome,
+                    "error_kind":attempt.error_kind,
+                    "fallback_reason":attempt.fallback_reason,
+                    "accepted":attempt.accepted,
+                    "cache_state":"miss"
+                }),
+                related,
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn record_program_preflight(
+    data: &Path,
+    cfg: &HistoryConfig,
+    run: &str,
+    route: &str,
+    mode: &str,
+    context_mode: &str,
+    diagnostics: &[crate::program::ProgramContractDiagnostic],
+    related: Option<&str>,
+) -> Result<(), String> {
+    if !cfg.enabled {
+        return Ok(());
+    }
+    let _guard = lock(data)?;
+    let journal = read_unlocked(&journal_path(data))?;
+    let proposal_index = journal
+        .events
+        .iter()
+        .filter(|event| event.run_id == run && event.kind == EventKind::ProposalReceived)
+        .count();
+    let hard_error_free = !diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.severity,
+            crate::program::DiagnosticSeverity::HardError
+                | crate::program::DiagnosticSeverity::Availability
+        )
+    });
+    let values = diagnostics
+        .iter()
+        .map(|diagnostic| json!({"code":diagnostic.code,"severity":diagnostic.severity}))
+        .collect::<Vec<_>>();
+    append_locked(
+        data,
+        base_event(
+            run,
+            route,
+            mode,
+            context_mode,
+            EventKind::ProgramPreflightFinished,
+            json!({
+                "proposal_index":proposal_index,
+                "hard_error_free":hard_error_free,
+                "diagnostics":values
+            }),
+            related,
+        ),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -446,7 +550,8 @@ pub fn record_proposal(
     if !cfg.enabled {
         return Ok(());
     }
-    let serialized = serde_json::to_vec_pretty(proposal).map_err(|e| e.to_string())?;
+    let envelope = json!({"version":2,"action":proposal});
+    let serialized = serde_json::to_vec_pretty(&envelope).map_err(|e| e.to_string())?;
     let kind = match proposal {
         ProposedAction::Answer { .. } => "answer",
         ProposedAction::Shell { .. } => "shell",
@@ -454,10 +559,47 @@ pub fn record_proposal(
         ProposedAction::Program { .. } => "program",
         ProposedAction::Clarification { .. } => "clarification",
     };
-    let mut value = json!({"proposal_kind":kind,"proposal_hash":blake3::hash(&serialized).to_hex().to_string(),"bytes":serialized.len(),"retained":false});
     let _guard = lock(data)?;
+    let next = read_unlocked(&journal_path(data))
+        .map(|journal| {
+            journal
+                .events
+                .into_iter()
+                .filter(|event| event.run_id == run && event.kind == EventKind::ProposalReceived)
+                .count()
+                + 1
+        })
+        .unwrap_or(1);
+    let provider_attempt_index = read_unlocked(&journal_path(data))
+        .ok()
+        .and_then(|journal| {
+            journal.events.into_iter().rev().find_map(|event| {
+                (event.run_id == run
+                    && event.kind == EventKind::ProviderAttempted
+                    && event.data.get("accepted").and_then(Value::as_bool) == Some(true))
+                .then(|| {
+                    event
+                        .data
+                        .get("provider_attempt_index")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(next as u64) as usize
+                })
+            })
+        })
+        .unwrap_or(next);
+    let contract = match proposal {
+        ProposedAction::Program { program } => Some(program.contract.as_str()),
+        _ => None,
+    };
+    let mut value = json!({"proposal_kind":kind,"proposal_hash":blake3::hash(&serialized).to_hex().to_string(),"bytes":serialized.len(),"retained":false,"proposal_index":next,"provider_attempt_index":provider_attempt_index,"program_contract":contract});
     if cfg.detail.retains_proposals() {
-        let artifact = write_artifact_locked(data, cfg, run, "proposal.json", &serialized)?;
+        let artifact = write_artifact_locked(
+            data,
+            cfg,
+            run,
+            &format!("proposal-{next}.json"),
+            &serialized,
+        )?;
         value["retained"] = Value::Bool(true);
         value["artifact"] = Value::String(artifact.file.clone());
         append_locked(
@@ -611,7 +753,7 @@ pub fn append_receipt(data: &Path, cfg: &HistoryConfig, receipt: &Receipt) -> Re
     if !cfg.enabled {
         return Ok(());
     }
-    let payload = json!({
+    let mut payload = json!({
         "runtime":receipt.runtime,"declared_effects":receipt.declared_effects,"detected_effects":receipt.detected_effects,
         "decision":receipt.decision,"execution_attempted":receipt.execution_attempted,"exit_category":receipt.exit_category,
         "signal":receipt.signal,"latency_bucket":receipt.latency_bucket,"cache_state":receipt.cache_state,
@@ -623,11 +765,27 @@ pub fn append_receipt(data: &Path, cfg: &HistoryConfig, receipt: &Receipt) -> Re
         EventKind::JobFinished
     };
     let _guard = lock(data)?;
-    let related = read_unlocked(&journal_path(data))?
+    let journal = read_unlocked(&journal_path(data))?;
+    let related = journal
         .events
         .iter()
         .find(|event| event.run_id == receipt.run_id)
         .and_then(|event| event.related_run_id.clone());
+    let accepted_proposal = journal
+        .events
+        .iter()
+        .filter(|event| event.run_id == receipt.run_id && event.kind == EventKind::ProposalReceived)
+        .count();
+    let execution_attempt = journal
+        .events
+        .iter()
+        .filter(|event| event.run_id == receipt.run_id && event.kind == EventKind::ExecutionStarted)
+        .count()
+        + usize::from(receipt.execution_attempted);
+    payload["accepted_proposal"] = json!(accepted_proposal);
+    if receipt.execution_attempted {
+        payload["execution_attempt_index"] = json!(execution_attempt);
+    }
     append_locked(
         data,
         base_event(
@@ -649,7 +807,7 @@ pub fn append_receipt(data: &Path, cfg: &HistoryConfig, receipt: &Receipt) -> Re
                 &receipt.mode,
                 &receipt.context_mode,
                 EventKind::ExecutionStarted,
-                json!({}),
+                json!({"execution_attempt_index":execution_attempt,"accepted_proposal":accepted_proposal}),
                 related.as_deref(),
             ),
         )?;
@@ -712,12 +870,117 @@ pub fn events_for(data: &Path, id: &str) -> Result<Vec<Event>, String> {
 
 pub fn load_proposal(data: &Path, id: &str) -> Result<(String, ProposedAction), String> {
     let id = resolve_run(data, id)?;
-    let path = runs_path(data).join(&id).join("proposal.json");
+    let run = runs_path(data).join(&id);
+    let path = std::fs::read_dir(&run)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let index = name
+                .strip_prefix("proposal-")?
+                .strip_suffix(".json")?
+                .parse::<usize>()
+                .ok()?;
+            Some((index, entry.path()))
+        })
+        .max_by_key(|(index, _)| *index)
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| run.join("proposal.json"));
     let bytes = std::fs::read(&path).map_err(|_| "replay unavailable: this run did not retain an exact proposal; set history.detail to diagnostic or full for future runs".to_string())?;
-    let action = serde_json::from_slice::<ProposedAction>(&bytes)
-        .map_err(|e| format!("stored proposal is invalid: {}", e))?
-        .validate()?;
+    let action = decode_stored_proposal(&bytes)?;
     Ok((id, action))
+}
+
+fn decode_stored_proposal(bytes: &[u8]) -> Result<ProposedAction, String> {
+    let value: Value = serde_json::from_slice(bytes)
+        .map_err(|error| format!("stored proposal is invalid: {error}"))?;
+    if value.get("version") == Some(&json!(2)) {
+        return serde_json::from_value::<ProposedAction>(value["action"].clone())
+            .map_err(|error| format!("stored schema-v4 proposal is invalid: {error}"))?
+            .validate();
+    }
+    if let Ok(action) = serde_json::from_value::<ProposedAction>(value.clone()) {
+        return action.validate();
+    }
+    if value.get("kind") == Some(&json!("program")) {
+        let legacy: LegacyProgramProposalV1 = serde_json::from_value(value["program"].clone())
+            .map_err(|error| format!("stored legacy program proposal is invalid: {error}"))?;
+        return legacy_program_to_helper(legacy).validate();
+    }
+    Err(
+        "stored proposal is neither a versioned schema-v4 action nor readable schema-v3 history"
+            .into(),
+    )
+}
+
+fn legacy_program_to_helper(legacy: LegacyProgramProposalV1) -> ProposedAction {
+    let mut files = Vec::<ProgramFile>::new();
+    let mut input_rows = Vec::new();
+    let mut output_rows = Vec::new();
+    let mut stdin_mode = ProgramStdinMode::None;
+    for input in &legacy.inputs {
+        if input.path == "stdin" {
+            stdin_mode = ProgramStdinMode::LocalPath;
+            input_rows.push("{'path':str(_stdin_path),'access':'read_only'}".to_string());
+            continue;
+        }
+        let id = format!("input_{}", files.len());
+        let access = if input.access == LegacyProgramInputAccessV1::Replace {
+            ProgramFileAccess::ReadWrite
+        } else {
+            ProgramFileAccess::ReadOnly
+        };
+        input_rows.push(format!(
+            "{{'path':str(_resource({id:?}).read_path),'access':{:?}}}",
+            if input.access == LegacyProgramInputAccessV1::Replace {
+                "replace"
+            } else {
+                "read_only"
+            }
+        ));
+        files.push(ProgramFile {
+            id,
+            path: input.path.clone(),
+            access,
+        });
+    }
+    for output in &legacy.outputs {
+        let existing = files.iter().position(|file| file.path == *output);
+        let id = existing
+            .map(|index| files[index].id.clone())
+            .unwrap_or_else(|| {
+                let id = format!("output_{}", files.len());
+                files.push(ProgramFile {
+                    id: id.clone(),
+                    path: output.clone(),
+                    access: ProgramFileAccess::WriteOnly,
+                });
+                id
+            });
+        output_rows.push(format!(
+            "{{'path':str(_resource({id:?}).write_path),'destination':{output:?}}}"
+        ));
+    }
+    let source = format!(
+        "import json as _json, os as _os\nfrom uhm_runtime import stdin_path as _stdin_path, resource as _resource\n_os.environ['UHM_PROGRAM_INPUTS']=_json.dumps([{}],separators=(',',':'))\n_os.environ['UHM_PROGRAM_OUTPUTS']=_json.dumps([{}],separators=(',',':'))\nif _stdin_path is not None: _os.environ['UHM_PROGRAM_LOCAL_INPUT']=str(_stdin_path)\nexec(compile({:?},'<uhm-legacy-model-source>','exec'),globals(),globals())\n",
+        input_rows.join(","), output_rows.join(","), legacy.source
+    );
+    let mut assumptions = legacy.assumptions;
+    assumptions.push("Loaded from legacy manifest_env_v1 history.".into());
+    ProposedAction::Program {
+        program: HelperProgramProposalV2 {
+            runtime: legacy.runtime,
+            contract: "uhm_helper_v1".into(),
+            source,
+            summary: legacy.summary,
+            assumptions,
+            stdin_mode,
+            files,
+            effects: legacy.effects,
+        },
+    }
 }
 
 pub fn repair_seed(
@@ -1396,6 +1659,114 @@ mod tests {
         assert_eq!(j.events.len(), 4);
         assert!(verify(&j.events[0]).is_ok());
     }
+
+    #[test]
+    fn bare_schema_v3_program_history_has_a_dedicated_backward_reader() {
+        let legacy = json!({
+            "kind":"program",
+            "program":{
+                "runtime":"python3",
+                "source":"import json,os\nprint(open(json.loads(os.environ['UHM_PROGRAM_INPUTS'])[0]['path']).read())",
+                "summary":"Read the input",
+                "assumptions":[],
+                "inputs":[{"path":"input.txt","access":"read_only"}],
+                "outputs":[],
+                "effects":["read_local"],
+                "result_mode":"stdout"
+            }
+        });
+        let action = decode_stored_proposal(legacy.to_string().as_bytes()).unwrap();
+        let ProposedAction::Program { program } = action else {
+            panic!("not a program")
+        };
+        assert_eq!(program.contract, "uhm_helper_v1");
+        assert!(program
+            .assumptions
+            .iter()
+            .any(|value| value.contains("legacy manifest_env_v1")));
+        assert!(program.source.contains("UHM_PROGRAM_INPUTS"));
+    }
+
+    #[test]
+    fn retained_proposals_are_versioned_and_append_only() {
+        let d = tempfile::tempdir().unwrap();
+        let action = ProposedAction::Answer {
+            text: "first".into(),
+        };
+        for _ in 0..2 {
+            record_proposal(
+                d.path(),
+                &cfg(HistoryDetail::Diagnostic),
+                "append000001",
+                "auto",
+                "auto",
+                "minimal",
+                &action,
+                None,
+            )
+            .unwrap();
+        }
+        let run = runs_path(d.path()).join("append000001");
+        assert!(run.join("proposal-1.json").is_file());
+        assert!(run.join("proposal-2.json").is_file());
+        assert!(!run.join("proposal.json").exists());
+        let stored: Value =
+            serde_json::from_slice(&std::fs::read(run.join("proposal-1.json")).unwrap()).unwrap();
+        assert_eq!(stored["version"], 2);
+    }
+
+    #[test]
+    fn program_preflight_history_is_content_free_and_links_the_proposal() {
+        let d = tempfile::tempdir().unwrap();
+        let config = cfg(HistoryDetail::Metadata);
+        record_request(
+            d.path(),
+            &config,
+            "abcdefgh1234",
+            "run",
+            "auto",
+            "minimal",
+            "intent",
+            None,
+        )
+        .unwrap();
+        record_proposal(
+            d.path(),
+            &config,
+            "abcdefgh1234",
+            "run",
+            "auto",
+            "minimal",
+            &ProposedAction::Answer { text: "x".into() },
+            None,
+        )
+        .unwrap();
+        record_program_preflight(
+            d.path(),
+            &config,
+            "abcdefgh1234",
+            "run",
+            "auto",
+            "minimal",
+            &[crate::program::ProgramContractDiagnostic {
+                code: "process_stdin_is_closed".into(),
+                severity: crate::program::DiagnosticSeverity::HardError,
+                message: "RESOLVED-PATH-SENTINEL".into(),
+            }],
+            None,
+        )
+        .unwrap();
+        let event = read(d.path())
+            .unwrap()
+            .events
+            .into_iter()
+            .find(|event| event.kind == EventKind::ProgramPreflightFinished)
+            .unwrap();
+        assert_eq!(event.data["proposal_index"], 1);
+        assert_eq!(event.data["hard_error_free"], false);
+        assert!(event.data.to_string().contains("process_stdin_is_closed"));
+        assert!(!event.data.to_string().contains("RESOLVED-PATH-SENTINEL"));
+    }
     #[test]
     fn metadata_does_not_retain_proposal() {
         let d = tempfile::tempdir().unwrap();
@@ -1662,5 +2033,82 @@ mod tests {
         write_private_atomic(&run.join("recovery.json"), b"retained").unwrap();
         prune(d.path(), &config, false).unwrap();
         assert!(run.join("recovery.json").exists());
+    }
+
+    #[test]
+    fn provider_attempt_history_is_append_only_safe_and_links_accepted_attempt() {
+        let d = tempfile::tempdir().unwrap();
+        let config = cfg(HistoryDetail::Metadata);
+        let attempts = vec![
+            crate::api::SafeAttempt {
+                index: 1,
+                provider: crate::provider::ProviderId::Openai,
+                api_family: crate::provider::openai::API_FAMILY,
+                requested_model: "primary".into(),
+                resolved_model: None,
+                resolved_fingerprint: None,
+                adapter_contract_version: crate::provider::ADAPTER_CONTRACT_VERSION,
+                outcome: "provider_error",
+                error_kind: Some(crate::provider::ProviderErrorKind::RateLimited),
+                fallback_reason: None,
+                accepted: false,
+            },
+            crate::api::SafeAttempt {
+                index: 2,
+                provider: crate::provider::ProviderId::Cerebras,
+                api_family: crate::provider::cerebras::API_FAMILY,
+                requested_model: "alternate".into(),
+                resolved_model: Some("alternate-r1".into()),
+                resolved_fingerprint: Some("fp-1".into()),
+                adapter_contract_version: crate::provider::ADAPTER_CONTRACT_VERSION,
+                outcome: "accepted",
+                error_kind: None,
+                fallback_reason: Some(crate::provider::ProviderErrorKind::RateLimited),
+                accepted: true,
+            },
+        ];
+        record_provider_attempts(
+            d.path(),
+            &config,
+            "provider-run",
+            "run",
+            "run",
+            "minimal",
+            &attempts,
+            crate::config::SelectionMode::Fixed,
+            None,
+        )
+        .unwrap();
+        let action = ProposedAction::Answer {
+            text: "safe".into(),
+        };
+        record_proposal(
+            d.path(),
+            &config,
+            "provider-run",
+            "run",
+            "run",
+            "minimal",
+            &action,
+            None,
+        )
+        .unwrap();
+        let events = events_for(d.path(), "provider-run").unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == EventKind::ProviderAttempted)
+                .count(),
+            2
+        );
+        let proposal = events
+            .iter()
+            .find(|event| event.kind == EventKind::ProposalReceived)
+            .unwrap();
+        assert_eq!(proposal.data["provider_attempt_index"], 2);
+        let serialized = serde_json::to_string(&events).unwrap();
+        assert!(!serialized.contains("authorization"));
+        assert!(!serialized.contains("raw"));
+        assert!(!serialized.contains("provider-controlled"));
     }
 }

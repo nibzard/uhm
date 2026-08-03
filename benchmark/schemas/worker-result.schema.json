@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhm.invalid/schemas/worker-result-v2.json",
+  "oneOf": [
+    {"$ref": "#/$defs/success"},
+    {"$ref": "#/$defs/error"}
+  ],
+  "$defs": {
+    "manifestEntry": {
+      "type": "object", "additionalProperties": false, "required": ["path", "type"],
+      "properties": {"path": {"type": "string"}, "type": {"enum": ["file", "directory", "symlink"]}, "size": {"type": "integer", "minimum": 0}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "mode": {"type": "string"}, "target": {"type": "string"}}
+    },
+    "success": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract_version", "status", "started", "exit_code", "signal", "timed_out", "duration_ms", "helper_setup_ms", "stdout", "stderr", "stdout_truncated", "stderr_truncated", "before_manifest", "after_manifest", "artifact_commit_success", "parent_state"],
+      "properties": {
+        "contract_version": {"const": 2}, "status": {"const": "success"}, "started": {"const": true},
+        "exit_code": {"type": ["integer", "null"]}, "signal": {"type": ["integer", "null"]}, "timed_out": {"type": "boolean"}, "duration_ms": {"type": "integer", "minimum": 0}, "helper_setup_ms": {"type": ["integer", "null"], "minimum": 0},
+        "stdout": {"type": "string"}, "stderr": {"type": "string"}, "stdout_truncated": {"type": "boolean"}, "stderr_truncated": {"type": "boolean"},
+        "artifact_commit_success": {"type": ["boolean", "null"]},
+        "before_manifest": {"type": "array", "items": {"$ref": "#/$defs/manifestEntry"}}, "after_manifest": {"type": "array", "items": {"$ref": "#/$defs/manifestEntry"}},
+        "parent_state": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["cwd", "environment"], "properties": {"cwd": {"type": ["string", "null"]}, "environment": {"type": "object", "additionalProperties": {"type": "string"}}}}]}
+      }
+    },
+    "error": {
+      "type": "object", "additionalProperties": false, "required": ["contract_version", "status", "error"],
+      "properties": {"contract_version": {"const": 2}, "status": {"const": "error"}, "error": {"type": "object", "additionalProperties": false, "required": ["code", "message"], "properties": {"code": {"type": "string", "pattern": "^[a-z0-9_]+$"}, "message": {"type": "string", "maxLength": 1000}}}}
+    }
+  }
+}

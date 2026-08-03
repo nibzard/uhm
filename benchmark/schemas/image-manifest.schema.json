@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhm.invalid/schemas/image-manifest-v1.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["manifest_version", "worker_contract_version", "architecture", "base_image_digest", "python", "shell", "tools", "hashes", "identity_sha256", "built_at_utc"],
+  "properties": {
+    "manifest_version": {"const": 1}, "worker_contract_version": {"const": 2}, "architecture": {"type": "string"},
+    "base_image_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "python": {"type": "object", "additionalProperties": false, "required": ["path", "version", "isolated_no_site"], "properties": {"path": {"type": "string"}, "version": {"type": "string"}, "isolated_no_site": {"type": "boolean"}}},
+    "shell": {"type": "string"}, "tools": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": false, "required": ["path", "version"], "properties": {"path": {"type": ["string", "null"]}, "version": {"type": ["string", "null"]}}}},
+    "hashes": {"type": "object", "additionalProperties": false, "required": ["fixture_bundle_and_oracle", "production_execution_sources", "worker_source", "dockerfile", "schemas", "canonical_action_description", "benchmark_helper_binary", "benchmark_execution_binary", "tool_manifest_source"], "properties": {
+      "fixture_bundle_and_oracle": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "production_execution_sources": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "worker_source": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "dockerfile": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "schemas": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "canonical_action_description": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "benchmark_helper_binary": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "benchmark_execution_binary": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "tool_manifest_source": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    }},
+    "identity_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "built_at_utc": {"type": "string", "format": "date-time"}
+  }
+}

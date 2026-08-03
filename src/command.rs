@@ -1,13 +1,13 @@
 //! Bounded result-first job: at most two proposals and, for explicit repair, two executions.
 
-use crate::action::{Effect, ProgramResultMode, ProposalMetadata, ProposedAction, StdinMode};
+use crate::action::{Effect, ProposalMetadata, ProposedAction, StdinMode};
 use crate::args::Args;
 use crate::config::Config;
 use crate::outcome::Outcome;
 use crate::render::{ansi, card, spinner};
 use crate::{
-    api, cache, context, history, outcome, parent_shell, program, prompt, recovery, safety, shell,
-    telemetry, tty,
+    api, cache, context, history, model_selection, outcome, parent_shell, program, prompt,
+    recovery, safety, shell, telemetry, tty,
 };
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Write};
@@ -26,11 +26,12 @@ struct Budget {
     model_calls: u8,
     executions: u8,
     replacement: Option<Replacement>,
+    replacement_after_executions: Option<u8>,
 }
 
 impl Budget {
-    fn initial_model(&mut self) {
-        self.model_calls = 1;
+    fn initial_model(&mut self, attempts: u8) {
+        self.model_calls = attempts.min(2);
     }
     fn can_replace(&self) -> bool {
         self.replacement.is_none() && self.model_calls < 2
@@ -40,6 +41,7 @@ impl Budget {
             return false;
         }
         self.replacement = Some(kind);
+        self.replacement_after_executions = Some(self.executions);
         self.model_calls += 1;
         true
     }
@@ -48,6 +50,7 @@ impl Budget {
             return false;
         }
         self.replacement = Some(Replacement::Edit);
+        self.replacement_after_executions = Some(self.executions);
         true
     }
     fn execute(&mut self) -> bool {
@@ -56,7 +59,8 @@ impl Budget {
                 && matches!(
                     self.replacement,
                     Some(Replacement::Repair | Replacement::Edit)
-                ));
+                )
+                && self.replacement_after_executions == Some(1));
         if allowed {
             self.executions += 1;
         }
@@ -173,10 +177,10 @@ pub fn handle(
             related_run_id,
         );
     }
-    let mut action = match preset_action {
-        Some(v) => v,
+    let (mut action, mut profile_allowed) = match preset_action {
+        Some(v) => (v, true),
         None => match alias {
-            Some(v) => v,
+            Some(v) => (v, true),
             None => match propose(
                 args,
                 config,
@@ -187,11 +191,14 @@ pub fn handle(
                 stdin.model_value_for(args.local_input, args.input_format.as_deref()),
                 None,
                 &shell_name,
+                &run_id,
+                mode,
+                related_run_id,
             ) {
-                Ok((v, cache_hit)) => {
-                    budget.initial_model();
+                Ok((v, cache_hit, attempts, allowed)) => {
+                    budget.initial_model(attempts);
                     interaction.proposal(true, cache_hit);
-                    v
+                    (v, allowed)
                 }
                 Err(e) => {
                     interaction.proposal(false, false);
@@ -231,6 +238,56 @@ pub fn handle(
             related_run_id,
         ) {
             eprintln!("uhm: history: {}", e);
+        }
+        if !profile_allowed {
+            interaction.decision("invalid");
+            if budget.can_replace() && tty_available() && !args.json {
+                eprintln!("The proposed action is outside the selected evidence profile.");
+                eprint!("Request a complete replacement or stop? [r/N] ");
+                let _ = std::io::stderr().flush();
+                if matches!(
+                    tty::read_line_cooked()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .as_str(),
+                    "r" | "repair" | "y" | "yes"
+                ) {
+                    let _ = budget.replace_with_model(Replacement::Repair);
+                    let result = match propose(
+                        args,
+                        config,
+                        api_config,
+                        route,
+                        request,
+                        &snapshot,
+                        stdin.model_value_for(args.local_input, args.input_format.as_deref()),
+                        Some(json!({
+                            "kind":"evidence_profile_replacement",
+                            "prior_action":action,
+                            "permitted_action_types":api_config.permitted_action_types,
+                            "instruction":"Return one complete replacement action, never a patch."
+                        })),
+                        &shell_name,
+                        &run_id,
+                        mode,
+                        related_run_id,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            return app_error(args, outcome::MODEL, "model_error", &error)
+                        }
+                    };
+                    action = result.0;
+                    profile_allowed = result.3;
+                    continue;
+                }
+            }
+            return app_error(
+                args,
+                outcome::NOT_EXECUTED,
+                "action_outside_evidence_profile",
+                "the proposed action is outside the selected evidence profile",
+            );
         }
         match action {
             ProposedAction::Answer { text } => {
@@ -282,6 +339,11 @@ pub fn handle(
                 interaction.route("clarification");
                 interaction.decision("not_run");
                 if !budget.can_replace() || !tty_available() {
+                    if budget.model_calls >= 2 && !args.json {
+                        eprintln!(
+                            "The clarification cannot be continued because the two-call budget is exhausted."
+                        );
+                    }
                     return clarification(args, &question);
                 }
                 eprintln!("{}", ansi::sanitize_untrusted(&question));
@@ -302,8 +364,14 @@ pub fn handle(
                     stdin.model_value_for(args.local_input, args.input_format.as_deref()),
                     Some(json!({"kind":"clarification","answer":answer})),
                     &shell_name,
+                    &run_id,
+                    mode,
+                    related_run_id,
                 ) {
-                    Ok((v, _)) => v,
+                    Ok((v, _, _, allowed)) => {
+                        profile_allowed = allowed;
+                        v
+                    }
                     Err(e) => return app_error(args, outcome::MODEL, "model_error", &e),
                 };
                 continue;
@@ -444,28 +512,119 @@ pub fn handle(
                 let effects = merged_effects(&proposal.effects, &detected);
                 interaction.effects(&effects);
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let recovery_classification =
-                    if proposal.result_mode == ProgramResultMode::Artifacts {
-                        recovery::classify(
-                            &config.paths.data_dir,
-                            &cwd,
-                            &proposal.outputs,
-                            &config.recovery,
-                            config.history.enabled,
-                            args.recoverable,
-                        )
-                    } else {
-                        recovery::Classification {
-                            requested: recovery::capture_requested(
-                                &config.paths.data_dir,
-                                &config.recovery,
-                                args.recoverable,
-                            ),
-                            class: recovery::RecoveryClass::Unavailable,
-                            reason: "stdout-only programs have no managed artifact preimage".into(),
-                            items: Vec::new(),
+                let diagnostics =
+                    program::preflight(&proposal, &snapshot.program_runtime, stdin.is_piped());
+                if let Err(error) = history::record_program_preflight(
+                    &config.paths.data_dir,
+                    &config.history,
+                    &run_id,
+                    route,
+                    route,
+                    mode.as_str(),
+                    &diagnostics,
+                    related_run_id,
+                ) {
+                    eprintln!("uhm: history: {error}");
+                }
+                for diagnostic in diagnostics
+                    .iter()
+                    .filter(|value| value.severity == program::DiagnosticSeverity::Warning)
+                {
+                    eprintln!(
+                        "uhm: program contract warning [{}]: {}",
+                        diagnostic.code,
+                        ansi::sanitize_untrusted_inline(&diagnostic.message)
+                    );
+                }
+                if let Some(diagnostic) = diagnostics.iter().find(|value| {
+                    matches!(
+                        value.severity,
+                        program::DiagnosticSeverity::HardError
+                            | program::DiagnosticSeverity::Availability
+                    )
+                }) {
+                    interaction.decision(
+                        if diagnostic.severity == program::DiagnosticSeverity::Availability {
+                            "unavailable"
+                        } else {
+                            "invalid"
+                        },
+                    );
+                    if budget.can_replace() && tty_available() && !args.json {
+                        eprintln!(
+                            "Program contract error: {}",
+                            ansi::sanitize_untrusted_inline(&diagnostic.message)
+                        );
+                        eprint!("Repair or stop? [r/N] ");
+                        let _ = std::io::stderr().flush();
+                        if matches!(
+                            tty::read_line_cooked()
+                                .unwrap_or_default()
+                                .to_lowercase()
+                                .as_str(),
+                            "r" | "repair" | "y" | "yes"
+                        ) {
+                            let _ = budget.replace_with_model(Replacement::Repair);
+                            action = match propose(
+                                args,
+                                config,
+                                api_config,
+                                route,
+                                request,
+                                &snapshot,
+                                stdin.model_value_for(
+                                    args.local_input,
+                                    args.input_format.as_deref(),
+                                ),
+                                Some(program_contract_repair_payload(&proposal, diagnostic)),
+                                &shell_name,
+                                &run_id,
+                                mode,
+                                related_run_id,
+                            ) {
+                                Ok((value, _, _, allowed)) => {
+                                    profile_allowed = allowed;
+                                    value
+                                }
+                                Err(error) => {
+                                    return app_error(args, outcome::MODEL, "model_error", &error)
+                                }
+                            };
+                            continue;
                         }
-                    };
+                    }
+                    return app_error(
+                        args,
+                        if diagnostic.severity == program::DiagnosticSeverity::Availability {
+                            outcome::UNAVAILABLE
+                        } else {
+                            outcome::NOT_EXECUTED
+                        },
+                        &diagnostic.code,
+                        &diagnostic.message,
+                    );
+                }
+                let recovery_classification = if program::has_writable_files(&proposal) {
+                    recovery::classify(
+                        &config.paths.data_dir,
+                        &cwd,
+                        &program::writable_paths(&proposal),
+                        &config.recovery,
+                        config.history.enabled,
+                        args.recoverable,
+                    )
+                } else {
+                    recovery::Classification {
+                        requested: recovery::capture_requested(
+                            &config.paths.data_dir,
+                            &config.recovery,
+                            args.recoverable,
+                        ),
+                        class: recovery::RecoveryClass::Unavailable,
+                        reason: "stdout-only programs have no managed artifact preimage".into(),
+                        items: Vec::new(),
+                    }
+                };
                 if recovery_classification.requested {
                     if let Err(error) = history::record_recovery_event(
                         &config.paths.data_dir,
@@ -482,18 +641,7 @@ pub fn handle(
                         eprintln!("uhm: history: {error}");
                     }
                 }
-                if !snapshot.program_runtime.available {
-                    interaction.decision("unavailable");
-                    return app_error(
-                        args,
-                        outcome::UNAVAILABLE,
-                        "runtime_unavailable",
-                        snapshot.program_runtime.version.as_deref().unwrap_or(
-                            "Python 3 is unavailable; install python3 or use a shell route",
-                        ),
-                    );
-                }
-                let consequential = proposal.result_mode == ProgramResultMode::Artifacts
+                let consequential = program::has_writable_files(&proposal)
                     || effects.iter().any(Effect::requires_advisory_pause);
                 let review = args.review || consequential;
                 if args.dry_run {
@@ -546,8 +694,14 @@ pub fn handle(
                                     json!({"kind":"revision","prior_action":{"kind":"program","program":proposal},"feedback":feedback}),
                                 ),
                                 &shell_name,
+                                &run_id,
+                                mode,
+                                related_run_id,
                             ) {
-                                Ok((value, _)) => value,
+                                Ok((value, _, _, allowed)) => {
+                                    profile_allowed = allowed;
+                                    value
+                                }
                                 Err(error) => {
                                     return app_error(args, outcome::MODEL, "model_error", &error)
                                 }
@@ -711,8 +865,14 @@ pub fn handle(
                                     (!args.local_input).then_some(diagnostics.as_str()),
                                 )),
                                 &shell_name,
+                                &run_id,
+                                mode,
+                                related_run_id,
                             ) {
-                                Ok((value, _)) => value,
+                                Ok((value, _, _, allowed)) => {
+                                    profile_allowed = allowed;
+                                    value
+                                }
                                 Err(error) => {
                                     return app_error(args, outcome::MODEL, "model_error", &error)
                                 }
@@ -747,7 +907,7 @@ pub fn handle(
                     }
                 }
                 if result.code == 0 {
-                    if proposal.result_mode == ProgramResultMode::Stdout {
+                    if !program::has_writable_files(&proposal) {
                         let _ = std::io::stdout().write_all(&result.stdout);
                         let _ = std::io::stdout().flush();
                     } else if !args.json {
@@ -772,7 +932,7 @@ pub fn handle(
                         history::EventKind::RecoveryPrepared,
                         "preparing",
                         Some("eligible preimages were captured before the program started"),
-                        proposal.outputs.len(),
+                        program::writable_paths(&proposal).len(),
                         related_run_id,
                     );
                 }
@@ -794,7 +954,7 @@ pub fn handle(
                         kind,
                         state,
                         result.recovery_reason.as_deref(),
-                        proposal.outputs.len(),
+                        program::writable_paths(&proposal).len(),
                         related_run_id,
                     ) {
                         eprintln!("uhm: history: {error}");
@@ -815,7 +975,7 @@ pub fn handle(
                         history::EventKind::RecoveryUnavailable,
                         "unavailable",
                         Some(reason),
-                        proposal.outputs.len(),
+                        program::writable_paths(&proposal).len(),
                         related_run_id,
                     );
                 }
@@ -942,8 +1102,14 @@ pub fn handle(
                             stdin.model_value_for(args.local_input, args.input_format.as_deref()),
                             Some(json!({"kind":"revision","prior_action":command,"feedback":msg})),
                             &shell_name,
+                            &run_id,
+                            mode,
+                            related_run_id,
                         ) {
-                            Ok((v, _)) => v,
+                            Ok((v, _, _, allowed)) => {
+                                profile_allowed = allowed;
+                                v
+                            }
                             Err(e) => return app_error(args, outcome::MODEL, "model_error", &e),
                         };
                         continue;
@@ -1042,8 +1208,14 @@ pub fn handle(
                                     json!({"kind":"revision","prior_action":command,"feedback":feedback}),
                                 ),
                                 &shell_name,
+                                &run_id,
+                                mode,
+                                related_run_id,
                             ) {
-                                Ok((v, _)) => v,
+                                Ok((v, _, _, allowed)) => {
+                                    profile_allowed = allowed;
+                                    v
+                                }
                                 Err(e) => {
                                     return app_error(args, outcome::MODEL, "model_error", &e)
                                 }
@@ -1194,8 +1366,14 @@ pub fn handle(
                                     json!({"kind":"repair","prior_action":command,"exit_code":result.code,"signal":result.signal,"stderr":available}),
                                 ),
                                 &shell_name,
+                                &run_id,
+                                mode,
+                                related_run_id,
                             ) {
-                                Ok((v, _)) => v,
+                                Ok((v, _, _, allowed)) => {
+                                    profile_allowed = allowed;
+                                    v
+                                }
                                 Err(e) => {
                                     return app_error(args, outcome::MODEL, "model_error", &e)
                                 }
@@ -1355,6 +1533,22 @@ fn program_repair_payload(
     value
 }
 
+fn program_contract_repair_payload(
+    proposal: &crate::action::ProgramProposal,
+    diagnostic: &program::ProgramContractDiagnostic,
+) -> Value {
+    json!({
+        "kind":"program_contract_repair",
+        "prior_action":{"kind":"program","program":proposal},
+        "diagnostic":{
+            "code":diagnostic.code,
+            "severity":diagnostic.severity,
+            "explanation":diagnostic.message,
+        },
+        "instruction":"Return one complete replacement action, never a patch."
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn propose(
     args: &Args,
@@ -1366,7 +1560,10 @@ fn propose(
     stdin: Value,
     follow_up: Option<Value>,
     shell: &str,
-) -> Result<(ProposedAction, bool), String> {
+    run_id: &str,
+    mode: context::Mode,
+    related_run_id: Option<&str>,
+) -> Result<(ProposedAction, bool, u8, bool), String> {
     let context_value = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
     let context_hash = blake3::hash(serde_json::to_string(&context_value).unwrap().as_bytes())
         .to_hex()
@@ -1375,6 +1572,8 @@ fn propose(
         .to_hex()
         .to_string();
     let key = cache::key_hash(
+        api_config.provider,
+        api_config.selection_mode,
         &api_config.model,
         shell,
         api_config.max_tokens,
@@ -1391,31 +1590,93 @@ fn propose(
             config.cache_enabled,
             config.cache_ttl_secs,
             &key,
+            api_config.provider,
         ) {
-            if let Ok(action) = api::parse_response(&raw) {
+            if let Ok(action) = api::parse_response(api_config, &raw) {
+                let profile_allowed =
+                    api_config
+                        .permitted_action_types
+                        .as_ref()
+                        .is_none_or(|allowed| {
+                            allowed
+                                .iter()
+                                .any(|value| value == model_selection::action_type(&action))
+                        });
                 if args.verbose {
                     eprintln!("uhm: cache hit {}", &key[..8]);
                 }
-                return Ok((action, true));
+                return Ok((action, true, 0, profile_allowed));
             }
         }
     }
     let cacheable = follow_up.is_none();
+    let allow_fallback = follow_up.is_none();
     let input = prompt::proposal_input(route, request, context_value, stdin, follow_up);
     let mut progress = spinner::Spinner::start("thinking");
     let response = api::request_action(
         api_config,
         &input,
         config.stream && !args.no_stream && !args.json,
+        allow_fallback,
     );
     progress.stop();
-    let (action, raw) = response?;
-    if cacheable {
-        if let Err(e) = cache::put(&config.paths.cache_dir, config.cache_enabled, &key, &raw) {
+    let response = match response {
+        Ok(response) => {
+            if let Err(error) = history::record_provider_attempts(
+                &config.paths.data_dir,
+                &config.history,
+                run_id,
+                route,
+                route,
+                mode.as_str(),
+                &response.attempts,
+                api_config.selection_mode,
+                related_run_id,
+            ) {
+                eprintln!("uhm: history: {error}");
+            }
+            response
+        }
+        Err(error) => {
+            if args.verbose {
+                eprintln!(
+                    "uhm: provider attempts consumed={} outcome={:?}",
+                    error.attempts_consumed, error.kind
+                );
+            }
+            if let Err(history_error) = history::record_provider_attempts(
+                &config.paths.data_dir,
+                &config.history,
+                run_id,
+                route,
+                route,
+                mode.as_str(),
+                &error.attempts,
+                api_config.selection_mode,
+                related_run_id,
+            ) {
+                eprintln!("uhm: history: {history_error}");
+            }
+            return Err(error.message);
+        }
+    };
+    let action = response.action;
+    let profile_allowed = response.profile_allowed;
+    let raw = response.raw;
+    // A fallback response belongs to a different provider provenance and must
+    // never be published beneath the initial provider's cache key.
+    if cacheable && response.attempts_consumed == 1 {
+        if let Err(e) = cache::put(
+            &config.paths.cache_dir,
+            config.cache_enabled,
+            &key,
+            &raw,
+            api_config.provider,
+        ) {
             eprintln!("uhm: {}", e)
         }
     }
-    Ok((action, false))
+    Ok((action, false, response.attempts_consumed, profile_allowed))
 }
 pub fn ensure_disclosure(marker: Option<&str>) -> Result<(), String> {
     if marker == Some(crate::first_run::RENDERED_MARKER) {
@@ -1545,19 +1806,19 @@ fn program_preview(
             .resolved_path
             .as_deref()
             .unwrap_or("python3"),
-        proposal.result_mode
+        if program::has_writable_files(proposal) {
+            "artifacts"
+        } else {
+            "stdout"
+        }
     );
-    for input in &proposal.inputs {
+    eprintln!("Contract: {}\nProcess stdin: closed", proposal.contract);
+    for file in &proposal.files {
         eprintln!(
-            "Input ({:?}): {}",
-            input.access,
-            ansi::sanitize_untrusted_inline(&input.path)
-        );
-    }
-    for output in &proposal.outputs {
-        eprintln!(
-            "Output (staged, then renamed): {}",
-            ansi::sanitize_untrusted_inline(output)
+            "Resource {} ({:?}): {}",
+            ansi::sanitize_untrusted_inline(&file.id),
+            file.access,
+            ansi::sanitize_untrusted_inline(&file.path)
         );
     }
     eprintln!(
@@ -1728,13 +1989,13 @@ mod tests {
     fn local_input_repair_payload_cannot_contain_child_diagnostics() {
         let proposal = crate::action::ProgramProposal {
             runtime: crate::action::ProgramRuntime::Python3,
+            contract: "uhm_helper_v1".into(),
             source: "raise SystemExit(1)".into(),
             summary: "test".into(),
             assumptions: vec![],
-            inputs: vec![],
-            outputs: vec![],
+            stdin_mode: crate::action::ProgramStdinMode::None,
+            files: vec![],
             effects: vec![],
-            result_mode: crate::action::ProgramResultMode::Stdout,
         };
         let result = program::ExecutionResult {
             code: 1,
@@ -1745,17 +2006,48 @@ mod tests {
             timed_out: false,
             output_overflow: false,
             duration: std::time::Duration::ZERO,
+            helper_setup_duration: std::time::Duration::ZERO,
             artifacts: vec![],
             retained_workspace: None,
             recovery_prepared: false,
             recovery_state: None,
             recovery_reason: None,
+            artifact_commit_success: false,
         };
         let local = program_repair_payload(&proposal, &result, None).to_string();
         assert!(!local.contains("LOCAL-INPUT-SENTINEL"));
         let ordinary =
             program_repair_payload(&proposal, &result, Some("LOCAL-INPUT-SENTINEL")).to_string();
         assert!(ordinary.contains("LOCAL-INPUT-SENTINEL"));
+    }
+
+    #[test]
+    fn contract_repair_payload_has_only_model_authored_and_content_free_fields() {
+        let proposal = crate::action::ProgramProposal {
+            runtime: crate::action::ProgramRuntime::Python3,
+            contract: "uhm_helper_v1".into(),
+            source: "import sys\nprint(sys.stdin.read())".into(),
+            summary: "Read input".into(),
+            assumptions: vec![],
+            stdin_mode: crate::action::ProgramStdinMode::LocalPath,
+            files: vec![],
+            effects: vec![crate::action::Effect::ReadLocal],
+        };
+        let diagnostic = program::ProgramContractDiagnostic {
+            code: "process_stdin_is_closed".into(),
+            severity: program::DiagnosticSeverity::HardError,
+            message: "Process stdin is closed; use uhm_runtime.stdin_path.".into(),
+        };
+        let payload = program_contract_repair_payload(&proposal, &diagnostic).to_string();
+        assert!(payload.contains("process_stdin_is_closed"));
+        for secret in [
+            "LOCAL-INPUT-SENTINEL",
+            ".uhm-stage-secret",
+            "OPENAI-KEY-SENTINEL",
+            "launcher-contract.json",
+        ] {
+            assert!(!payload.contains(secret));
+        }
     }
     #[test]
     fn gate_blocks_missing_marker() {
@@ -1776,7 +2068,7 @@ mod tests {
             Replacement::Repair,
         ] {
             let mut budget = Budget::default();
-            budget.initial_model();
+            budget.initial_model(1);
             assert!(budget.replace_with_model(first));
             assert!(!budget.replace_with_model(Replacement::Revision));
             assert!(!budget.replace_with_edit());
@@ -1787,22 +2079,55 @@ mod tests {
     #[test]
     fn only_post_failure_replacement_allows_a_second_execution() {
         let mut normal = Budget::default();
-        normal.initial_model();
+        normal.initial_model(1);
         assert!(normal.execute());
         assert!(!normal.execute());
 
         let mut repaired = Budget::default();
-        repaired.initial_model();
+        repaired.initial_model(1);
         assert!(repaired.execute());
         assert!(repaired.replace_with_model(Replacement::Repair));
         assert!(repaired.execute());
         assert!(!repaired.execute());
 
         let mut clarified = Budget::default();
-        clarified.initial_model();
+        clarified.initial_model(1);
         assert!(clarified.replace_with_model(Replacement::Clarification));
         assert!(clarified.execute());
         assert!(!clarified.execute());
+    }
+
+    #[test]
+    fn preexecution_repair_uses_two_calls_but_only_one_execution() {
+        let mut budget = Budget::default();
+        budget.initial_model(1);
+        assert!(budget.replace_with_model(Replacement::Repair));
+        assert!(budget.execute());
+        assert!(!budget.execute());
+        assert_eq!(budget.model_calls, 2);
+        assert_eq!(budget.executions, 1);
+    }
+
+    #[test]
+    fn invalid_replacement_has_no_third_turn() {
+        let mut budget = Budget::default();
+        budget.initial_model(1);
+        assert!(budget.replace_with_model(Replacement::Repair));
+        assert!(!budget.replace_with_model(Replacement::Repair));
+        assert!(!budget.replace_with_edit());
+        assert_eq!(budget.model_calls, 2);
+    }
+
+    #[test]
+    fn transport_fallback_consumes_the_global_second_call_slot() {
+        let mut budget = Budget::default();
+        budget.initial_model(2);
+        assert!(!budget.can_replace());
+        assert!(!budget.replace_with_model(Replacement::Clarification));
+        assert!(budget.execute());
+        assert!(!budget.execute());
+        assert_eq!(budget.model_calls, 2);
+        assert_eq!(budget.executions, 1);
     }
 
     #[test]
@@ -1833,12 +2158,19 @@ mod tests {
             ..Args::default()
         };
         let api = api::ApiConfig {
+            provider: crate::provider::ProviderId::Openai,
             model: "unused".into(),
             key: String::new(),
             max_tokens: 1,
             reasoning_effort: "low".into(),
             request_max_bytes: 1024,
             response_max_bytes: 1024,
+            alternate: None,
+            fallback_on: Vec::new(),
+            selection_mode: crate::config::SelectionMode::Fixed,
+            permitted_action_types: None,
+            resolved_fingerprint: None,
+            resolved_model: None,
         };
         let mut without = telemetry::Interaction::new("run", false, false);
         assert_eq!(

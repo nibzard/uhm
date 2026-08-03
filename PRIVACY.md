@@ -4,7 +4,9 @@ This document describes the current `uhm` data contract. The short version: term
 
 ## OpenAI requests
 
-`uhm` uses OpenAI's Responses API and sends `store: false`. OpenAI documents this as disabling Responses application-state storage; it is not the same as Zero Data Retention. By default, OpenAI may retain API customer content in abuse-monitoring logs for up to 30 days unless longer retention is legally or operationally required. Organizations approved for Modified Abuse Monitoring or Zero Data Retention have different controls. Read [OpenAI's current data-control documentation](https://developers.openai.com/api/docs/guides/your-data#data-retention-controls-for-abuse-monitoring) for the provider-side policy.
+By default, `uhm` uses OpenAI's Responses API and sends `store: false`. Explicit fixed selection may use Cerebras Chat Completions. An explicitly configured cross-provider alternate authorizes only the disclosed fixed fallback endpoint; changing the endpoint set requires disclosure again. No arbitrary provider URL is accepted.
+
+OpenAI documents `store: false` as disabling Responses application-state storage; it is not the same as Zero Data Retention. By default, OpenAI may retain API customer content in abuse-monitoring logs for up to 30 days unless longer retention is legally or operationally required. Organizations approved for Modified Abuse Monitoring or Zero Data Retention have different controls. Read [OpenAI's current data-control documentation](https://developers.openai.com/api/docs/guides/your-data#data-retention-controls-for-abuse-monitoring) for the provider-side policy. Consult Cerebras's current terms and privacy controls before opting in; UHM makes no provider-side retention promise.
 
 A request contains:
 
@@ -15,6 +17,8 @@ A request contains:
 
 With `--local-input`, the piped body is omitted and replaced by presence, byte count, UTF-8 status, and an optional user-declared format label. The generated local program can read the private spooled bytes. The flag requires piped input.
 
+Program-contract repair sends only the original model-authored source and logical resource declarations plus a stable diagnostic code and bounded content-free explanation. Resolved read/staging paths, the one-use launcher contract, credentials, and local-only bytes are excluded. Runtime repair with local-only input sends only the coarse failure class, never child output or exception text.
+
 `standard` context is the default. It contains OS and architecture, the target shell, common-tool presence booleans, a normalized working directory, bounded Git state, and up to 40 directory entry names. `minimal` contains no general machine fields. All modes contain resolved Python 3 path/version and isolated/no-site availability so the model does not propose an unavailable runtime. `full` adds bounded host, user, shell-version, and tool-version fields.
 
 Use `uhm context show minimal|standard|full` before a request to inspect the exact shape. Select `minimal` with `--context minimal` or in `config.yaml`.
@@ -23,7 +27,7 @@ Use `uhm context show minimal|standard|full` before a request to inspect the exa
 
 `uhm repair` and `uhm recover` are explicit exceptions for local receipts. Each prints the exact bounded subset and fixed instruction before sending, requires affirmative terminal approval, and sends only the retained original intent, typed proposal, coarse outcome, and optional feedback or guidance. The selected current context is also sent under the normal context policy. Neither sends the full journal, unrelated runs, recovery manifests, snapshot paths, or snapshot bytes.
 
-OpenAI's terms and retention controls can change. The linked provider documentation, not this repository, is authoritative for provider-side handling.
+Provider terms and retention controls can change. Provider documentation, not this repository, is authoritative for provider-side handling.
 
 ## Aggregate telemetry
 
@@ -50,7 +54,7 @@ An interaction summary has exactly these fields:
   "cache": "miss",
   "parent_action": "not_applicable",
   "interactive": true,
-  "notice_revision": 3
+  "notice_revision": 4
 }
 ```
 

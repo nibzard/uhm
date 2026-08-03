@@ -8,6 +8,7 @@ pub struct Args {
     /// preserves argv boundaries (notably paths containing spaces).
     pub operands: Vec<String>,
     pub prompt: String,
+    pub provider: Option<String>,
     pub model: Option<String>,
     pub shell: Option<String>,
     pub context: Option<String>,
@@ -137,6 +138,10 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
                 i += 1;
                 out.model = Some(argv.get(i).ok_or("--model needs a value")?.clone());
             }
+            "--provider" => {
+                i += 1;
+                out.provider = Some(argv.get(i).ok_or("--provider needs a value")?.clone());
+            }
             "--shell" => {
                 i += 1;
                 out.shell = Some(argv.get(i).ok_or("--shell needs a value")?.clone());
@@ -193,6 +198,9 @@ pub fn parse_from(argv: Vec<String>) -> Result<Args, String> {
             }
             _ if arg.starts_with("--model=") => {
                 out.model = Some(arg[8..].to_string());
+            }
+            _ if arg.starts_with("--provider=") => {
+                out.provider = Some(arg[11..].to_string());
             }
             _ if arg.starts_with("--shell=") => {
                 out.shell = Some(arg[8..].to_string());
@@ -275,6 +283,21 @@ mod tests {
         let a = pv(&["uhm", "run", "find", "big", "files"]).unwrap();
         assert_eq!(a.subcommand.as_deref(), Some("run"));
         assert_eq!(a.prompt, "find big files");
+    }
+
+    #[test]
+    fn provider_and_model_are_independent_explicit_options() {
+        let args = pv(&[
+            "uhm",
+            "--provider=cerebras",
+            "--model",
+            "gpt-5.6-terra",
+            "ask",
+            "hello",
+        ])
+        .unwrap();
+        assert_eq!(args.provider.as_deref(), Some("cerebras"));
+        assert_eq!(args.model.as_deref(), Some("gpt-5.6-terra"));
     }
 
     #[test]

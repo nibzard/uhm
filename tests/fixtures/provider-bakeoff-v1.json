@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "prompt_version": 8,
+  "action_schema_version": 3,
+  "tasks": [
+    {
+      "id": "largest-files-recursive",
+      "mode": "run",
+      "prompt": "list the five largest regular files under this directory recursively, largest first",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command must recurse, consider regular files rather than directories, sort by byte size descending, and return exactly five file entries. It must not lose one entry to a header such as `total`."
+    },
+    {
+      "id": "rust-todos",
+      "mode": "run",
+      "prompt": "find TODO comments in Rust files recursively and include filenames and line numbers",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command must restrict the search to Rust files, recurse, and include both filenames and line numbers. Read effects and every required executable must be declared."
+    },
+    {
+      "id": "git-branch-status",
+      "mode": "run",
+      "prompt": "show the current git branch and whether there are staged, unstaged, or untracked changes",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command must report the branch and account for staged, unstaged, and untracked changes. It should behave sensibly for a detached HEAD and must declare git as a requirement."
+    },
+    {
+      "id": "explain-git-log-p",
+      "mode": "ask",
+      "prompt": "what does git log -p do",
+      "expected_tools": ["return_answer"],
+      "rubric": "The answer should clearly explain that `git log -p` shows commit history plus the patch introduced by each commit. It should not propose or execute a local action."
+    },
+    {
+      "id": "create-empty-file",
+      "mode": "run",
+      "prompt": "create an empty file named plan-two-smoke.tmp",
+      "expected_tools": ["run_shell"],
+      "rubric": "The proposal must create exactly the named file without executing it. It should quote or terminate options defensively and declare the write effect and required executable."
+    },
+    {
+      "id": "delete-one-file",
+      "mode": "run",
+      "prompt": "delete plan-two-smoke.tmp",
+      "expected_tools": ["run_shell"],
+      "rubric": "The proposal must target exactly the named file, avoid globs or broad paths, and declare the delete effect and required executable."
+    },
+    {
+      "id": "directory-disk-usage",
+      "mode": "run",
+      "prompt": "show the disk usage of each immediate child of this directory, sorted largest first",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command should measure each immediate child, not recursively list every descendant as a separate result, and sort sizes in descending order. It must handle ordinary filenames safely."
+    },
+    {
+      "id": "large-files-threshold",
+      "mode": "run",
+      "prompt": "find regular files under this directory larger than 10 MiB and print their paths",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command must recurse, restrict results to regular files, use the 10 MiB threshold correctly, and print paths."
+    },
+    {
+      "id": "csv-data-row-count",
+      "mode": "run",
+      "prompt": "count the data rows in this CSV input, excluding its header",
+      "expected_tools": ["run_program"],
+      "stdin": {
+        "text": "name,score\nAda,10\nGrace,20\nLinus,15\n",
+        "declared_format": "text/csv"
+      },
+      "rubric": "The Python program should parse CSV with the standard library, exclude exactly one header row, consume the declared stdin input, and print 3 for the supplied fixture. A byte-oriented line count is not robust enough for quoted multiline CSV."
+    },
+    {
+      "id": "json-category-totals",
+      "mode": "run",
+      "prompt": "read this JSON array, sum amount by category, and print a JSON object with category keys sorted",
+      "expected_tools": ["run_program"],
+      "stdin": {
+        "text": "[{\"category\":\"b\",\"amount\":2},{\"category\":\"a\",\"amount\":3},{\"category\":\"b\",\"amount\":5}]",
+        "declared_format": "application/json"
+      },
+      "rubric": "The program must use Python's standard library, read the stdin input contract, sum to a=3 and b=7, emit valid JSON with sorted keys, and declare no output artifact."
+    },
+    {
+      "id": "pretty-print-json",
+      "mode": "run",
+      "prompt": "pretty-print this piped JSON with two-space indentation and sorted object keys",
+      "expected_tools": ["run_program"],
+      "stdin": {
+        "text": "{\"z\":1,\"a\":{\"d\":4,\"c\":3}}",
+        "declared_format": "application/json"
+      },
+      "rubric": "The proposal must parse and serialize JSON rather than perform textual substitutions, use two-space indentation and sorted keys, read the declared stdin input, and write only stdout."
+    },
+    {
+      "id": "sha256-archives",
+      "mode": "run",
+      "prompt": "print SHA-256 checksums for every .tar.gz file in this directory",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command should select `.tar.gz` regular files in the current directory, handle filenames safely, and compute SHA-256 hashes. Effects and executable requirements must be accurate."
+    },
+    {
+      "id": "change-directory",
+      "mode": "run",
+      "prompt": "change my current shell directory to /tmp",
+      "expected_tools": ["require_parent_shell"],
+      "rubric": "This must be a typed parent-shell `change_directory` action with path `/tmp`, null name/value, and a shell_state effect. It must not return shell source."
+    },
+    {
+      "id": "set-environment",
+      "mode": "run",
+      "prompt": "set RUST_LOG to debug in my current shell",
+      "expected_tools": ["require_parent_shell"],
+      "rubric": "This must be a typed parent-shell `set_environment` action with name `RUST_LOG`, value `debug`, null path, and a shell_state effect."
+    },
+    {
+      "id": "unset-environment",
+      "mode": "run",
+      "prompt": "unset HTTP_PROXY in my current shell",
+      "expected_tools": ["require_parent_shell"],
+      "rubric": "This must be a typed parent-shell `unset_environment` action with name `HTTP_PROXY`, null path/value, and a shell_state effect."
+    },
+    {
+      "id": "source-venv",
+      "mode": "run",
+      "prompt": "activate the virtual environment at .venv/bin/activate in my current shell",
+      "expected_tools": ["require_parent_shell"],
+      "rubric": "This must use the typed parent-shell `source_file` action with the exact path, null name/value, and a shell_state effect. It must not fabricate an `eval` or child-shell command."
+    },
+    {
+      "id": "ambiguous-report",
+      "mode": "run",
+      "prompt": "convert the report to CSV",
+      "expected_tools": ["request_clarification"],
+      "rubric": "The request lacks an input report and destination or stdout choice. The model should ask one concise question for the smallest essential missing fact rather than invent paths or data."
+    },
+    {
+      "id": "ambiguous-overwrite",
+      "mode": "run",
+      "prompt": "write the cleaned data back to the original file",
+      "expected_tools": ["request_clarification"],
+      "rubric": "No input path or data is identified. The model should ask one concise clarification and must not guess a path or overwrite anything."
+    },
+    {
+      "id": "explain-pipefail",
+      "mode": "ask",
+      "prompt": "explain what set -o pipefail changes in a shell pipeline",
+      "expected_tools": ["return_answer"],
+      "rubric": "The answer should explain that without pipefail a pipeline usually reflects the last command's status, while pipefail makes failure of an earlier stage affect the pipeline status. No action is needed."
+    },
+    {
+      "id": "listening-tcp",
+      "mode": "run",
+      "prompt": "list listening TCP sockets with process information",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command should use an appropriate installed networking utility and request listening TCP sockets plus process information. It must not require network access merely to inspect local sockets."
+    },
+    {
+      "id": "recent-git-commits",
+      "mode": "run",
+      "prompt": "show the latest five git commits as one line each",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command should use git log, limit output to five commits, and use a one-line representation."
+    },
+    {
+      "id": "mkdir-spaces",
+      "mode": "run",
+      "prompt": "create a directory named Quarterly Reports",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command must create exactly one directory whose name contains a space, preserve the literal name through correct quoting, and declare its write effect and executable requirement."
+    },
+    {
+      "id": "remove-build-cache",
+      "mode": "run",
+      "prompt": "delete the directory build/cache and everything inside it",
+      "expected_tools": ["run_shell"],
+      "rubric": "The command may recursively delete, but must target exactly `build/cache`, avoid globs and broader ancestors, preserve the literal operand, and declare the delete effect."
+    },
+    {
+      "id": "sort-json-in-place",
+      "mode": "run",
+      "prompt": "rewrite settings.json in place with all JSON object keys sorted recursively and two-space indentation",
+      "expected_tools": ["run_program"],
+      "rubric": "The proposal should use a Python standard-library program, declare settings.json as a replace input and output destination, parse and serialize JSON recursively with sorted keys and two-space indentation, and avoid embedding private staging paths."
+    }
+  ]
+}

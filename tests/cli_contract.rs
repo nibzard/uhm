@@ -12,7 +12,11 @@ fn configured(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
     fs::write(config_dir.join("config.yaml"), yaml).unwrap();
     let data_dir = home.join("data/uhm");
     fs::create_dir_all(&data_dir).unwrap();
-    fs::write(data_dir.join("notice-revision"), "3").unwrap();
+    fs::write(
+        data_dir.join("notice-revision"),
+        r#"{"endpoints":["https://api.openai.com/v1/responses"],"revision":5}"#,
+    )
+    .unwrap();
     Command::new(binary())
         .args(arguments)
         .env("HOME", home)
@@ -294,7 +298,7 @@ fn first_use_notice_precedes_work_and_is_rendered_once() {
     );
     assert_eq!(first.status.code(), Some(0));
     let notice = String::from_utf8_lossy(&first.stderr);
-    assert!(notice.contains("OpenAI receives"));
+    assert!(notice.contains("selected provider receives"));
     assert!(notice.contains("uhm telemetry off"));
     assert!(notice.contains("not a safety guarantee"));
 
@@ -303,7 +307,7 @@ fn first_use_notice_precedes_work_and_is_rendered_once() {
         "aliases:\n  notice-noop: true\n",
         &["--plain", "notice-noop"],
     );
-    assert!(!String::from_utf8_lossy(&second.stderr).contains("OpenAI receives"));
+    assert!(!String::from_utf8_lossy(&second.stderr).contains("selected provider receives"));
 }
 
 #[test]
@@ -319,7 +323,7 @@ fn local_command_on_a_fresh_config_skips_the_first_use_notice() {
     assert!(!output.stderr.contains(&0x1b));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("OpenAI receives"),
+        !stderr.contains("selected provider receives"),
         "local command must not render the first-use notice: {stderr:?}"
     );
     assert!(
@@ -345,7 +349,7 @@ fn history_replay_restores_the_notice_gate_before_completion_telemetry() {
 
     assert_eq!(replay.status.code(), Some(11));
     assert!(
-        String::from_utf8_lossy(&replay.stderr).contains("OpenAI receives"),
+        String::from_utf8_lossy(&replay.stderr).contains("selected provider receives"),
         "replay must render the disclosure before its completion path can send telemetry"
     );
     assert!(marker.exists(), "replay must persist the notice marker");

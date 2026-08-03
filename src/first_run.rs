@@ -3,13 +3,23 @@
 use crate::{config::Config, dirs, render::ansi};
 use std::io::Write;
 
-pub const NOTICE_REVISION: u8 = 3;
-pub const RENDERED_MARKER: &str = "first-use-notice-v3-rendered";
+pub const NOTICE_REVISION: u8 = 5;
+pub const RENDERED_MARKER: &str = "first-use-notice-v5-rendered";
+
+fn marker_value(config: &Config) -> String {
+    let mut endpoints = vec![config.provider.adapter().endpoint()];
+    if let Some(alternate) = &config.selection.alternate {
+        endpoints.push(alternate.provider.adapter().endpoint());
+    }
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    serde_json::json!({"revision":NOTICE_REVISION,"endpoints":endpoints}).to_string()
+}
 
 pub fn is_current(config: &Config) -> bool {
     std::fs::read_to_string(config.paths.data_dir.join("notice-revision"))
         .ok()
-        .is_some_and(|value| value.trim() == NOTICE_REVISION.to_string())
+        .is_some_and(|value| value.trim() == marker_value(config))
 }
 
 pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, String> {
@@ -28,12 +38,24 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
     } else {
         "off in config"
     };
+    let primary = config.provider.adapter();
+    let endpoint_summary = if let Some(alternate) = &config.selection.alternate {
+        format!(
+            "{} ({}) with authorized alternate {} ({})",
+            config.provider,
+            primary.endpoint(),
+            alternate.provider,
+            alternate.provider.adapter().endpoint()
+        )
+    } else {
+        format!("{} ({})", config.provider, primary.endpoint())
+    };
     let mut stderr = std::io::stderr().lock();
     writeln!(stderr, "{}", ansi::info("uhm, before we zip:"))
         .map_err(|e| format!("render first-use notice: {}", e))?;
     writeln!(
         stderr,
-        "  OpenAI receives your prompt, explicitly piped input, and selected context (standard by default)."
+        "  The selected provider receives your prompt, explicitly piped input, and selected context (standard by default): {}.", endpoint_summary
     )
     .map_err(|e| format!("render first-use notice: {}", e))?;
     writeln!(
@@ -41,6 +63,8 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
         "  Python 3 path/version support may be sent for program routing. Use --local-input to keep piped content local to the generated program."
     )
     .map_err(|e| format!("render first-use notice: {}", e))?;
+    writeln!(stderr,"  If you explicitly request a program repair, the accepted proposal's provider receives the prior model-authored proposal plus a stable contract code or coarse runtime outcome; local-only bytes, resolved paths, credentials, and child output stay local.")
+        .map_err(|e| format!("render first-use notice: {}",e))?;
     writeln!(stderr,"  Optional shell integration adds only invocation-time parent cwd and previous status. One-entry shell history is off by default and always previewed before sending.")
         .map_err(|e| format!("render first-use notice: {}",e))?;
     writeln!(
@@ -66,7 +90,7 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
         .map_err(|e| format!("flush first-use notice: {}", e))?;
 
     dirs::ensure_private_dir(&config.paths.data_dir)?;
-    write_private_atomic(&marker, NOTICE_REVISION.to_string().as_bytes())?;
+    write_private_atomic(&marker, marker_value(config).as_bytes())?;
     Ok(RENDERED_MARKER)
 }
 
@@ -108,7 +132,16 @@ mod tests {
         assert_eq!(ensure(&config, true).unwrap(), RENDERED_MARKER);
         assert_eq!(
             std::fs::read_to_string(root.path().join("data/notice-revision")).unwrap(),
-            NOTICE_REVISION.to_string()
+            marker_value(&config)
+        );
+        assert!(is_current(&config));
+        config.selection.alternate = Some(crate::config::ModelCandidate {
+            provider: crate::provider::ProviderId::Cerebras,
+            model: "gpt-oss-120b".into(),
+        });
+        assert!(
+            !is_current(&config),
+            "adding a disclosed endpoint must require a new notice"
         );
     }
 }

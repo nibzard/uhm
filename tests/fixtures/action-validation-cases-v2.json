@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "action_schema_version": 4,
+  "cases": [
+    {
+      "id": "valid-shell",
+      "envelope": {"tool": "run_shell", "arguments": {"command": "git status --short", "summary": "Show status", "assumptions": [], "effects": ["read_local"], "requirements": ["git"], "stdin_mode": "none"}},
+      "valid": true,
+      "normalized": {"kind": "shell", "command": "git status --short", "metadata": {"summary": "Show status", "assumptions": [], "effects": ["read_local"], "requirements": ["git"]}, "stdin_mode": "none"}
+    },
+    {
+      "id": "valid-helper-program",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "contract": "uhm_helper_v1", "source": "from uhm_runtime import stdin_path\nprint(stdin_path.read_text())", "summary": "Read piped input", "assumptions": [], "stdin_mode": "local_path", "files": [], "effects": ["read_local"]}},
+      "valid": true,
+      "normalized": {"kind": "program", "program": {"runtime": "python3", "contract": "uhm_helper_v1", "source": "from uhm_runtime import stdin_path\nprint(stdin_path.read_text())", "summary": "Read piped input", "assumptions": [], "stdin_mode": "local_path", "files": [], "effects": ["read_local"]}}
+    },
+    {
+      "id": "legacy-live-shape-rejected",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "source": "print('ok')", "summary": "Print", "assumptions": [], "inputs": [], "outputs": [], "effects": [], "result_mode": "stdout"}},
+      "valid": false,
+      "rejection_code": "unknown_field"
+    },
+    {
+      "id": "missing-contract",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "source": "print('ok')", "summary": "Print", "assumptions": [], "stdin_mode": "none", "files": [], "effects": []}},
+      "valid": false,
+      "rejection_code": "missing_field"
+    },
+    {
+      "id": "wrong-contract",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "contract": "manifest_env_v1", "source": "print('ok')", "summary": "Print", "assumptions": [], "stdin_mode": "none", "files": [], "effects": []}},
+      "valid": false,
+      "rejection_code": "invalid_program_contract"
+    },
+    {
+      "id": "invalid-resource-id",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "contract": "uhm_helper_v1", "source": "print('ok')", "summary": "Print", "assumptions": [], "stdin_mode": "none", "files": [{"id": "Bad-ID", "path": "a.txt", "access": "read_only"}], "effects": ["read_local"]}},
+      "valid": false,
+      "rejection_code": "invalid_resource"
+    },
+    {
+      "id": "invalid-resource-access",
+      "envelope": {"tool": "run_program", "arguments": {"runtime": "python3", "contract": "uhm_helper_v1", "source": "print('ok')", "summary": "Print", "assumptions": [], "stdin_mode": "none", "files": [{"id": "source", "path": "a.txt", "access": "execute"}], "effects": ["read_local"]}},
+      "valid": false,
+      "rejection_code": "invalid_resource_access"
+    },
+    {
+      "id": "unknown-field",
+      "envelope": {"tool": "return_answer", "arguments": {"text": "yes", "extra": true}},
+      "valid": false,
+      "rejection_code": "unknown_field"
+    },
+    {
+      "id": "invalid-requirement",
+      "envelope": {"tool": "run_shell", "arguments": {"command": "ls", "summary": "List", "assumptions": [], "effects": ["read_local"], "requirements": ["/bin/ls"], "stdin_mode": "none"}},
+      "valid": false,
+      "rejection_code": "invalid_requirement"
+    }
+  ]
+}

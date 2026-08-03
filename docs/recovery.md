@@ -6,6 +6,8 @@
 - `recover` asks OpenAI for one reviewed, best-effort inverse based on a bounded retained receipt. Running that proposal does not prove that the original state was recovered.
 - Everything else is reported as unavailable. History is evidence, not a universal rollback mechanism.
 
+For schema-v4 generated programs, any `write_only` or `read_write` helper resource enters this same managed staging and recovery path. The model sees only the helper's private staging path, never the logical destination through its writable capability; `read_write` receives a separate validated current-read path. The one-use resolved launcher contract is deleted before model source runs and is never recovery evidence.
+
 ## Enable snapshot capture
 
 Recovery is off by default and has consent separate from metadata history because a preimage duplicates file content:

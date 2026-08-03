@@ -29,7 +29,7 @@ export function validateEvent(value) {
   const keys = Object.keys(value).sort();
   const expected = value.v === 1 ? KEYS_V1 : value.v === 2 ? KEYS_V2 : [];
   if (keys.length !== expected.length || keys.some((key, index) => key !== [...expected].sort()[index])) return false;
-  if ((value.v === 1 && ![1, 2].includes(value.notice_revision)) || (value.v === 2 && value.notice_revision !== 3) || typeof value.interactive !== "boolean") return false;
+  if ((value.v === 1 && ![1, 2].includes(value.notice_revision)) || (value.v === 2 && ![3, 4, 5].includes(value.notice_revision)) || typeof value.interactive !== "boolean") return false;
   if (typeof value.release !== "string" || !/^\d+\.\d+$/.test(value.release)) return false;
   return Object.entries(ENUMS).filter(([key]) => key !== "parent_action" || value.v === 2).every(([key, allowed]) =>
     typeof value[key] === "string" && allowed.includes(value[key]),

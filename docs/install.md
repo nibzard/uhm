@@ -16,19 +16,19 @@ Each release publishes four native archives with SHA-256 checksums (`SHA256SUMS`
 
 | Archive | Target |
 |---|---|
-| `uhm-v0.2.2-x86_64-unknown-linux-musl.tar.gz` | Linux, Intel/AMD 64-bit |
-| `uhm-v0.2.2-aarch64-unknown-linux-musl.tar.gz` | Linux, ARM 64-bit |
-| `uhm-v0.2.2-x86_64-apple-darwin.tar.gz` | macOS, Intel |
-| `uhm-v0.2.2-aarch64-apple-darwin.tar.gz` | macOS, Apple Silicon |
+| `uhm-v0.3.0-x86_64-unknown-linux-musl.tar.gz` | Linux, Intel/AMD 64-bit |
+| `uhm-v0.3.0-aarch64-unknown-linux-musl.tar.gz` | Linux, ARM 64-bit |
+| `uhm-v0.3.0-x86_64-apple-darwin.tar.gz` | macOS, Intel |
+| `uhm-v0.3.0-aarch64-apple-darwin.tar.gz` | macOS, Apple Silicon |
 
-Download from the [v0.2.2 release page](https://github.com/nibzard/uhm/releases/tag/v0.2.2), then verify and extract:
+Download from the [v0.3.0 release page](https://github.com/nibzard/uhm/releases/tag/v0.3.0), then verify and extract:
 
 ```sh
 # choose the archive that matches your machine
-archive=uhm-v0.2.2-x86_64-unknown-linux-musl.tar.gz
+archive=uhm-v0.3.0-x86_64-unknown-linux-musl.tar.gz
 
-curl -LO "https://github.com/nibzard/uhm/releases/download/v0.2.2/${archive}"
-curl -LO "https://github.com/nibzard/uhm/releases/download/v0.2.2/SHA256SUMS"
+curl -LO "https://github.com/nibzard/uhm/releases/download/v0.3.0/${archive}"
+curl -LO "https://github.com/nibzard/uhm/releases/download/v0.3.0/SHA256SUMS"
 grep -F "  ${archive}" SHA256SUMS > "${archive}.sha256"
 if [ "$(uname -s)" = Darwin ]; then
   shasum -a 256 -c "${archive}.sha256"
@@ -37,7 +37,7 @@ else
 fi
 tar -xzf "${archive}"
 mkdir -p "${HOME}/.local/bin"
-install -m 0755 uhm-v0.2.2-*/uhm "${HOME}/.local/bin/uhm"
+install -m 0755 uhm-v0.3.0-*/uhm "${HOME}/.local/bin/uhm"
 ```
 
 The checksum command prints `<archive>: OK` when the download matches the manifest.
@@ -67,17 +67,17 @@ fish_add_path "${HOME}/.local/bin"
 With Rust 1.82 or newer:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.2.2 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.0 uhm-cli
 ```
 
 This builds the `uhm-cli` crate and installs the `uhm` binary into `~/.cargo/bin`, which `cargo` already manages on your `PATH`. `--locked` uses the exact pinned dependencies from `Cargo.lock`.
 
-The crate passes `cargo publish --dry-run`, but publishing to crates.io is deferred for v0.2.2; GitHub binaries and `cargo install --git` are the supported channels.
+The crate passes `cargo publish --dry-run`, but publishing to crates.io is deferred for v0.3.0; GitHub binaries and `cargo install --git` are the supported channels.
 
 ## Verify
 
 ```sh
-uhm --version        # uhm 0.2.2
+uhm --version        # uhm 0.3.0
 uhm doctor           # local configuration and terminal checks
 uhm doctor network   # confirm OpenAI is reachable and the key works
 ```

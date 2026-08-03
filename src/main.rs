@@ -4,20 +4,26 @@ mod action;
 mod api;
 mod args;
 mod cache;
+mod capabilities;
 mod clock;
 mod command;
 mod config;
 mod context;
+#[allow(dead_code)]
+mod contract;
 mod dirs;
 mod doctor;
 mod first_run;
 mod history;
 mod http;
 mod input;
+mod model_selection;
 mod outcome;
 mod parent_shell;
+#[allow(dead_code)]
 mod program;
 mod prompt;
+mod provider;
 mod recovery;
 mod render;
 mod runtime;
@@ -77,7 +83,7 @@ fn run(argv: Vec<String>) -> i32 {
             ),
         };
     }
-    let config = match config::load(args.model.as_deref()) {
+    let config = match config::load(args.provider.as_deref(), args.model.as_deref()) {
         Ok(v) => v,
         Err(e) => return app_error(&args, outcome::CONFIG, "configuration_error", &e),
     };
@@ -348,7 +354,33 @@ fn run(argv: Vec<String>) -> i32 {
         .aliases
         .iter()
         .any(|(name, _)| name.trim() == request.trim());
-    let key = match secret::resolve_key() {
+    let route = match args.subcommand.as_deref() {
+        Some("run") => "run",
+        Some("ask") => "ask",
+        Some("explain") => "explain",
+        Some("repair") => "repair",
+        Some("recover") => "recover",
+        _ => "auto",
+    };
+    let request_class = capabilities::RequestClass {
+        route: route.into(),
+        stdin_present: stdin.is_piped(),
+        local_input: args.local_input,
+        input_format: args.input_format.clone(),
+        follow_up: if matches!(route, "repair" | "recover") {
+            route.into()
+        } else {
+            "none".into()
+        },
+        runtime_available: runtime::inventory().available,
+    };
+    let selection = match model_selection::resolve(&config, &request_class) {
+        Ok(value) => value,
+        Err(error) => {
+            return app_error(&args, outcome::UNAVAILABLE, "selection_unavailable", &error)
+        }
+    };
+    let key = match secret::resolve_key(selection.initial.provider) {
         Ok(v) => v,
         Err(_) if alias || preset_action.is_some() => String::new(),
         Err(e) => return app_error(&args, outcome::CONFIG, "credential_error", &e),
@@ -357,20 +389,28 @@ fn run(argv: Vec<String>) -> i32 {
         eprintln!("uhm: using key {}", secret::mask(&key));
     }
     let api = api::ApiConfig {
-        model: config.model.clone(),
+        provider: selection.initial.provider,
+        model: selection.initial.model.clone(),
         key,
         max_tokens: config.max_completion_tokens,
         reasoning_effort: config.reasoning_effort.clone(),
         request_max_bytes: config.request_max_bytes,
         response_max_bytes: config.response_max_bytes,
-    };
-    let route = match args.subcommand.as_deref() {
-        Some("run") => "run",
-        Some("ask") => "ask",
-        Some("explain") => "explain",
-        Some("repair") => "repair",
-        Some("recover") => "recover",
-        _ => "auto",
+        alternate: selection
+            .alternate
+            .as_ref()
+            .map(|alternate| api::ApiCandidate {
+                provider: alternate.provider,
+                model: alternate.model.clone(),
+                key: secret::resolve_key(alternate.provider).ok(),
+                resolved_fingerprint: selection.alternate_fingerprint.clone(),
+                resolved_model: selection.alternate_resolved_model.clone(),
+            }),
+        fallback_on: selection.fallback_on.clone(),
+        selection_mode: selection.mode,
+        permitted_action_types: selection.permitted_action_types.clone(),
+        resolved_fingerprint: selection.resolved_fingerprint.clone(),
+        resolved_model: selection.resolved_model.clone(),
     };
     let mut interaction = telemetry::Interaction::new(
         if route == "recover" { "run" } else { route },
@@ -1215,7 +1255,8 @@ fn management(
                 .prompt
                 .split_whitespace()
                 .any(|value| value == "network");
-            let report = doctor::gather(config, network, telemetry_policy);
+            let all_providers = args.prompt.split_whitespace().any(|value| value == "all");
+            let report = doctor::gather(config, network, all_providers, telemetry_policy);
             let code = if doctor::healthy(&report) {
                 0
             } else {
@@ -1288,5 +1329,5 @@ fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     code
 }
 fn print_help() {
-    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]\n  uhm recover <run-id|last> [guidance]\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [network]\n\nExecution:\n  ordinary actions run and return their result\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     proceed after warnings without confirmation\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]\n  uhm recover <run-id|last> [guidance]\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network]\n\nExecution:\n  ordinary actions run and return their result\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     proceed after warnings without confirmation\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
 }

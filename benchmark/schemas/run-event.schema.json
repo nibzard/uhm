@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uhm.invalid/schemas/run-event-v1.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["event_version", "type", "run_fingerprint", "sequence", "payload"],
+  "properties": {
+    "event_version": {"const": 1},
+    "type": {"enum": ["run_started", "candidate_completed", "judgment_completed", "calibration_completed", "summary_computed", "run_completed"]},
+    "run_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "sequence": {"type": "integer", "minimum": 0},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {"if": {"properties": {"type": {"const": "run_started"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/runStarted"}}}},
+    {"if": {"properties": {"type": {"enum": ["candidate_completed", "judgment_completed"]}}}, "then": {"properties": {"payload": {"type": "object", "additionalProperties": false, "required": ["record"], "properties": {"record": {"$ref": "#/$defs/record"}}}}}},
+    {"if": {"properties": {"type": {"const": "calibration_completed"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/calibration"}}}},
+    {"if": {"properties": {"type": {"const": "summary_computed"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/summary"}}}},
+    {"if": {"properties": {"type": {"const": "run_completed"}}}, "then": {"properties": {"payload": {"type": "object", "additionalProperties": false, "required": ["completed_utc", "record_count"], "properties": {"completed_utc": {"type": "string"}, "record_count": {"type": "integer", "minimum": 0}}}}}}
+  ],
+  "$defs": {
+    "runStarted": {"type": "object", "additionalProperties": false, "required": ["started_utc", "fingerprint_projection", "corpus", "task_count", "worker_manifest", "git", "host", "docker_version"], "properties": {"started_utc": {"type": "string"}, "fingerprint_projection": {"type": "object"}, "corpus": {"type": "string"}, "task_count": {"type": "integer"}, "worker_manifest": {"type": ["object", "null"]}, "git": {"type": "object"}, "host": {"type": "object"}, "docker_version": {"type": ["string", "null"]}}},
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "task_id", "family_id", "variant_id", "stratum", "trial", "candidate", "transport_success", "wire_valid", "client_valid", "preflight_valid", "route_allowed", "route_preferred", "execution_attempted", "oracle_pass", "completed_outcome", "execution", "action", "timing", "error", "judgments"],
+      "properties": {"type": {"const": "result"}, "task_id": {"type": "string"}, "family_id": {"type": "string"}, "variant_id": {"type": "string"}, "stratum": {"enum": ["executable", "semantic"]}, "trial": {"type": "integer", "minimum": 1}, "candidate": {"type": "object"}, "transport_success": {"type": "boolean"}, "wire_valid": {"type": "boolean"}, "client_valid": {"type": "boolean"}, "preflight_valid": {"type": "boolean"}, "program_diagnostics": {"type": "array"}, "program_warning_count": {"type": "integer", "minimum": 0}, "runtime_available": {"type": "boolean"}, "route_allowed": {"type": "boolean"}, "route_preferred": {"type": "boolean"}, "execution_attempted": {"type": "boolean"}, "execution_started": {"type": "boolean"}, "artifact_commit_success": {"type": ["boolean", "null"]}, "oracle_pass": {"type": ["boolean", "null"]}, "completed_outcome": {"type": "boolean"}, "first_shot_completed_outcome": {"type": "boolean"}, "repair_eligible": {"type": "boolean"}, "repair_attempted": {"type": "boolean"}, "repair_action": {}, "repair_diagnostics": {"type": "array"}, "repair_execution": {}, "repair_completed_outcome": {"type": "boolean"}, "cumulative_if_approved": {"type": "boolean"}, "model_call_count": {"type": "integer", "minimum": 1, "maximum": 2}, "repair_added_latency_ms": {"type": "integer", "minimum": 0}, "repair_candidate_tokens": {"type": "object"}, "semantic_acceptable": {"type": "boolean"}, "execution": {}, "action": {}, "timing": {}, "error": {"type": ["string", "null"]}, "judgments": {"type": "array"}, "synthetic_outcome": {"type": "string"}}
+    },
+    "calibration": {"type": "object", "additionalProperties": false, "required": ["task_id", "candidate", "judge", "primary_verdict", "repeat_verdict", "agreement", "repeat"], "properties": {"task_id": {"type": "string"}, "candidate": {"type": "object"}, "judge": {"type": "object"}, "primary_verdict": {"type": ["string", "null"]}, "repeat_verdict": {"type": ["string", "null"]}, "agreement": {"type": "boolean"}, "repeat": {"type": "object"}}},
+    "summary": {"type": "object", "additionalProperties": false, "required": ["models", "comparisons", "selection", "judge_calibration", "calibration_records", "independent_audit", "task_count", "family_count", "product_usage_weighted_completion"], "properties": {"models": {"type": "array"}, "comparisons": {"type": "array"}, "selection": {"type": "object"}, "judge_calibration": {"type": "array"}, "calibration_records": {"type": "array"}, "independent_audit": {"type": "object"}, "task_count": {"type": "integer"}, "family_count": {"type": "integer"}, "product_usage_weighted_completion": {"type": "null"}, "qualification": {"type": ["object", "null"]}, "qualification_commitment": {"type": ["object", "null"]}}}
+  }
+}

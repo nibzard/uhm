@@ -6,7 +6,14 @@ use std::io::Read;
 use std::time::Duration;
 
 pub struct Response {
+    pub status: u16,
     pub reader: Box<dyn Read + Send>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpError {
+    pub kind: crate::provider::ProviderErrorKind,
+    pub message: String,
 }
 
 /// Shared short-request agent policy. Every outbound HTTP caller goes through
@@ -18,9 +25,12 @@ pub fn agent(timeout: Duration) -> ureq::Agent {
         .build()
 }
 
-/// POST `body` (JSON) with bearer auth. Returns a streaming reader on 2xx,
-/// or an error message (with the server's message if we can parse it) on 4xx/5xx.
-pub fn post_stream(url: &str, auth: &str, body: &str) -> Result<Response, String> {
+pub fn post_stream_typed(
+    url: &str,
+    auth: &str,
+    accept: &str,
+    body: &str,
+) -> Result<Response, HttpError> {
     static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
     let agent = AGENT.get_or_init(|| {
         ureq::AgentBuilder::new()
@@ -34,17 +44,37 @@ pub fn post_stream(url: &str, auth: &str, body: &str) -> Result<Response, String
         .post(url)
         .set("Authorization", auth)
         .set("Content-Type", "application/json")
-        .set("Accept", "text/event-stream")
+        .set("Accept", accept)
         .send_string(body);
     match res {
         Ok(resp) => Ok(Response {
+            status: resp.status(),
             reader: Box::new(resp.into_reader()),
         }),
         Err(ureq::Error::Status(code, resp)) => {
             let body_text = resp.into_string().unwrap_or_default();
-            Err(format_http_error(code, &body_text))
+            Err(HttpError {
+                kind: error_kind_for_status(code),
+                message: format_http_error(code, &body_text),
+            })
         }
-        Err(e) => Err(format!("request failed: {}", e)),
+        Err(ureq::Error::Transport(error)) => Err(HttpError {
+            kind: if error.to_string().to_ascii_lowercase().contains("timed out") {
+                crate::provider::ProviderErrorKind::Timeout
+            } else {
+                crate::provider::ProviderErrorKind::Transient
+            },
+            message: format!("request failed: {error}"),
+        }),
+    }
+}
+
+fn error_kind_for_status(status: u16) -> crate::provider::ProviderErrorKind {
+    match status {
+        401 | 403 => crate::provider::ProviderErrorKind::Auth,
+        429 => crate::provider::ProviderErrorKind::RateLimited,
+        500..=599 => crate::provider::ProviderErrorKind::Transient,
+        _ => crate::provider::ProviderErrorKind::RequestRejected,
     }
 }
 
@@ -68,4 +98,29 @@ fn format_http_error(status: u16, body: &str) -> String {
         status,
         crate::render::ansi::sanitize_untrusted(short.trim())
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_errors_are_typed_without_string_matching() {
+        assert_eq!(
+            error_kind_for_status(401),
+            crate::provider::ProviderErrorKind::Auth
+        );
+        assert_eq!(
+            error_kind_for_status(429),
+            crate::provider::ProviderErrorKind::RateLimited
+        );
+        assert_eq!(
+            error_kind_for_status(503),
+            crate::provider::ProviderErrorKind::Transient
+        );
+        assert_eq!(
+            error_kind_for_status(400),
+            crate::provider::ProviderErrorKind::RequestRejected
+        );
+    }
 }

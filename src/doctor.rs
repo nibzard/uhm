@@ -1,6 +1,6 @@
 //! Structured local diagnostics with an opt-in OpenAI reachability check.
 
-use crate::{api, config::Config, render::ansi, runtime, secret, telemetry};
+use crate::{config::Config, render::ansi, runtime, secret, telemetry};
 use serde::Serialize;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -20,7 +20,12 @@ pub struct Report {
     pub checks: Vec<Check>,
 }
 
-pub fn gather(config: &Config, network: bool, telemetry_policy: &telemetry::Policy) -> Report {
+pub fn gather(
+    config: &Config,
+    network: bool,
+    all_providers: bool,
+    telemetry_policy: &telemetry::Policy,
+) -> Report {
     let supported = matches!(std::env::consts::OS, "linux" | "macos")
         && matches!(std::env::consts::ARCH, "x86_64" | "aarch64");
     let host_hint = format!(
@@ -47,7 +52,6 @@ pub fn gather(config: &Config, network: bool, telemetry_policy: &telemetry::Poli
             ),
             next: None,
         },
-        key_check(),
         path_check("config", &config.paths.config_file, false),
         path_check("data", &config.paths.data_dir, true),
         path_check("cache", &config.paths.cache_dir, true),
@@ -79,19 +83,50 @@ pub fn gather(config: &Config, network: bool, telemetry_policy: &telemetry::Poli
         python_check(config.program.enabled),
         clipboard_check(),
     ];
-    if network {
-        checks.push(network_check());
+    let providers = if all_providers {
+        vec![
+            crate::provider::ProviderId::Openai,
+            crate::provider::ProviderId::Cerebras,
+        ]
     } else {
-        checks.push(Check {
-            name: "OpenAI network",
-            status: "skipped",
-            detail: api::ENDPOINT.into(),
-            next: Some(
-                "run `uhm doctor network` for an explicit reachability/authentication check".into(),
-            ),
-        });
+        vec![config.provider]
+    };
+    for provider in providers {
+        checks.push(key_check(provider));
+        checks.push(provider_capabilities(provider));
+        if network {
+            checks.push(network_check(provider));
+        } else {
+            checks.push(Check {
+                name: "provider network",
+                status: "skipped",
+                detail: format!("{} {}", provider, provider.adapter().endpoint()),
+                next: Some(
+                    "run `uhm doctor network` for an explicit reachability/authentication check"
+                        .into(),
+                ),
+            });
+        }
     }
     Report { supported, checks }
+}
+
+fn provider_capabilities(provider: crate::provider::ProviderId) -> Check {
+    let adapter = provider.adapter();
+    let capabilities = adapter.capabilities();
+    Check {
+        name: "provider adapter",
+        status: "ok",
+        detail: format!(
+            "{} · {} · stream={} · reasoning={} · strict-bounds={}",
+            provider,
+            adapter.endpoint(),
+            capabilities.streaming,
+            capabilities.reasoning_effort,
+            capabilities.strict_schema_bounds
+        ),
+        next: None,
+    }
 }
 
 fn python_check(enabled: bool) -> Check {
@@ -154,10 +189,11 @@ fn check(name: &'static str, ok: bool, detail: String, next: &str) -> Check {
     }
 }
 
-fn key_check() -> Check {
-    match secret::resolve_key() {
+fn key_check(provider: crate::provider::ProviderId) -> Check {
+    let variable = provider.adapter().credential_env();
+    match secret::resolve_key(provider) {
         Ok(_) => Check {
-            name: "API key",
+            name: "provider key",
             status: "ok",
             detail: "configured (value hidden)".into(),
             next: None,
@@ -167,11 +203,11 @@ fn key_check() -> Check {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "<data-dir>/uhm/secrets".into());
             Check {
-                name: "API key",
+                name: "provider key",
                 status: "missing",
-                detail: "OPENAI_API_KEY is not configured".into(),
+                detail: format!("{variable} is not configured"),
                 next: Some(format!(
-                    "set OPENAI_API_KEY, or write OPENAI_API_KEY=... to {} and chmod 600 it",
+                    "set {variable}, or write {variable}=... to {} and chmod 600 it",
                     path
                 )),
             }
@@ -263,47 +299,51 @@ fn executable(name: &str) -> bool {
         .any(|dir| dir.join(name).is_file())
 }
 
-fn network_check() -> Check {
-    let Ok(key) = secret::resolve_key() else {
+fn network_check(provider: crate::provider::ProviderId) -> Check {
+    let Ok(key) = secret::resolve_key(provider) else {
         return Check {
-            name: "OpenAI network",
+            name: "provider network",
             status: "blocked",
             detail: "API key missing".into(),
             next: Some("configure the key, then rerun `uhm doctor network`".into()),
         };
     };
     let agent = crate::http::agent(Duration::from_secs(3));
+    let models_endpoint = match provider {
+        crate::provider::ProviderId::Openai => "https://api.openai.com/v1/models",
+        crate::provider::ProviderId::Cerebras => "https://api.cerebras.ai/v1/models",
+    };
     match agent
-        .get("https://api.openai.com/v1/models")
+        .get(models_endpoint)
         .set("Authorization", &format!("Bearer {}", key))
         .call()
     {
         Ok(_) => Check {
-            name: "OpenAI network",
+            name: "provider network",
             status: "ok",
             detail: "TLS, reachability, and authentication succeeded".into(),
             next: None,
         },
         Err(ureq::Error::Status(401, _)) => Check {
-            name: "OpenAI network",
+            name: "provider network",
             status: "authentication",
-            detail: "OpenAI rejected the API key".into(),
+            detail: format!("{provider} rejected the API key"),
             next: Some("replace the key in the environment or private secrets file".into()),
         },
         Err(ureq::Error::Status(429, _)) => Check {
-            name: "OpenAI network",
+            name: "provider network",
             status: "rate_limit",
-            detail: "OpenAI returned HTTP 429".into(),
+            detail: format!("{provider} returned HTTP 429"),
             next: Some("check project quota/billing and retry later".into()),
         },
         Err(ureq::Error::Status(code, _)) => Check {
-            name: "OpenAI network",
+            name: "provider network",
             status: "api",
-            detail: format!("OpenAI returned HTTP {}", code),
-            next: Some("retry with --verbose or check https://status.openai.com".into()),
+            detail: format!("{provider} returned HTTP {code}"),
+            next: Some("retry with --verbose or check the provider status page".into()),
         },
         Err(ureq::Error::Transport(error)) => Check {
-            name: "OpenAI network",
+            name: "provider network",
             status: "network_tls",
             detail: format!("connection failed ({:?})", error.kind()),
             next: Some("check DNS, proxy, firewall, and TLS certificate settings".into()),
@@ -326,6 +366,7 @@ mod tests {
         let report = gather(
             &config,
             false,
+            false,
             &telemetry::Policy {
                 enabled: false,
                 reason: "test",
@@ -335,6 +376,29 @@ mod tests {
             .unwrap()
             .contains("doctor-secret-sentinel"));
         std::env::remove_var("OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn all_provider_mode_reports_both_fixed_adapters() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config::test(crate::dirs::Paths {
+            config_file: root.path().join("c"),
+            data_dir: root.path().join("d"),
+            cache_dir: root.path().join("x"),
+        });
+        let report = gather(
+            &config,
+            false,
+            true,
+            &telemetry::Policy {
+                enabled: false,
+                reason: "test",
+            },
+        );
+        let rendered = serde_json::to_string(&report).unwrap();
+        assert!(rendered.contains(crate::provider::openai::ENDPOINT));
+        assert!(rendered.contains(crate::provider::cerebras::ENDPOINT));
+        assert!(!rendered.contains("Bearer"));
     }
 
     fn check_status(name: &'static str, status: &'static str) -> Check {

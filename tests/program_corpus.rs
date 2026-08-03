@@ -40,6 +40,7 @@ fn versioned_program_routing_corpus_is_complete_and_content_safe() {
         "telemetry_event",
         "history.jsonl",
         "OPENAI_API_KEY",
+        "CEREBRAS_API_KEY",
         "/home/",
     ] {
         assert!(!raw.contains(forbidden));

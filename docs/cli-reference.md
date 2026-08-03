@@ -46,6 +46,8 @@ These may appear before or after a subcommand, up to the first intent word.
 
 `--review`, `--dry-run`, and `--force` are **pairwise mutually exclusive**. See the [behavior table](behavior-contract.md) for how they interact across TTY/non-TTY and route.
 
+Generated Python uses the `uhm_helper_v1` resource contract. Its process stdin is closed and its cwd is private; `--local-input` exposes piped bytes only when the proposal selects `stdin_mode=local_path`. A preflight contract error may offer one user-triggered complete replacement in an interactive terminal. That replacement shares the global second-model-call slot, never runs automatically in non-TTY or JSON mode, and leaves room for only one execution because the rejected proposal did not run.
+
 ## Commands
 
 ### Natural-language routes
@@ -136,7 +138,7 @@ Emit the optional wrapper that can apply one accepted typed parent-shell action 
 ### doctor — local and network checks
 
 ```
-uhm doctor [network]
+uhm doctor [all] [network]
 ```
 
 Local configuration and terminal checks. `network` performs an explicit OpenAI reachability and authentication check. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.
@@ -155,7 +157,10 @@ Equivalent to `uhm --help` and `uhm --version`.
 | Variable | Effect |
 |---|---|
 | `OPENAI_API_KEY` | API key (also readable from a `0600` secrets file) |
-| `OPENAI_MODEL` | Override the resolved model (below `--model`, above `config.yaml`) |
+| `CEREBRAS_API_KEY` | Cerebras API key (same private secrets-file support) |
+| `UHM_PROVIDER` | Override provider without inferring it from the model |
+| `UHM_MODEL` | Override model for the selected provider |
+| `OPENAI_MODEL` | Compatibility model alias only for OpenAI when `UHM_MODEL` is absent |
 | `UHM_TELEMETRY` | `off` disables telemetry |
 | `DO_NOT_TRACK` | `1` disables telemetry |
 | `UHM_PLAIN` | `1` selects cooked ASCII-safe output |

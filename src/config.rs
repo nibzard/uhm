@@ -4,6 +4,40 @@ use crate::dirs::{self, Paths};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use crate::provider::{ProviderErrorKind, ProviderId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionMode {
+    Fixed,
+    Evidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelCandidate {
+    pub provider: ProviderId,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SelectionConfig {
+    pub mode: SelectionMode,
+    pub alternate: Option<ModelCandidate>,
+    pub fallback_on: Vec<ProviderErrorKind>,
+}
+
+impl Default for SelectionConfig {
+    fn default() -> Self {
+        Self {
+            mode: SelectionMode::Fixed,
+            alternate: None,
+            fallback_on: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistoryDetail {
@@ -152,7 +186,9 @@ impl Default for ExecutionConfig {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Config {
+    pub provider: ProviderId,
     pub model: String,
+    pub selection: SelectionConfig,
     pub max_completion_tokens: u32,
     pub reasoning_effort: String,
     pub stream: bool,
@@ -180,7 +216,9 @@ pub struct Config {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
+    provider: Option<ProviderId>,
     model: Option<String>,
+    selection: Option<SelectionConfig>,
     max_completion_tokens: Option<u32>,
     reasoning_effort: Option<String>,
     stream: Option<bool>,
@@ -202,7 +240,9 @@ struct FileConfig {
 }
 
 const KEYS: &[&str] = &[
+    "provider",
     "model",
+    "selection",
     "max_completion_tokens",
     "reasoning_effort",
     "stream",
@@ -230,7 +270,9 @@ impl Config {
             sources.insert(*key, "default");
         }
         Self {
+            provider: ProviderId::Openai,
             model: "gpt-5.6-terra".into(),
+            selection: SelectionConfig::default(),
             max_completion_tokens: 8192,
             reasoning_effort: "low".into(),
             stream: true,
@@ -265,7 +307,49 @@ impl Config {
 
     pub fn show_lines(&self) -> Vec<(&'static str, String, &'static str)> {
         vec![
+            (
+                "provider",
+                self.provider.to_string(),
+                self.source("provider"),
+            ),
             ("model", self.model.clone(), self.source("model")),
+            (
+                "selection.mode",
+                match self.selection.mode {
+                    SelectionMode::Fixed => "fixed",
+                    SelectionMode::Evidence => "evidence",
+                }
+                .into(),
+                self.source("selection"),
+            ),
+            (
+                "selection.alternate",
+                self.selection
+                    .alternate
+                    .as_ref()
+                    .map(|value| format!("{}:{}", value.provider, value.model))
+                    .unwrap_or_else(|| "none".into()),
+                self.source("selection"),
+            ),
+            (
+                "selection.fallback_on",
+                if self.selection.fallback_on.is_empty() {
+                    "none".into()
+                } else {
+                    self.selection
+                        .fallback_on
+                        .iter()
+                        .map(|value| format!("{value:?}").to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                },
+                self.source("selection"),
+            ),
+            (
+                "qualification_status",
+                crate::model_selection::provider_status(self.provider, self.selection.mode).into(),
+                "checked manifest",
+            ),
             ("shell", self.shell.clone(), self.source("shell")),
             ("stream", self.stream.to_string(), self.source("stream")),
             (
@@ -392,7 +476,10 @@ impl Config {
     }
 }
 
-pub fn load(model_override: Option<&str>) -> Result<Config, String> {
+pub fn load(
+    provider_override: Option<&str>,
+    model_override: Option<&str>,
+) -> Result<Config, String> {
     let paths = dirs::resolve()?;
     let mut config = Config::defaults(paths.clone());
     match std::fs::read_to_string(&paths.config_file) {
@@ -410,16 +497,49 @@ pub fn load(model_override: Option<&str>) -> Result<Config, String> {
             ))
         }
     }
-    if let Some(value) = nonempty_env("OPENAI_MODEL")? {
-        config.model = value;
-        config.sources.insert("model", "OPENAI_MODEL");
+    apply_provider_environment(&mut config)?;
+    if let Some(provider) = provider_override {
+        config.provider = ProviderId::parse(provider)?;
+        config.sources.insert("provider", "--provider");
     }
+    apply_model_environment(&mut config)?;
     if let Some(model) = model_override {
         config.model = model.to_string();
         config.sources.insert("model", "--model");
     }
     validate(&config)?;
     Ok(config)
+}
+
+fn apply_provider_environment(config: &mut Config) -> Result<(), String> {
+    if let Some(value) = nonempty_env("UHM_PROVIDER")? {
+        config.provider = ProviderId::parse(&value)?;
+        config.sources.insert("provider", "UHM_PROVIDER");
+    }
+    Ok(())
+}
+
+fn apply_model_environment(config: &mut Config) -> Result<(), String> {
+    let uhm_model = nonempty_env("UHM_MODEL")?;
+    let openai_model = nonempty_env("OPENAI_MODEL")?;
+    apply_model_environment_values(config, uhm_model.as_deref(), openai_model.as_deref());
+    Ok(())
+}
+
+fn apply_model_environment_values(
+    config: &mut Config,
+    uhm_model: Option<&str>,
+    openai_model: Option<&str>,
+) {
+    if let Some(value) = uhm_model {
+        config.model = value.into();
+        config.sources.insert("model", "UHM_MODEL");
+    } else if config.provider == ProviderId::Openai {
+        if let Some(value) = openai_model {
+            config.model = value.into();
+            config.sources.insert("model", "OPENAI_MODEL");
+        }
+    }
 }
 
 fn nonempty_env(name: &str) -> Result<Option<String>, String> {
@@ -440,7 +560,9 @@ macro_rules! apply {
     };
 }
 fn apply_file(config: &mut Config, file: FileConfig) {
+    apply!(config, file, provider);
     apply!(config, file, model);
+    apply!(config, file, selection);
     apply!(config, file, max_completion_tokens);
     apply!(config, file, reasoning_effort);
     apply!(config, file, stream);
@@ -467,6 +589,29 @@ fn apply_file(config: &mut Config, file: FileConfig) {
 fn validate(c: &Config) -> Result<(), String> {
     if c.model.trim().is_empty() {
         return Err("config model must not be empty".into());
+    }
+    if let Some(alternate) = &c.selection.alternate {
+        if alternate.model.trim().is_empty() {
+            return Err("config selection.alternate.model must not be empty".into());
+        }
+        if alternate.provider == c.provider && alternate.model == c.model {
+            return Err("config selection alternate must differ from the primary".into());
+        }
+    }
+    if c.selection.alternate.is_none() && !c.selection.fallback_on.is_empty() {
+        return Err("config fallback_on requires selection.alternate".into());
+    }
+    if c.selection.fallback_on.iter().any(|kind| {
+        !matches!(
+            kind,
+            ProviderErrorKind::RateLimited
+                | ProviderErrorKind::Transient
+                | ProviderErrorKind::Timeout
+                | ProviderErrorKind::Incomplete
+                | ProviderErrorKind::Malformed
+        )
+    }) {
+        return Err("config fallback_on contains a disallowed trigger".into());
     }
     if !(1..=128_000).contains(&c.max_completion_tokens) {
         return Err("config max_completion_tokens must be between 1 and 128000".into());
@@ -571,6 +716,8 @@ mod tests {
     #[test]
     fn defaults_are_bounded_and_private_by_policy() {
         let c = Config::defaults(paths());
+        assert_eq!(c.provider, ProviderId::Openai);
+        assert_eq!(c.selection.mode, SelectionMode::Fixed);
         assert_eq!(c.context_mode, "standard");
         assert!(c.history.enabled);
         assert!(c.telemetry.enabled);
@@ -580,5 +727,43 @@ mod tests {
     #[test]
     fn rejects_removed_provider_base_url() {
         assert!(serde_yaml_ng::from_str::<FileConfig>("base_url: http://example.test").is_err());
+        assert!(serde_yaml_ng::from_str::<FileConfig>("api_key: secret").is_err());
+    }
+
+    #[test]
+    fn provider_configuration_is_strict_and_does_not_infer_from_model() {
+        let file: FileConfig = serde_yaml_ng::from_str(
+            "provider: cerebras\nmodel: gpt-5.6-terra\nselection:\n  mode: fixed\n  alternate: null\n  fallback_on: []\n",
+        )
+        .unwrap();
+        let mut config = Config::defaults(paths());
+        apply_file(&mut config, file);
+        validate(&config).unwrap();
+        assert_eq!(config.provider, ProviderId::Cerebras);
+        assert_eq!(config.model, "gpt-5.6-terra");
+
+        let invalid: FileConfig = serde_yaml_ng::from_str(
+            "selection:\n  mode: fixed\n  alternate: null\n  fallback_on: [auth]\n",
+        )
+        .unwrap();
+        let mut config = Config::defaults(paths());
+        apply_file(&mut config, invalid);
+        assert!(validate(&config).is_err());
+    }
+
+    #[test]
+    fn provider_scopes_legacy_alias_and_uhm_model_wins() {
+        let mut openai = Config::defaults(paths());
+        apply_model_environment_values(&mut openai, None, Some("legacy"));
+        assert_eq!(openai.model, "legacy");
+        assert_eq!(openai.source("model"), "OPENAI_MODEL");
+
+        let mut cerebras = Config::defaults(paths());
+        cerebras.provider = ProviderId::Cerebras;
+        apply_model_environment_values(&mut cerebras, None, Some("must-not-cross"));
+        assert_eq!(cerebras.model, "gpt-5.6-terra");
+        apply_model_environment_values(&mut cerebras, Some("explicit-env"), Some("legacy"));
+        assert_eq!(cerebras.model, "explicit-env");
+        assert_eq!(cerebras.source("model"), "UHM_MODEL");
     }
 }

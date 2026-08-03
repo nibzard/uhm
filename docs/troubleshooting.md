@@ -1,10 +1,12 @@
 # Troubleshooting
 
-Start with `uhm doctor`. It checks local configuration and terminal capability, prints the resolved private secrets path, and reports whether the Python runtime is available. Add `network` for a separate OpenAI reachability and authentication check:
+Start with `uhm doctor`. It checks the selected provider, local configuration, terminal capability, private secrets path, and Python runtime. Add `network` for an explicit reachability/authentication check, or `all` to inspect both built-in adapters:
 
 ```sh
 uhm doctor
 uhm doctor network
+uhm doctor all
+uhm doctor all network
 ```
 
 ## Install and PATH
@@ -27,7 +29,7 @@ Never clear quarantine for a file whose checksum did not match.
 
 ## API key and authentication
 
-`uhm` reads `OPENAI_API_KEY` from the environment first, then from a private `0600` secrets file whose path `uhm doctor` prints. If the key is missing or rejected:
+`uhm` reads the selected provider's environment variable first (`OPENAI_API_KEY` or `CEREBRAS_API_KEY`), then the matching assignment in a private `0600` secrets file whose path `uhm doctor` prints. If the key is missing or rejected:
 
 ```sh
 export OPENAI_API_KEY="sk-..."
@@ -42,8 +44,10 @@ Exit code **13** means a configuration or credentials problem.
 
 Exit code **10** covers model and API failures: rate limits, server errors, bad responses, or a model name your account cannot use.
 
-- Check the model. The default is set in config; `--model` overrides one invocation; `OPENAI_MODEL` overrides config for the model only. See [Configuration](configuration.md).
+- Check provider and model together. `--provider` and `--model` override them independently; model names never imply a provider. `OPENAI_MODEL` is ignored for Cerebras. See [Configuration](configuration.md).
 - A key that authenticates but lacks access to the selected model still fails here.
+- If evidence mode reports unavailable, no exact current reviewed qualification exists. Choose an explicit fixed provider/model or update the checked-in evidence through the qualification workflow.
+- A configured fallback happens only for its typed allowlist and uses the second/final model call. A later clarification or repair is then intentionally unavailable.
 
 ## Nothing ran (exit 11)
 

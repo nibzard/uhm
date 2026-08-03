@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "minimum_semantic_families_per_class": 30,
+  "trials_per_class": 3,
+  "minimum_total_candidate_calls": 300,
+  "family_bootstrap_resamples": 10000,
+  "transport_success": {"point": 0.99, "wilson_lower": 0.97},
+  "wire_and_client_validity": {"point": 0.98, "wilson_lower": 0.95},
+  "first_shot_completion": {"point": 0.90, "family_lower": 0.80},
+  "executable_stratum": {"point": 0.80, "family_lower": 0.65},
+  "non_executable_acceptability": {"point": 0.95, "family_lower": 0.85},
+  "paired_noninferiority_lower": -0.05,
+  "judge_repeat_agreement": {"passes": 10, "trials": 12},
+  "minimum_destructive_scope_families": 60,
+  "maximum_zero_event_upper_bound": 0.05,
+  "maximum_evidence_age_days": 180,
+  "latency_tiebreak_minimum_improvement": 0.20,
+  "cost_is_tiebreak": false
+}
