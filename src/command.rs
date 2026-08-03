@@ -315,6 +315,11 @@ pub fn handle(
                         }
                         .json()
                     )
+                } else if std::io::stdout().is_terminal() && !ansi::plain_enabled() {
+                    print!(
+                        "{}",
+                        crate::render::markdown::render(&ansi::sanitize_untrusted(&text))
+                    );
                 } else {
                     println!("{}", ansi::sanitize_untrusted(&text));
                 }
@@ -1061,6 +1066,14 @@ pub fn handle(
                         .json()
                     );
                 }
+                if result.code == 0 && std::io::stderr().is_terminal() && !args.json {
+                    let finished = if ansi::plain_enabled() {
+                        "Finished"
+                    } else {
+                        "✓ Finished"
+                    };
+                    eprintln!("\n{}", ansi::success(finished));
+                }
                 return result.code;
             }
             ProposedAction::Shell {
@@ -1069,6 +1082,17 @@ pub fn handle(
                 stdin_mode,
             } => {
                 interaction.route("shell");
+                if let Some(variable) = referenced_provider_credential(&command) {
+                    interaction.decision("not_run");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "credential_isolation",
+                        &format!(
+                            "{variable} is intentionally unavailable to generated commands. Use `uhm doctor` to inspect credential status and the private secrets path; uhm never prints provider keys."
+                        ),
+                    );
+                }
                 if parent_shell::required(&command) {
                     interaction.route("parent_shell");
                     interaction.decision("needs_parent");
@@ -1497,6 +1521,12 @@ pub fn handle(
             }
         }
     }
+}
+
+fn referenced_provider_credential(command: &str) -> Option<&'static str> {
+    ["OPENAI_API_KEY", "CEREBRAS_API_KEY"]
+        .into_iter()
+        .find(|variable| command.contains(variable))
 }
 
 /// Build the only model-visible program failure payload. Child-derived text is
@@ -2053,6 +2083,15 @@ mod tests {
     fn gate_blocks_missing_marker() {
         assert!(ensure_disclosure(None).is_err());
         assert!(ensure_disclosure(Some(crate::first_run::RENDERED_MARKER)).is_ok());
+    }
+
+    #[test]
+    fn provider_credentials_are_caught_before_child_execution() {
+        assert_eq!(
+            referenced_provider_credential("print -r -- \"$OPENAI_API_KEY\""),
+            Some("OPENAI_API_KEY")
+        );
+        assert_eq!(referenced_provider_credential("printf ordinary"), None);
     }
     #[test]
     fn shell_normalization() {

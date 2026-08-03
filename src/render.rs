@@ -6,4 +6,5 @@ pub mod capability;
 pub mod card;
 pub mod highlight;
 pub mod layout;
+pub mod markdown;
 pub mod spinner;

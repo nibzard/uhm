@@ -245,7 +245,7 @@ pub enum ProposedAction {
 }
 
 impl ProposedAction {
-    pub fn validate(self) -> Result<Self, String> {
+    pub fn validate(mut self) -> Result<Self, String> {
         const MAX_COMMAND: usize = 32 * 1024;
         const MAX_TEXT: usize = 64 * 1024;
         const MAX_ITEMS: usize = 32;
@@ -268,7 +268,7 @@ impl ProposedAction {
             }
             Ok(())
         }
-        fn metadata(value: &ProposalMetadata) -> Result<(), String> {
+        fn metadata(value: &mut ProposalMetadata) -> Result<(), String> {
             text(&value.summary, "summary", MAX_ITEM)?;
             for (label, items) in [
                 ("assumptions", &value.assumptions),
@@ -284,6 +284,9 @@ impl ProposedAction {
             if value.effects.len() > MAX_ITEMS {
                 return Err("effects contains too many items".into());
             }
+            value.requirements.retain(|requirement| {
+                !is_builtin_label(requirement) && !is_shell_requirement(requirement)
+            });
             for requirement in &value.requirements {
                 if requirement.contains('/')
                     || requirement.chars().any(char::is_whitespace)
@@ -294,6 +297,26 @@ impl ProposedAction {
             }
             Ok(())
         }
+        fn is_builtin_label(value: &str) -> bool {
+            let Some((shell, name)) = value.split_once(" builtin: ") else {
+                return false;
+            };
+            matches!(
+                shell,
+                "sh" | "bash" | "zsh" | "fish" | "pwsh" | "powershell"
+            ) && !name.is_empty()
+                && !name.starts_with('-')
+                && !name.contains('/')
+                && !name.chars().any(char::is_whitespace)
+        }
+        fn is_shell_requirement(value: &str) -> bool {
+            std::path::Path::new(value)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    matches!(name, "sh" | "bash" | "zsh" | "fish" | "pwsh" | "powershell")
+                })
+        }
         fn path(value: &str, label: &str) -> Result<(), String> {
             text(value, label, MAX_PATH)?;
             if value == "stdout" || value.contains('\0') {
@@ -302,7 +325,7 @@ impl ProposedAction {
             Ok(())
         }
 
-        match &self {
+        match &mut self {
             Self::Answer { text: value } => text(value, "answer", MAX_TEXT)?,
             Self::Clarification { question } => text(question, "clarification", MAX_ITEM)?,
             Self::Shell {
@@ -365,12 +388,31 @@ mod tests {
             command: "printf '\u{1b}[2J'".into(),
             metadata: ProposalMetadata {
                 summary: "print".into(),
-                requirements: vec!["/bin/printf".into()],
+                requirements: vec!["bin/printf".into()],
                 ..ProposalMetadata::default()
             },
             stdin_mode: StdinMode::None,
         };
         assert!(action.validate().is_err());
+    }
+
+    #[test]
+    fn normalizes_shell_builtins_and_absolute_requirements() {
+        let action = ProposedAction::Shell {
+            command: "print ok".into(),
+            metadata: ProposalMetadata {
+                summary: "print".into(),
+                requirements: vec!["zsh builtin: print".into(), "/bin/zsh".into()],
+                ..ProposalMetadata::default()
+            },
+            stdin_mode: StdinMode::None,
+        }
+        .validate()
+        .unwrap();
+        let ProposedAction::Shell { metadata, .. } = action else {
+            unreachable!()
+        };
+        assert!(metadata.requirements.is_empty());
     }
 
     #[test]

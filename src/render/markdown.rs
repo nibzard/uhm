@@ -2,7 +2,7 @@
 //! fenced code, bold, inline code, lists, blockquotes, and rules. Not a full
 //! CommonMark — just enough to make LLM answers read well in the terminal.
 
-use crate::render::{ansi, capability};
+use crate::render::{ansi, layout};
 
 pub fn render(s: &str) -> String {
     let mut out = String::new();
@@ -12,12 +12,22 @@ pub fn render(s: &str) -> String {
 
         if t.trim_start().starts_with("```") {
             in_fence = !in_fence;
-            out.push_str(&ansi::dim(t));
+            if in_fence {
+                let language = t.trim_start().trim_start_matches("```").trim();
+                let cap = if language.is_empty() {
+                    "  ┌─".to_string()
+                } else {
+                    format!("  ┌─ {language}")
+                };
+                out.push_str(&ansi::dim(&cap));
+            } else {
+                out.push_str(&ansi::dim("  └─"));
+            }
             out.push('\n');
             continue;
         }
         if in_fence {
-            out.push_str(&format!("{} {}", ansi::dim("│"), line));
+            out.push_str(&format!("{} {}", ansi::dim("  │"), line));
             out.push('\n');
             continue;
         }
@@ -29,14 +39,14 @@ pub fn render(s: &str) -> String {
         } else if let Some(h) = strip_heading(t, "### ") {
             out.push_str(&ansi::bold(h));
         } else if is_rule(t) {
-            let w = capability::cols().saturating_sub(2).max(10);
+            let w = layout::columns().saturating_sub(2).max(10);
             out.push_str(&ansi::dim(&"─".repeat(w)));
         } else if let Some(item) = strip_prefixes(t, &["- ", "* ", "+ "]) {
-            out.push_str(&format!("  {} {}", ansi::accent("•"), render_inline(item)));
+            out.push_str(&format!("  {} {}", ansi::info("•"), render_inline(item)));
         } else if let Some((num, rest)) = ordered_item(t) {
             out.push_str(&format!(
                 "  {} {}",
-                ansi::accent(&format!("{}.", num)),
+                ansi::info(&format!("{}.", num)),
                 render_inline(rest)
             ));
         } else if let Some(q) = t.strip_prefix("> ") {
@@ -86,20 +96,12 @@ fn ordered_item(t: &str) -> Option<(usize, &str)> {
     }
 }
 
-/// Inline: `` `code` ``, `**bold**`, and bare URLs (OSC 8 links). Italic is
-/// skipped (ambiguous with `*`).
+/// Inline: `` `code` `` and `**bold**`. Italic is skipped (ambiguous with `*`).
 fn render_inline(text: &str) -> String {
     let cs: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut i = 0;
     while i < cs.len() {
-        // bare http(s) URL → clickable OSC 8 link where supported
-        if let Some(end) = url_end(&cs, i) {
-            let url: String = cs[i..end].iter().collect();
-            out.push_str(&ansi::link(&url, &url));
-            i = end;
-            continue;
-        }
         if cs[i] == '`' {
             if let Some(end) = find_char(&cs, '`', i + 1) {
                 let code: String = cs[i + 1..end].iter().collect();
@@ -120,33 +122,6 @@ fn render_inline(text: &str) -> String {
         i += 1;
     }
     out
-}
-
-/// If `cs[i..]` begins with an `http://`/`https://` URL, return the index just
-/// past it; otherwise None. Trailing punctuation (`.` `,` `)` `;`) is excluded.
-fn url_end(cs: &[char], i: usize) -> Option<usize> {
-    let http = ['h', 't', 't', 'p', ':', '/', '/'];
-    let https = ['h', 't', 't', 'p', 's', ':', '/', '/'];
-    let scheme = if starts(cs, i, &https) {
-        https.len()
-    } else if starts(cs, i, &http) {
-        http.len()
-    } else {
-        return None;
-    };
-    let mut j = i + scheme;
-    while j < cs.len() && !cs[j].is_whitespace() {
-        j += 1;
-    }
-    // strip trailing punctuation that clearly isn't part of the URL
-    while j > i + scheme && matches!(cs[j - 1], '.' | ',' | ')' | ';' | ':' | '!' | '?') {
-        j -= 1;
-    }
-    Some(j)
-}
-
-fn starts(cs: &[char], i: usize, pat: &[char]) -> bool {
-    i + pat.len() <= cs.len() && cs[i..i + pat.len()] == *pat
 }
 
 fn find_char(cs: &[char], c: char, from: usize) -> Option<usize> {
@@ -174,31 +149,7 @@ mod tests {
         let r = render(md);
         assert!(r.contains("Title"));
         assert!(r.contains("echo hi"));
-    }
-
-    #[test]
-    fn url_end_extracts_and_strips_trailing_punct() {
-        let cs: Vec<char> = "see https://example.com/a?x=1). more".chars().collect();
-        let end = url_end(&cs, 4).unwrap();
-        let url: String = cs[4..end].iter().collect();
-        assert_eq!(url, "https://example.com/a?x=1"); // trailing ). stripped
-    }
-
-    #[test]
-    fn url_end_rejects_non_url() {
-        let cs: Vec<char> = "just text here".chars().collect();
-        assert!(url_end(&cs, 0).is_none());
-    }
-
-    #[test]
-    fn bare_url_becomes_osc8_link_when_supported() {
-        std::env::set_var("UHM_LINKS", "1");
-        let r = render_inline("docs at https://example.com/page end");
-        assert!(
-            r.contains("\x1b]8;;https://example.com/page\x1b\\"),
-            "expected OSC 8 sequence, got: {:?}",
-            r
-        );
-        std::env::remove_var("UHM_LINKS");
+        assert!(r.contains("┌─ sh"));
+        assert!(!r.contains("```"));
     }
 }

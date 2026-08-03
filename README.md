@@ -8,6 +8,12 @@ It is deliberately smaller than a coding agent. One intent goes in. One bounded 
 
 **Documentation site:** <https://nibzard.github.io/uhm/> — install, quickstart, CLI reference, configuration, and guides.
 
+## See it work
+
+[![A terminal demo of uhm turning natural-language requests into results](docs/demo/uhm-demo.svg)](https://nibzard.github.io/uhm/demo/)
+
+Watch the [interactive recording](https://nibzard.github.io/uhm/demo/) or use the [GIF fallback](docs/demo/uhm-demo.gif). The demo uses real OpenAI calls in a disposable repository; its [rebuild and privacy procedure](docs/demo/README.md) is committed with the assets.
+
 ## Install
 
 Download the archive for your machine from the [v0.3.0 release](https://github.com/nibzard/uhm/releases/tag/v0.3.0):
@@ -256,9 +262,3 @@ CI covers stable Rust on Linux and macOS, Rust 1.82, a static Linux build, the p
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), [AI_POLICY.md](AI_POLICY.md), and [SECURITY.md](SECURITY.md).
 
 MIT. See [LICENSE](LICENSE).
-
-## See it work
-
-[![A terminal demo of uhm turning natural-language requests into results](docs/demo/uhm-demo.svg)](https://nibzard.github.io/uhm/demo/)
-
-Can't see it? [Open the interactive recording](https://nibzard.github.io/uhm/demo/) or use the [GIF fallback](docs/demo/uhm-demo.gif). The demo uses real OpenAI calls in a disposable repository; its [rebuild and privacy procedure](docs/demo/README.md) is committed with the assets.

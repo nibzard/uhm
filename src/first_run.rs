@@ -1,6 +1,10 @@
 //! Versioned first-use disclosure. The marker is persisted only after stderr is flushed.
 
-use crate::{config::Config, dirs, render::ansi};
+use crate::{
+    config::Config,
+    dirs,
+    render::{ansi, layout},
+};
 use std::io::Write;
 
 pub const NOTICE_REVISION: u8 = 5;
@@ -50,41 +54,68 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
     } else {
         format!("{} ({})", config.provider, primary.endpoint())
     };
+    let width = layout::columns().min(88);
+    let sections = [
+        (
+            "Sends",
+            format!(
+                "The selected provider receives your prompt, explicitly piped input, selected context (standard by default), and Python 3 support details: {}.",
+                endpoint_summary
+            ),
+        ),
+        (
+            "Repairs",
+            "Only when requested: the prior model proposal and a stable contract code or coarse runtime outcome. Local-only bytes, resolved paths, credentials, and child output stay local.".into(),
+        ),
+        (
+            "Shell",
+            "Optional integration adds the parent cwd and previous status. One history entry is off by default and always previewed before sending.".into(),
+        ),
+        (
+            "History",
+            format!(
+                "Private {} history is {}; up to {} events / {} days.",
+                config.history.detail.as_str(),
+                receipt_state,
+                config.history.max_records,
+                config.history.max_age_days
+            ),
+        ),
+        (
+            "Telemetry",
+            format!(
+                "Content-free telemetry is {}; coarse platform, route, decision, effect, outcome, latency, and cache categories. Cloudflare processes the connection.",
+                telemetry_state
+            ),
+        ),
+        (
+            "Controls",
+            "Opt out: uhm telemetry off; keep piped content local: --local-input; inspect: uhm context show / uhm history status; clear: uhm history clear --all".into(),
+        ),
+        (
+            "Safety",
+            "You remain responsible for actions; warnings are convenience signals, not a safety guarantee.".into(),
+        ),
+    ];
     let mut stderr = std::io::stderr().lock();
-    writeln!(stderr, "{}", ansi::info("uhm, before we zip:"))
-        .map_err(|e| format!("render first-use notice: {}", e))?;
+    let heading = if ansi::plain_enabled() {
+        "uhm: first request"
+    } else {
+        "uhm · first request"
+    };
+    writeln!(stderr, "{}", ansi::primary(heading))
+        .map_err(|e| format!("render first-use notice: {e}"))?;
     writeln!(
         stderr,
-        "  The selected provider receives your prompt, explicitly piped input, and selected context (standard by default): {}.", endpoint_summary
+        "{}",
+        ansi::muted("A one-time summary of what leaves this device.")
     )
-    .map_err(|e| format!("render first-use notice: {}", e))?;
-    writeln!(
-        stderr,
-        "  Python 3 path/version support may be sent for program routing. Use --local-input to keep piped content local to the generated program."
-    )
-    .map_err(|e| format!("render first-use notice: {}", e))?;
-    writeln!(stderr,"  If you explicitly request a program repair, the accepted proposal's provider receives the prior model-authored proposal plus a stable contract code or coarse runtime outcome; local-only bytes, resolved paths, credentials, and child output stay local.")
-        .map_err(|e| format!("render first-use notice: {}",e))?;
-    writeln!(stderr,"  Optional shell integration adds only invocation-time parent cwd and previous status. One-entry shell history is off by default and always previewed before sending.")
-        .map_err(|e| format!("render first-use notice: {}",e))?;
-    writeln!(
-        stderr,
-        "  Private {} history is {}: at most {} events / {} days. Inspect: uhm history status. Clear: uhm history clear --all.",
-        config.history.detail.as_str(),
-        receipt_state, config.history.max_records, config.history.max_age_days
-    )
-    .map_err(|e| format!("render first-use notice: {}", e))?;
-    writeln!(
-        stderr,
-        "  Content-free telemetry is {} (coarse platform, route, decision, effect, process/parent outcome, latency, and cache enums). Cloudflare processes the connection. Opt out: uhm telemetry off.",
-        telemetry_state
-    )
-    .map_err(|e| format!("render first-use notice: {}", e))?;
-    writeln!(
-        stderr,
-        "  You remain responsible for actions; warnings are convenience signals, not a safety guarantee."
-    )
-    .map_err(|e| format!("render first-use notice: {}", e))?;
+    .map_err(|e| format!("render first-use notice: {e}"))?;
+    writeln!(stderr).map_err(|e| format!("render first-use notice: {e}"))?;
+    for (label, value) in sections {
+        write_section(&mut stderr, label, &value, width)?;
+    }
+    writeln!(stderr).map_err(|e| format!("render first-use notice: {e}"))?;
     stderr
         .flush()
         .map_err(|e| format!("flush first-use notice: {}", e))?;
@@ -92,6 +123,26 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
     dirs::ensure_private_dir(&config.paths.data_dir)?;
     write_private_atomic(&marker, marker_value(config).as_bytes())?;
     Ok(RENDERED_MARKER)
+}
+
+fn write_section(
+    output: &mut impl Write,
+    label: &str,
+    value: &str,
+    width: usize,
+) -> Result<(), String> {
+    const LABEL_WIDTH: usize = 11;
+    let content_width = width.saturating_sub(LABEL_WIDTH + 3).max(8);
+    for (index, line) in layout::wrap(value, content_width).iter().enumerate() {
+        if index == 0 {
+            let padded_label = format!("{label:<LABEL_WIDTH$}");
+            writeln!(output, "  {} {}", ansi::info(&padded_label), line)
+        } else {
+            writeln!(output, "  {:LABEL_WIDTH$} {}", "", line)
+        }
+        .map_err(|e| format!("render first-use notice: {e}"))?;
+    }
+    Ok(())
 }
 
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
@@ -143,5 +194,23 @@ mod tests {
             !is_current(&config),
             "adding a disclosed endpoint must require a new notice"
         );
+    }
+
+    #[test]
+    fn notice_sections_fit_narrow_and_wide_terminals() {
+        for width in [40, 80, 160] {
+            let mut output = Vec::new();
+            write_section(
+                &mut output,
+                "Controls",
+                "Inspect: uhm context show; opt out: uhm telemetry off",
+                width,
+            )
+            .unwrap();
+            let rendered = String::from_utf8(output).unwrap();
+            assert!(rendered
+                .lines()
+                .all(|line| layout::display_width(line) <= width));
+        }
     }
 }

@@ -22,6 +22,43 @@ pub fn labeled(label: &str, value: &str, width: usize) -> String {
     }
 }
 
+/// Wrap prose to display cells, preserving words when possible and splitting a
+/// single overlong token only when it cannot fit on an otherwise empty line.
+pub fn wrap(value: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+
+    for word in value.split_whitespace() {
+        let separator = usize::from(!line.is_empty());
+        if display_width(&line) + separator + display_width(word) <= width {
+            if separator == 1 {
+                line.push(' ');
+            }
+            line.push_str(word);
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        for ch in word.chars() {
+            let mut encoded = [0; 4];
+            let piece = ch.encode_utf8(&mut encoded);
+            if !line.is_empty() && display_width(&line) + display_width(piece) > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            line.push(ch);
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -39,6 +76,14 @@ mod tests {
             let value = labeled("Effects:", "reads local files, network access", width);
             assert!(!value.contains('\r'));
             assert!(value.lines().all(|line| display_width(line) <= width));
+        }
+    }
+
+    #[test]
+    fn wraps_words_and_long_tokens_to_display_width() {
+        for width in [10, 24, 80] {
+            let lines = wrap("short words https://api.openai.com/v1/responses 雪", width);
+            assert!(lines.iter().all(|line| display_width(line) <= width));
         }
     }
 }
