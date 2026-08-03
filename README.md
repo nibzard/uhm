@@ -16,7 +16,15 @@ Watch the [interactive recording](https://nibzard.github.io/uhm/demo/) or use th
 
 ## Install
 
-Download the archive for your machine from the [v0.3.0 release](https://github.com/nibzard/uhm/releases/tag/v0.3.0):
+Fast path:
+
+```sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+```
+
+The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.3.0` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
+
+If you want the manual path instead, download the archive for your machine from the [v0.3.0 release](https://github.com/nibzard/uhm/releases/tag/v0.3.0):
 
 | System | Archive |
 |---|---|

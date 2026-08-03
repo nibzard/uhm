@@ -21,7 +21,39 @@ uhm --provider cerebras --model gpt-oss-120b doctor network
 
 This verifies endpoint compatibility and credentials; it does not claim that the pair is qualified for automatic evidence-based selection. See [Configuration](configuration.md) for persistent selection and optional fallback.
 
-## Option 1 — prebuilt binary (recommended)
+## Option 1 — one-line installer (recommended)
+
+```sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+```
+
+This installer follows the release-archive path already used by `uhm`: it detects your platform, downloads the matching archive and `SHA256SUMS` from GitHub Releases, verifies the checksum, and installs `uhm` into `~/.local/bin` by default.
+
+It intentionally does not edit your shell startup files. If `~/.local/bin` is not on `PATH`, add it yourself after install.
+
+The GitHub Pages URL above tracks the current `main` branch and installs the latest release by default. If you want an immutable script tied to one release, use that release's asset instead:
+
+```sh
+curl -fsSL https://github.com/nibzard/uhm/releases/download/v0.3.0/install.sh | sh
+```
+
+That release-hosted script is pinned to `v0.3.0` unless you override it with `UHM_VERSION=...`.
+
+Useful overrides:
+
+```sh
+UHM_VERSION=v0.3.0 curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+UHM_INSTALL_DIR="$HOME/bin" curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+UHM_TARGET=aarch64-unknown-linux-musl curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+```
+
+Inspect the script before running it if you prefer:
+
+```sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | less
+```
+
+## Option 2 — prebuilt binary (manual)
 
 Each release publishes four native archives with SHA-256 checksums (`SHA256SUMS`) and GitHub build-provenance attestations:
 
@@ -73,7 +105,7 @@ echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "${HOME}/.${SHELL##*/}rc"
 fish_add_path "${HOME}/.local/bin"
 ```
 
-## Option 2 — build from source
+## Option 3 — build from source
 
 With Rust 1.82 or newer:
 

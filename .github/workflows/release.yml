@@ -125,6 +125,14 @@ jobs:
         run: |
           test "$(find dist -maxdepth 1 -name '*.tar.gz' -type f | wc -l)" -eq 4
           (cd dist && sha256sum *.tar.gz > SHA256SUMS && sha256sum --check SHA256SUMS)
+      - name: Prepare installer assets
+        shell: bash
+        run: |
+          version="v${{ needs.validate.outputs.version }}"
+          sed "s/^default_version=\"\"$/default_version=\"${version}\"/" docs/install.sh > dist/install.sh
+          cp dist/install.sh "dist/install-${version}.sh"
+          chmod 0755 dist/install.sh "dist/install-${version}.sh"
+          sh -n dist/install.sh
       - name: Attest checksum manifest
         uses: actions/attest-build-provenance@v4
         with:
@@ -137,5 +145,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" --draft --verify-tag \
             --title "${GITHUB_REF_NAME}" --notes-file "docs/releases/v${{ needs.validate.outputs.version }}.md"
           gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-          test "$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets | length')" -eq 5
+          test "$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets | length')" -eq 7
           gh release edit "${GITHUB_REF_NAME}" --draft=false --latest

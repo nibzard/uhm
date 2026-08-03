@@ -40,6 +40,9 @@ jobs:
       - name: Check documentation drift
         run: python3 scripts/check-docs.py
 
+      - name: Check installer script syntax
+        run: sh -n docs/install.sh
+
       - name: Run Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
