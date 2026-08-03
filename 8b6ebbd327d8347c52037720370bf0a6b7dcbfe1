@@ -1,0 +1,1 @@
+Records two reviewed planning artifacts: a repository-grounded simplification sequence and Plan 15's bounded one-file contextual runbook design. This commit changes documentation only; it does not ship either plan's runtime behavior.
