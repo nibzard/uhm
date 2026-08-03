@@ -1,0 +1,12 @@
+# Context
+
+## Background
+This commit combines the completed documentation UI audit remediation with pending action-contract fixes because the user explicitly requested committing the entire workspace.
+
+## Why This Way
+The documentation keeps the established warm-dark tokens but replaces Docsify's fragile bottom mobile toggle with an immediate static header and a small enhancement layer. That layer owns drawer ARIA state, focus trapping and return, Escape handling, inert background content, collapsible navigation groups, route scroll restoration, and generated copy-code accessibility repairs. CSS selectors intentionally match or exceed Docsify's section.cover specificity so the custom layout wins predictably.
+
+The action changes retain non-absolute shell executable requirements, render the successful completion marker only for executed shell actions, and bump the prompt version to 10 so cached semantic inputs track the contract change.
+
+## Gotchas
+Docsify uses the body close class with breakpoint-dependent inverted behavior; docs-ui.js therefore owns a separate nav-open state. Keep the stylesheet and script cache-buster query values in docs/index.html synchronized with future asset changes.
