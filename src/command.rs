@@ -1066,14 +1066,6 @@ pub fn handle(
                         .json()
                     );
                 }
-                if result.code == 0 && std::io::stderr().is_terminal() && !args.json {
-                    let finished = if ansi::plain_enabled() {
-                        "Finished"
-                    } else {
-                        "✓ Finished"
-                    };
-                    eprintln!("\n{}", ansi::success(finished));
-                }
                 return result.code;
             }
             ProposedAction::Shell {
@@ -1516,6 +1508,14 @@ pub fn handle(
                         }
                         .json()
                     );
+                }
+                if result.code == 0 && std::io::stderr().is_terminal() && !args.json {
+                    let finished = if ansi::plain_enabled() {
+                        "Finished"
+                    } else {
+                        "✓ Finished"
+                    };
+                    eprintln!("\n{}", ansi::success(finished));
                 }
                 return result.code;
             }

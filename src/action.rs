@@ -285,7 +285,7 @@ impl ProposedAction {
                 return Err("effects contains too many items".into());
             }
             value.requirements.retain(|requirement| {
-                !is_builtin_label(requirement) && !is_shell_requirement(requirement)
+                !is_builtin_label(requirement) && !is_absolute_shell_requirement(requirement)
             });
             for requirement in &value.requirements {
                 if requirement.contains('/')
@@ -309,13 +309,15 @@ impl ProposedAction {
                 && !name.contains('/')
                 && !name.chars().any(char::is_whitespace)
         }
-        fn is_shell_requirement(value: &str) -> bool {
-            std::path::Path::new(value)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    matches!(name, "sh" | "bash" | "zsh" | "fish" | "pwsh" | "powershell")
-                })
+        fn is_absolute_shell_requirement(value: &str) -> bool {
+            let path = std::path::Path::new(value);
+            path.is_absolute()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        matches!(name, "sh" | "bash" | "zsh" | "fish" | "pwsh" | "powershell")
+                    })
         }
         fn path(value: &str, label: &str) -> Result<(), String> {
             text(value, label, MAX_PATH)?;
@@ -413,6 +415,22 @@ mod tests {
             unreachable!()
         };
         assert!(metadata.requirements.is_empty());
+
+        let external_shell = ProposedAction::Shell {
+            command: "zsh script.zsh".into(),
+            metadata: ProposalMetadata {
+                summary: "run a script".into(),
+                requirements: vec!["zsh".into()],
+                ..ProposalMetadata::default()
+            },
+            stdin_mode: StdinMode::None,
+        }
+        .validate()
+        .unwrap();
+        let ProposedAction::Shell { metadata, .. } = external_shell else {
+            unreachable!()
+        };
+        assert_eq!(metadata.requirements, ["zsh"]);
     }
 
     #[test]

@@ -18,19 +18,39 @@ It is deliberately smaller than a coding agent. One intent goes in. One bounded 
 
 ## What it is — and isn't
 
-| uhm is | uhm is not |
-|---|---|
-| A natural-language shortcut to ordinary terminal work | A coding agent that edits whole projects |
-| One-shot: one intent in, one result out | A chatbot or persistent REPL |
-| Honest about limits — exit zero only means the process exited zero | A sandbox or a safety guarantee |
+<table class="comparison-table">
+  <thead>
+    <tr><th>uhm is</th><th>uhm is not</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td data-label="uhm is">A natural-language shortcut to ordinary terminal work</td>
+      <td data-label="uhm is not">A coding agent that edits whole projects</td>
+    </tr>
+    <tr>
+      <td data-label="uhm is">One-shot: one intent in, one result out</td>
+      <td data-label="uhm is not">A chatbot or persistent REPL</td>
+    </tr>
+    <tr>
+      <td data-label="uhm is">Honest about limits — exit zero only means the process exited zero</td>
+      <td data-label="uhm is not">A sandbox or a safety guarantee</td>
+    </tr>
+  </tbody>
+</table>
 
 ## Install
+
+```sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+```
+
+The installer fetches the latest release archive for your platform, verifies `SHA256SUMS`, and installs to `~/.local/bin` by default. Source builds are still supported:
 
 ```sh
 cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.0 uhm-cli
 ```
 
-Prebuilt binaries with SHA256 verification are on the [Install](install.md) page. OpenAI is the default provider; Cerebras is an explicit fixed alternative. See [Getting started](getting-started.md) for the under-five-minute path.
+Prebuilt binaries, version pinning, and manual verification are on the [Install](install.md) page. OpenAI is the default provider; Cerebras is an explicit fixed alternative. See [Getting started](getting-started.md) for the under-five-minute path.
 
 ## Choose what you need
 

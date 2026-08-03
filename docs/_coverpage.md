@@ -1,4 +1,4 @@
-# uhm<span class="dot">.</span>
+<p class="cover-title">uhm<span class="dot">.</span></p>
 
 > Say what you need. Get the result.
 

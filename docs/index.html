@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
     <meta name="color-scheme" content="dark" />
     <meta
       name="description"
@@ -20,7 +23,7 @@
     <meta property="og:url" content="https://nibzard.github.io/uhm/" />
     <meta
       property="og:image"
-      content="https://nibzard.github.io/uhm/docs/demo/uhm-demo.gif"
+      content="https://nibzard.github.io/uhm/demo/uhm-demo.gif"
     />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="uhm — say what you need, get the result" />
@@ -30,7 +33,7 @@
     />
     <meta
       name="twitter:image"
-      content="https://nibzard.github.io/uhm/docs/demo/uhm-demo.gif"
+      content="https://nibzard.github.io/uhm/demo/uhm-demo.gif"
     />
     <meta name="theme-color" content="#ec5a3c" />
     <link rel="canonical" href="https://nibzard.github.io/uhm/" />
@@ -44,10 +47,38 @@
 
     <!-- docsify dark layout as a base; assets/docs.css overrides it to the uhm warm-dark system. -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/dark.css" />
-    <link rel="stylesheet" href="assets/docs.css?v=5" />
+    <link rel="stylesheet" href="assets/docs.css?v=7" />
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="mobile-header">
+      <a class="mobile-wordmark" href="#/" aria-label="uhm home">
+        uhm<span>.</span>
+      </a>
+      <div class="mobile-header-actions">
+        <a
+          class="mobile-source"
+          href="https://github.com/nibzard/uhm"
+          target="_blank"
+          rel="noopener"
+        >Source ↗</a>
+        <button
+          id="mobile-menu-button"
+          class="mobile-menu-button"
+          type="button"
+          aria-controls="docs-sidebar"
+          aria-expanded="false"
+        >
+          <span class="menu-icon" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span class="sr-only">Open navigation</span>
+        </button>
+      </div>
+    </header>
+    <div class="sidebar-backdrop" aria-hidden="true"></div>
     <div id="app">Loading… if this persists, JavaScript is required for the docs reader.</div>
+    <script src="assets/docs-ui.js?v=4"></script>
     <script>
       window.$docsify = {
         name: "uhm",
@@ -68,9 +99,14 @@
           depth: 3,
         },
         plugins: [
+          window.uhmDocsPlugin,
           // "Edit this page on GitHub" footer link on every rendered page.
           function (hook, vm) {
             hook.afterEach(function (html, next) {
+              html = html.replace(
+                /<img /g,
+                '<img loading="lazy" decoding="async" fetchpriority="low" ',
+              );
               if (vm.route.file) {
                 var url =
                   "https://github.com/nibzard/uhm/edit/main/docs/" + vm.route.file;
@@ -90,7 +126,6 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/zoom-image.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/docsify-copy-code/dist/docsify-copy-code.min.js"></script>
   </body>
 </html>
