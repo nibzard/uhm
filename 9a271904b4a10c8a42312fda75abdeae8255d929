@@ -1,0 +1,15 @@
+# Context
+
+## Background
+The repo previously documented only manual archive installs and source builds, which left the curl-install path implicit and forced users to assemble the release workflow themselves.
+
+## Why This Way
+Added a small POSIX installer that downloads the matching GitHub Release archive, verifies SHA256SUMS, installs into ~/.local/bin by default, and avoids mutating shell startup files. Release publishing now emits pinned installer assets so a script fetched from a tagged release installs that tagged version by default, while the GitHub Pages URL can still track the latest release.
+
+## Gotchas
+The docs site URL and the release asset URL intentionally have different version semantics. docs/README.md had unrelated local edits, so it was left out of this commit.
+
+## Related
+- docs/install.sh
+- .github/workflows/release.yml
+- docs/install.md
