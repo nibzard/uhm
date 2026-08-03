@@ -1,0 +1,15 @@
+# Design: Organize documentation with Diátaxis
+
+## Problem
+The v0.3 documentation mixed tutorials, task procedures, contract lookup, and design rationale on the same topic pages, making navigation and maintenance harder.
+
+## Approach
+Organize the sidebar by Tutorials, How-to, Reference, and Explanation. Split mixed program, history, recovery, model-selection, and shell-integration content into focused pages while retaining the old paths as navigation maps. Add metadata and a CI drift checker for classification, links, release versions, CLI coverage, provider language, and qualification status.
+
+## Key Trade-offs
+- More focused pages and files, with stable topic maps preserving old URLs.
+- Some facts are linked to canonical references rather than repeated in procedural pages.
+- Crate packaging now includes the complete Markdown hierarchy.
+
+## Verification
+Formatting, docs drift checks, strict Clippy, all 390 Rust tests, and crate packaging passed.
