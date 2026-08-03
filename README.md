@@ -42,7 +42,7 @@ The crates.io package is prepared but publication is deferred until ownership is
 
 ## First run
 
-Give `uhm` an OpenAI API key through the environment or its private secrets file:
+The default provider is OpenAI. Give `uhm` an OpenAI API key through the environment or its private secrets file:
 
 ```sh
 export OPENAI_API_KEY="your-key"
@@ -50,7 +50,7 @@ uhm doctor
 uhm list the three biggest files
 ```
 
-`uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and `chmod 600 <path>` to keep the key out of your shell environment. `uhm doctor network` makes a separate OpenAI reachability and authentication check.
+`uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and `chmod 600 <path>` to keep the key out of your shell environment. `uhm doctor network` checks the selected provider. Cerebras is available as an explicit alternative; set `CEREBRAS_API_KEY` and choose it with `--provider cerebras --model <id>` or persistent configuration.
 
 Before the first outbound request, `uhm` prints a short data notice to stderr. It records that the current notice revision was shown.
 
@@ -109,9 +109,9 @@ Full breakdown in [docs/comparison.md](docs/comparison.md).
 
 ## Data leaving your machine
 
-OpenAI receives your intent, explicitly piped UTF-8 input unless `--local-input` is used, and the selected context. `standard` context is the default: bounded OS and architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. All modes also disclose the resolved Python 3 path/version and whether `-I -S` works so the model can choose an available route. It does not automatically include file contents, Git remotes or diffs, environment values, API keys, history, or cached results.
+The selected provider receives your intent, explicitly piped UTF-8 input unless `--local-input` is used, and the selected context. `standard` context is the default: bounded OS and architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. All modes also disclose the resolved Python 3 path/version and whether `-I -S` works so the model can choose an available route. It does not automatically include file contents, Git remotes or diffs, environment values, API keys, history, or cached results.
 
-Use `uhm context show` to inspect the exact shape. Use `--context minimal` or `context_mode: minimal` to send only the intent and explicitly piped input. OpenAI requests use the Responses API with `store: false`, which disables Responses application-state storage. OpenAI's default abuse-monitoring logs may still retain API content for up to 30 days unless your organization has approved data-retention controls. See [OpenAI's data controls](https://developers.openai.com/api/docs/guides/your-data#data-retention-controls-for-abuse-monitoring).
+Use `uhm context show` to inspect the exact shape. Use `--context minimal` or `context_mode: minimal` to send only the intent and explicitly piped input. OpenAI requests use the Responses API with `store: false`; explicit Cerebras requests use its fixed Chat Completions endpoint. Provider-side retention is controlled by the selected provider. See the [privacy contract](PRIVACY.md) before opting into either service.
 
 Content-free telemetry is on by default. A summary contains only fixed categories such as platform, shell, route, decision, effect, proposal outcome, process outcome, parent-action acknowledgement, feedback, coarse latency, and cache state. It has no prompt, command, output, path, error text, exact timestamp, or stable ID. Cloudflare processes the HTTPS connection; the Worker does not persist connection metadata in application telemetry or logs. See [PRIVACY.md](PRIVACY.md) for the exact schema and retention.
 
@@ -152,7 +152,7 @@ uhm run --recoverable rewrite report.txt as compact JSON
 uhm recovery status
 uhm undo <run-id|last>
 uhm restore <run-id|last> --force
-uhm recover <run-id|last> -- prefer a local-only inverse
+uhm recover <run-id|last> prefer a local-only inverse
 uhm recovery prune --dry-run
 ```
 
@@ -180,7 +180,7 @@ The wrapper uses a private nonce-bound control directory, never application stdo
 
 Warnings for deletion, broad writes, privilege elevation, remote mutation, and process control are convenience signals. They are not a sandbox or a safety guarantee. Model output and the detector can both be wrong. Exit code zero proves only that the process exited zero, not that your intent was satisfied.
 
-The current development version has no universal undo, filesystem-wide transaction layer, background agent, native Windows build, shell completion, auto-updater, package installation, JavaScript program runtime, or project-scale code generation.
+The current release has no universal undo, filesystem-wide transaction layer, background agent, native Windows build, shell completion, auto-updater, package installation, JavaScript program runtime, or project-scale code generation.
 
 ## CLI reference
 
@@ -198,7 +198,7 @@ uhm restore <run-id|last> --force
 uhm recovery on|off|status|prune|pin|unpin|resume
 uhm history [list|show|search|replay|export|prune|clear|status]
 uhm config [show|check]
-uhm doctor [network]
+uhm doctor [all] [network]
 ```
 
 After the first intent word, every argument is opaque user text. A dictated prompt containing `-y`, `--help`, or `--system` cannot change authority. Put `--` before an intent that starts with a hyphen.
@@ -210,7 +210,12 @@ After the first intent word, every argument is opaque user text. A dictated prom
 Copy [config.example.yaml](config.example.yaml) to the path shown by `uhm config show`. Unknown keys and invalid values are errors.
 
 ```yaml
+provider: openai
 model: gpt-5.6-terra
+selection:
+  mode: fixed
+  alternate: null
+  fallback_on: []
 shell: auto
 context_mode: standard
 

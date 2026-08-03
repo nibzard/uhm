@@ -1,3 +1,5 @@
+<!-- diataxis: how-to -->
+
 # Cookbook
 
 Short recipes for common goals. Each assumes `uhm` is installed and your API key is configured — see [Install](install.md) and [Quickstart](getting-started.md).
@@ -86,6 +88,10 @@ uhm --json count the lines in *.md      # machine-readable where supported
 
 ## Next
 
+- [Configure a provider](how-to/configure-providers.md) — choose OpenAI or Cerebras
+- [Configure fallback](how-to/configure-fallback.md) — add one typed-error alternate
+- [Use history](how-to/use-history.md) — inspect, replay, export, and prune
+- [Recover prior work](how-to/recover-work.md) — undo, force restore, resume, or recover
 - [CLI reference](cli-reference.md) — the full surface
-- [Bounded Python microprograms](program.md) — when a program is generated
+- [Program reference](reference/program.md) — exact generated-program contract
 - [Troubleshooting](troubleshooting.md) — when something goes wrong

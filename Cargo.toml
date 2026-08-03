@@ -45,16 +45,16 @@ include = [
   "/AI_POLICY.md",
   "/CONTRIBUTING.md",
   "/config.example.yaml",
-  "/docs/behavior-contract.md",
-  "/docs/comparison.md",
+  "/docs/*.md",
+  "/docs/architecture/*.md",
+  "/docs/explanation/*.md",
+  "/docs/how-to/*.md",
+  "/docs/reference/*.md",
+  "/docs/releases/*.md",
+  "/docs/tutorials/*.md",
   "/docs/demo/README.md",
   "/docs/demo/uhm-demo.gif",
   "/docs/demo/uhm-demo.svg",
-  "/docs/local-history.md",
-  "/docs/model-selection.md",
-  "/docs/qualification.md",
-  "/docs/recovery.md",
-  "/docs/shell-integration.md",
 ]
 
 [[bin]]

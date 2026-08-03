@@ -1,3 +1,5 @@
+<!-- diataxis: how-to -->
+
 # Troubleshooting
 
 Start with `uhm doctor`. It checks the selected provider, local configuration, terminal capability, private secrets path, and Python runtime. Add `network` for an explicit reachability/authentication check, or `all` to inspect both built-in adapters:
@@ -78,7 +80,7 @@ Result data always goes to stdout; progress, warnings, and the review UI go to s
 - `uhm restore <run-id|last> --force` reapplies retained evidence when the current outcome differs.
 - `uhm recover <run-id|last>` asks for one reviewed, best-effort inverse and never claims it restored the original.
 
-Recovery is off by default because it copies file contents. See [Bounded recovery](recovery.md).
+Recovery is off by default because it copies file contents. See [Recover prior work](how-to/recover-work.md).
 
 ## Telemetry
 

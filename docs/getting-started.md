@@ -1,6 +1,8 @@
+<!-- diataxis: tutorial -->
+
 # Quickstart
 
-A first result in under five minutes. This assumes you have already [installed](install.md) `uhm` and exported your key:
+A first result in under five minutes. This uses the default OpenAI provider and assumes you have already [installed](install.md) `uhm` and exported your key:
 
 ```sh
 export OPENAI_API_KEY="sk-..."
@@ -10,7 +12,7 @@ export OPENAI_API_KEY="sk-..."
 
 ```sh
 uhm doctor            # local configuration and terminal checks
-uhm doctor network    # confirm OpenAI is reachable and the key authenticates
+uhm doctor network    # confirm the selected provider is reachable and the key authenticates
 ```
 
 The first time you run `uhm`, it prints a one-time disclosure to stderr and persists an owner-only notice marker before any request is sent. See [Privacy & telemetry](privacy.md) for exactly what leaves your machine.
@@ -81,6 +83,8 @@ Then `uhm gst` runs `git status -sb` directly. The expansion still passes throug
 ## Where to go next
 
 - [CLI reference](cli-reference.md) — every command, flag, and exit code
-- [Configuration](configuration.md) — model precedence, context modes, history, telemetry
+- [Configure a provider](how-to/configure-providers.md) — switch to Cerebras or make a provider/model pair persistent
+- [Configuration](configuration.md) — providers, credentials, model precedence, context, history, and telemetry
+- [Model-selection design](explanation/model-selection.md) — fixed selection, fallback, and qualification status
 - [Behavior & exit codes](behavior-contract.md) — the invocation/outcome contract
 - [Watch the demo ↗](https://nibzard.github.io/uhm/demo/) — six real jobs in under a minute

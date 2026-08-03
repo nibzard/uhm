@@ -1,8 +1,8 @@
 # Privacy
 
-This document describes the current `uhm` data contract. The short version: terminal work goes to OpenAI only when it is part of the model request; product telemetry contains fixed categories and no content or stable identity.
+This document describes the current `uhm` data contract. The short version: model-request content goes only to the selected, disclosed provider endpoint; product telemetry contains fixed categories and no content or stable identity.
 
-## OpenAI requests
+## Provider requests
 
 By default, `uhm` uses OpenAI's Responses API and sends `store: false`. Explicit fixed selection may use Cerebras Chat Completions. An explicitly configured cross-provider alternate authorizes only the disclosed fixed fallback endpoint; changing the endpoint set requires disclosure again. No arbitrary provider URL is accepted.
 
@@ -39,7 +39,7 @@ An interaction summary has exactly these fields:
 {
   "v": 2,
   "event": "interaction_summary",
-  "release": "0.2",
+  "release": "0.3",
   "os": "linux",
   "arch": "x86_64",
   "shell": "bash",

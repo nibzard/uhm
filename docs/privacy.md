@@ -1,10 +1,12 @@
-# Privacy & telemetry
+<!-- diataxis: reference -->
+
+# Privacy & telemetry reference
 
 > This page mirrors the normative [`PRIVACY.md`](https://github.com/nibzard/uhm/blob/main/PRIVACY.md) at the repository root. If the two ever differ, the root file is authoritative; please open an issue or PR if you spot drift.
 
-The short version: terminal work goes to OpenAI only when it is part of the model request; product telemetry contains fixed categories and no content or stable identity.
+The short version: model-request content goes only to the selected, disclosed provider endpoint; product telemetry contains fixed categories and no content or stable identity.
 
-## OpenAI requests
+## Provider requests
 
 By default, `uhm` uses OpenAI's Responses API and sends `store: false`. An explicit fixed selection may instead use Cerebras Chat Completions. A configured cross-provider alternate authorizes that second fixed endpoint only for the listed pre-proposal fallback failures. The first-run notice names the exact authorized endpoint set and must be accepted again when it changes. No arbitrary compatible URL is accepted.
 
@@ -41,7 +43,7 @@ An interaction summary has exactly these fields:
 {
   "v": 2,
   "event": "interaction_summary",
-  "release": "0.2",
+  "release": "0.3",
   "os": "linux",
   "arch": "x86_64",
   "shell": "bash",
@@ -112,5 +114,5 @@ The same private data directory contains the disclosure revision, optional secre
 
 - [Configuration](configuration.md) — `telemetry.enabled`, `history.*`, context modes
 - [Behavior & exit codes](behavior-contract.md) — the first-use disclosure and stream rules
-- [Local history](local-history.md) — the on-device decision journal and its detail levels
-- [Bounded recovery](recovery.md) — separately-consented snapshot capture
+- [History reference](reference/history.md) — the on-device decision journal and its detail levels
+- [Recovery reference](reference/recovery.md) — separately-consented snapshot capture

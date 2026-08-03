@@ -1,3 +1,5 @@
+<!-- diataxis: explanation -->
+
 # ADR 0004: Bounded evidence-based recovery
 
 ## Decision

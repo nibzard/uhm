@@ -1,3 +1,5 @@
+<!-- diataxis: explanation -->
+
 # Core concepts
 
 `uhm` is a natural-language layer over the terminal tools you already have. You describe a small job in plain language; `uhm` picks one concrete way to do it, runs that one thing, prints the real result, and exits.
@@ -39,14 +41,16 @@ Three things can leave your machine on a normal request:
 - **Explicitly piped input**, unless you use `--local-input`.
 - **The selected context** — bounded environment facts. The default `standard` mode is OS, architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. It does not include file contents, diffs, remotes, environment values, or history.
 
-Requests use the OpenAI Responses API with `store: false`. Content-free telemetry is separate and opt-out. See [Privacy & telemetry](privacy.md) for the exact boundary.
+Requests go only to the selected fixed provider: OpenAI Responses with `store: false` by default, or the fixed Cerebras Chat Completions endpoint when explicitly configured. Content-free telemetry is separate and opt-out. See [Privacy & telemetry](privacy.md) for the exact boundary.
 
 ## What stays
 
-Private, append-only metadata history stays on your machine by default — state transitions, route, effects, hashes, and timing categories, never the intent, proposal, paths, input, or output. See [Local history](local-history.md).
+Private, append-only metadata history stays on your machine by default — state transitions, route, effects, hashes, and timing categories, never the intent, proposal, paths, input, or output. See the [history reference](reference/history.md).
 
 ## Next
 
 - [CLI reference](cli-reference.md) — every command and flag
-- [Bounded Python microprograms](program.md) — when and how `uhm` generates a program
+- [Configuration](configuration.md) — providers, credentials, and selection policy
+- [Model-selection design](explanation/model-selection.md) — fixed selection, fallback, and qualification
+- [Program execution model](explanation/program-execution.md) — when and how `uhm` generates a program
 - [Behavior & exit codes](behavior-contract.md) — what each exit status means

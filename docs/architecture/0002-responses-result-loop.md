@@ -1,6 +1,8 @@
+<!-- diataxis: explanation -->
+
 # ADR 0002: Strict Responses actions and a bounded result loop
 
-Status: accepted for Plan 2
+Status: superseded in part by [ADR 0005](0005-provider-adapters-and-qualified-selection.md). The bounded result loop and canonical action requirements remain accepted; the OpenAI-only transport decision does not.
 
 ## Decision
 

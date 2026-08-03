@@ -37,6 +37,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
+      - name: Check documentation drift
+        run: python3 scripts/check-docs.py
+
       - name: Run Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 

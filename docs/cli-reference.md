@@ -1,3 +1,5 @@
+<!-- diataxis: reference -->
+
 # CLI reference
 
 The complete command surface, transcribed from the parser. Flags are shown in their long form; all value flags also accept `--flag=value`.
@@ -26,6 +28,7 @@ These may appear before or after a subcommand, up to the first intent word.
 |---|---|---|
 | `-h, --help` | — | Print help |
 | `-V, --version` | — | Print version |
+| `--provider` | `openai\|cerebras` | Provider for this invocation; never inferred from the model |
 | `-m, --model` | `<id>` | Model id for this invocation (highest precedence) |
 | `--shell` | `auto\|sh\|bash\|zsh\|fish\|pwsh\|powershell` | Target shell |
 | `--context` | `minimal\|standard\|full` | Outbound context mode |
@@ -71,7 +74,7 @@ uhm undo    <run-id|last> [--review]
 uhm restore <run-id|last> --force
 ```
 
-`<run-id>` identifies a prior run; `last` means the most recent. `undo` is a local, hash-verified restore that never calls the model. `restore` uses the same retained evidence but records a forced outcome (`--force` is required). See [bounded recovery](recovery.md) for the full contract.
+`<run-id>` identifies a prior run; `last` means the most recent. `undo` is a local, hash-verified restore that never calls the model. `restore` uses the same retained evidence but records a forced outcome (`--force` is required). See the [recovery reference](reference/recovery.md) for the full contract.
 
 ### recovery — snapshot management
 
@@ -93,7 +96,7 @@ uhm history [list|show|search|replay|export|prune|clear|status]
 uhm history list [--limit N] [--failed] [--route ROUTE]
 ```
 
-Receipts are local and metadata-only by default. See [local history](local-history.md) for detail levels, output capture, path redaction, and retention.
+Receipts are local and metadata-only by default. See the [history reference](reference/history.md) for detail levels, output capture, path redaction, and retention.
 
 ### config — resolved configuration
 
@@ -141,7 +144,7 @@ Emit the optional wrapper that can apply one accepted typed parent-shell action 
 uhm doctor [all] [network]
 ```
 
-Local configuration and terminal checks. `network` performs an explicit OpenAI reachability and authentication check. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.
+Local configuration and terminal checks. `network` checks reachability and authentication for the selected provider. `all` inspects both built-in adapters; `all network` also checks both configured credentials and endpoints. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.
 
 ### help and version
 

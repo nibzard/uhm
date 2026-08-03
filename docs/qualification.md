@@ -1,3 +1,5 @@
+<!-- diataxis: how-to -->
+
 # Provider qualification runbook
 
 Automatic provider selection is a release process, not a normal benchmark mode. The checked-in holdout commitment currently has status `unavailable`, so `--profile qualification` stops before reading credentials or making network calls. Do not relabel the development corpus or derive a holdout from tasks used for adapter or prompt work.

@@ -1,3 +1,5 @@
+<!-- diataxis: reference -->
+
 # Invocation and outcome contract
 
 The action proposed by the model and the action passed to the child shell are the same byte string. `stdout` belongs to the requested work. Progress, review UI, and warnings belong to `stderr`.
@@ -17,7 +19,7 @@ The action proposed by the model and the action passed to the child shell are th
 
 The no-argument TTY path collects one intent, completes one bounded interaction, and exits. It is not a REPL. A clarification, revision, program-contract repair, or failed-command repair may consume at most one second turn; they cannot coexist in the same interaction. A hard program-contract error may be repaired before execution, so that path permits two calls but only one execution. Non-TTY invocations never repair automatically.
 
-`undo` is a local, hash-verified restore of retained managed-file evidence and never calls the model. `restore --force` uses the same retained evidence but records a forced outcome. `recover` previews a bounded receipt subset before one normal model proposal, always reviews that proposal, and never equates execution success with restoration. See [bounded recovery](recovery.md).
+`undo` is a local, hash-verified restore of retained managed-file evidence and never calls the model. `restore --force` uses the same retained evidence but records a forced outcome. `recover` previews a bounded receipt subset before one normal model proposal, always reviews that proposal, and never equates execution success with restoration. See the [recovery reference](reference/recovery.md).
 
 ## Application statuses
 
@@ -43,9 +45,9 @@ Wrapper status precedence is: ordinary jobs preserve the child status; failed ch
 
 ## First use and outbound work
 
-Before any OpenAI request or telemetry send, a fresh installation writes a versioned disclosure to stderr and flushes it. Only then does it atomically persist an owner-only notice marker. A changed outbound-data contract increments the revision and makes the notice appear once more.
+Before any provider request or telemetry send, a fresh installation writes a versioned disclosure to stderr and flushes it. Only then does it atomically persist an owner-only notice marker. A changed authorized endpoint set or outbound-data contract increments the revision and makes the notice appear once more.
 
-OpenAI receives the prompt, explicitly supplied UTF-8 stdin, and the selected context. `standard` context is the default. Aggregate telemetry is enabled by default but has only fixed, content-free categories. Its opt-outs are evaluated before an event or queue entry exists. [PRIVACY.md](https://github.com/nibzard/uhm/blob/main/PRIVACY.md) is the normative field and retention description.
+The selected provider receives the prompt, explicitly supplied UTF-8 stdin, and the selected context. `standard` context is the default. Aggregate telemetry is enabled by default but has only fixed, content-free categories. Its opt-outs are evaluated before an event or queue entry exists. [PRIVACY.md](https://github.com/nibzard/uhm/blob/main/PRIVACY.md) is the normative field and retention description.
 
 `--local-input` changes explicitly piped stdin to local-only program data. The request carries only presence, byte count, UTF-8 status, and the optional `--input-format` label. It never carries the input body. Python runtime path/version/isolated-mode inventory is disclosed in every context mode for intentional routing.
 

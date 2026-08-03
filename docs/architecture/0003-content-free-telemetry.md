@@ -1,3 +1,5 @@
+<!-- diataxis: explanation -->
+
 # ADR 0003: Content-free aggregate telemetry
 
 - Status: accepted

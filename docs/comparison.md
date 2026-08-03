@@ -1,3 +1,5 @@
+<!-- diataxis: explanation -->
+
 # How uhm compares
 
 `uhm` takes one natural-language intent, picks one bounded shell action or a generated Python microprogram, runs it, prints the real result, and exits. It is deliberately smaller than a coding agent and deliberately quieter than a chatbot. One intent goes in. One bounded job comes out. Then `uhm` exits.
@@ -47,7 +49,7 @@ The cleanest way to state the difference:
 | Default approval | Always exposes the command for editing before execution | Ordinary actions run immediately; review can be requested or triggered for consequential actions |
 | Primary interface | Command-first | Result-first |
 | Execution types | Shell commands only | Shell commands, non-executing answers, or bounded Python microprograms |
-| Model selection | Inherits the cloud and local model ecosystem of the LLM CLI | Currently documented around OpenAI's Responses API |
+| Model selection | Inherits the cloud and local model ecosystem of the LLM CLI | Fixed OpenAI or Cerebras adapters; automatic selection requires reviewed qualification evidence |
 | Context | Joins the command-line words into a prompt | Bounded OS, shell, working-directory, Git and installed-tool context |
 | Piped input | No dedicated stdin-data workflow | Explicit piped input, including a local-only input mode |
 | Failure handling | Prints the command's captured error output | One bounded repair attempt in interactive use |
@@ -188,6 +190,6 @@ This page is a public scan dated August 2026. It is comprehensive but not mathem
 
 - [Getting started](getting-started.md) — install `uhm` and run your first intent.
 - [Core concepts](concepts.md) — the one-intent, one-bounded-job lifecycle.
-- [Bounded Python microprograms](program.md) — when and why `uhm` generates a program instead of a command.
+- [Program execution model](explanation/program-execution.md) — when and why `uhm` generates a program instead of a command.
 - [Behavior & exit codes](behavior-contract.md) — the approval, review, and exit-status contract.
 - [Privacy & telemetry](privacy.md) — what leaves your machine, and the local-only input mode.

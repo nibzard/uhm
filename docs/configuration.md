@@ -1,4 +1,6 @@
-# Configuration
+<!-- diataxis: reference -->
+
+# Configuration reference
 
 `uhm` works with no configuration file: every key has a built-in default. To override one, copy [`config.example.yaml`](https://github.com/nibzard/uhm/blob/main/config.example.yaml) to the path printed by `uhm config show` and uncomment the lines you need.
 
@@ -53,7 +55,7 @@ history:
   artifact_max_bytes: 1048576
 ```
 
-`metadata` is categorical and content-free. Richer levels are explicit and stay local. See [local history](local-history.md).
+`metadata` is categorical and content-free. Richer levels are explicit and stay local. See the [history reference](reference/history.md).
 
 ## `execution` — child-process guardrails
 
@@ -67,6 +69,8 @@ execution:
 `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, and uhm's private control variables are removed automatically. Add any other credential names (for example cloud-provider tokens) to `deny_env`; arbitrary inherited secrets cannot be identified reliably. These are operational guardrails, not a sandbox.
 
 ## `selection` — fixed choice or reviewed evidence
+
+Provider and model are an explicit pair; a model ID never changes the provider implicitly. See [Configure a provider](how-to/configure-providers.md) for task-oriented examples.
 
 ```yaml
 selection:
@@ -113,7 +117,7 @@ recovery:
   prune_batch: 100
 ```
 
-Capture is **separately consented** and off by default. Snapshots contain file bytes; they never leave the device and are excluded from telemetry. See [bounded recovery](recovery.md).
+Capture is **separately consented** and off by default. Snapshots contain file bytes; they never leave the device and are excluded from telemetry. See the [recovery reference](reference/recovery.md).
 
 ## `shell_context` — sensitive opt-in
 
@@ -142,24 +146,19 @@ aliases:
 
 Aliases are short triggers expanded **locally** — no API call, no API key. The expansion still passes through local effect detection and the invocation policy, so consequential effects are still flagged. Aliases are empty by default.
 
-## API key
+## Provider API keys
 
-The key is resolved in this order:
+The selected provider's key is resolved in this order:
 
-1. `OPENAI_API_KEY` environment variable
-2. A private `0600` secrets file (a line of the form `OPENAI_API_KEY=...`), whose path `uhm doctor` prints
+1. Its environment variable: `OPENAI_API_KEY` or `CEREBRAS_API_KEY`.
+2. The matching assignment in a private `0600` secrets file, whose path `uhm doctor` prints.
 
-Create the file with restricted permissions and add the line with a private editor:
-
-```sh
-install -m 600 /dev/null "$(uhm doctor 2>/dev/null | grep -o '/[^ ]*secrets[^ ]*')"
-# then edit that file to contain: OPENAI_API_KEY=sk-...
-```
-
-The OpenAI key is never passed to a child command's environment. Other inherited credentials require explicit `execution.deny_env` entries.
+Provider keys are never passed to generated programs and are removed from ordinary child-command environments. Other inherited credentials require explicit `execution.deny_env` entries.
 
 ## See also
 
-- [CLI reference](cli-reference.md) — `--model`, `--context`, and the rest of the flag surface
-- [Model selection](model-selection.md) — choosing and overriding the model
+- [CLI reference](cli-reference.md) — `--provider`, `--model`, `--context`, and the rest of the flag surface
+- [Configure a provider](how-to/configure-providers.md) — set keys and select a fixed provider/model pair
+- [Configure fallback](how-to/configure-fallback.md) — add one alternate for typed failures
+- [Provider reference](reference/providers.md) — provider capabilities and selection behavior
 - [Privacy & telemetry](privacy.md) — the on-device vs. outbound boundary

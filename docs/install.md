@@ -1,14 +1,25 @@
+<!-- diataxis: how-to -->
+
 # Install
 
 `uhm` runs on Linux and macOS. It is a single binary — no runtime, no daemon, no background services. Linux builds are statically linked (musl); macOS builds link the system shared libraries. Native Windows is not supported.
 
-You need an [OpenAI API key](https://platform.openai.com/api-keys); `uhm` calls the Responses API with `store: false`. Set it before your first invocation:
+OpenAI is the default provider. You need an [OpenAI API key](https://platform.openai.com/api-keys); `uhm` calls the Responses API with `store: false`. Set it before your first invocation:
 
 ```sh
 export OPENAI_API_KEY="sk-..."
 ```
 
 The key is read from the environment first, then from a private `0600` secrets file whose path `uhm doctor` prints. There is no account, login, or cloud history.
+
+To use Cerebras explicitly instead, set its key and select both provider and model:
+
+```sh
+export CEREBRAS_API_KEY="csk-..."
+uhm --provider cerebras --model gpt-oss-120b doctor network
+```
+
+This verifies endpoint compatibility and credentials; it does not claim that the pair is qualified for automatic evidence-based selection. See [Configuration](configuration.md) for persistent selection and optional fallback.
 
 ## Option 1 — prebuilt binary (recommended)
 
@@ -79,11 +90,11 @@ The crate passes `cargo publish --dry-run`, but publishing to crates.io is defer
 ```sh
 uhm --version        # uhm 0.3.0
 uhm doctor           # local configuration and terminal checks
-uhm doctor network   # confirm OpenAI is reachable and the key works
+uhm doctor network   # confirm the selected provider is reachable and its key works
 ```
 
 ## Next steps
 
 - [Quickstart](getting-started.md) — first result in under five minutes
 - [CLI reference](cli-reference.md) — every command and flag
-- [Configuration](configuration.md) — `config.yaml`, model precedence, and aliases
+- [Configuration](configuration.md) — providers, credentials, selection, and aliases

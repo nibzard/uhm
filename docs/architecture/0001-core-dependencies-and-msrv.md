@@ -1,3 +1,5 @@
+<!-- diataxis: explanation -->
+
 # ADR 0001: Core dependencies and MSRV
 
 Status: accepted for Plan 1
