@@ -1,0 +1,10 @@
+# Context
+
+## Background
+Improves the terminal presentation and keeps provider credentials unavailable to generated shell commands. The README demo is now visible near the product introduction.
+
+## Why This Way
+Validation normalizes shell builtin and shell-path requirements before enforcing the external executable requirement. The first-use notice and Markdown renderer use shared display-width-aware layout helpers.
+
+## Gotchas
+The context note is pushed separately because Git notes are not included in an ordinary branch push.
