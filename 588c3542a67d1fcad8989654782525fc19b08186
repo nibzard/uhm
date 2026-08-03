@@ -1,0 +1,10 @@
+# Context
+
+## Background
+Adds provider-neutral execution, evidence-gated model selection, and decision-grade qualification tooling for the v0.3 line.
+
+## Why This Way
+Provider wire differences remain isolated behind adapters while one canonical local contract and frozen qualification policy control acceptance and automatic selection.
+
+## Verification
+Rust fmt, clippy, 390 Rust tests, release build/install smoke, crate packaging, 5 telemetry tests, and 27 benchmark tests (8 environment-dependent skips) passed.
