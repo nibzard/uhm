@@ -91,7 +91,11 @@ fn resolve_python(path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
     None
 }
 
-fn minimal_path(runtime: &Path) -> std::ffi::OsString {
+/// The cleared child environment's `PATH`. It carries the interpreter's own
+/// directory plus the standard system binary directories, because a
+/// version-manager interpreter is often a shell script that resolves itself
+/// through `#!/usr/bin/env bash` and cannot start without them.
+pub(crate) fn minimal_path(runtime: &Path) -> std::ffi::OsString {
     let mut entries = Vec::new();
     if let Some(parent) = runtime.parent() {
         entries.push(parent.to_path_buf());
@@ -128,6 +132,27 @@ mod tests {
         assert!(!inventory.available);
         assert!(inventory.resolved_path.is_none());
         assert!(inventory.path().is_err());
+    }
+
+    #[test]
+    fn minimal_path_keeps_the_interpreter_directory_and_the_system_directories() {
+        let entries: Vec<PathBuf> =
+            std::env::split_paths(&minimal_path(Path::new("/opt/versions/3.13/bin/python3")))
+                .collect();
+        assert_eq!(
+            entries,
+            vec![
+                PathBuf::from("/opt/versions/3.13/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
+        // A shim living in a system directory must not duplicate that entry.
+        assert_eq!(
+            std::env::split_paths(&minimal_path(Path::new("/usr/bin/python3")))
+                .collect::<Vec<PathBuf>>(),
+            vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")]
+        );
     }
 
     #[test]

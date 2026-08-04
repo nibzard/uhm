@@ -262,10 +262,7 @@ pub fn preflight(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .env_clear()
-        .env(
-            "PATH",
-            python_path.parent().unwrap_or(Path::new("/usr/bin")),
-        )
+        .env("PATH", crate::runtime::minimal_path(python_path))
         .spawn()
     {
         Ok(value) => value,
@@ -480,7 +477,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear()
-        .env("PATH", python.parent().unwrap_or(Path::new("/usr/bin")))
+        .env("PATH", crate::runtime::minimal_path(python))
         .env("LANG", "C.UTF-8")
         .env("LC_ALL", "C.UTF-8")
         .env("TMPDIR", workspace.path());
@@ -994,6 +991,60 @@ mod tests {
         std::env::remove_var("CEREBRAS_API_KEY");
         assert_eq!(result.code, 0);
         assert_eq!(result.stdout, b"stripped\nstripped\nstripped\n");
+    }
+
+    /// Version managers such as pyenv and asdf put a shell script on `PATH`
+    /// instead of a binary, and that script resolves its own interpreter through
+    /// `#!/usr/bin/env bash`. The child environment must still be able to start
+    /// it. Builds its own shim so the assertion does not depend on how the host
+    /// happens to install Python.
+    #[cfg(unix)]
+    #[test]
+    fn executes_when_the_interpreter_is_a_version_manager_shim() {
+        use std::os::unix::fs::PermissionsExt;
+        let inventory = crate::runtime::inventory();
+        if !inventory.available {
+            return;
+        }
+        let real = std::process::Command::new(inventory.path().unwrap())
+            .args(["-I", "-S", "-c", "import sys; print(sys.executable)"])
+            .output()
+            .unwrap();
+        let real = String::from_utf8(real.stdout).unwrap().trim().to_owned();
+        assert!(!real.is_empty(), "could not resolve a real interpreter");
+        let home = tempfile::tempdir().unwrap();
+        let shim = home.path().join("python3");
+        std::fs::write(
+            &shim,
+            format!("#!/usr/bin/env bash\nexec \"{real}\" \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shimmed = crate::runtime::PythonInventory {
+            available: true,
+            resolved_path: Some(shim.to_string_lossy().into_owned()),
+            version: inventory.version.clone(),
+            isolated_no_site: true,
+        };
+        let cwd = std::env::current_dir().unwrap();
+        let result = execute(Request {
+            proposal: &proposal("print('shimmed')"),
+            python: &shimmed,
+            stdin: None,
+            cwd: &cwd,
+            config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
+            retain_workspace: false,
+            recovery: None,
+        })
+        .unwrap();
+        assert_eq!(
+            result.code,
+            0,
+            "{}",
+            String::from_utf8_lossy(&result.stderr_tail)
+        );
+        assert_eq!(result.stdout, b"shimmed\n");
     }
 
     #[test]
