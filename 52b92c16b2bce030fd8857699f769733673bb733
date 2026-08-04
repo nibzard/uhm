@@ -1,0 +1,5 @@
+# Context: v0.3.1 release preparation
+
+Patch release for prose-route reliability and evaluation hardening. Version references, install examples, current model-selection documentation, and Cargo metadata move together so the tag-validation and asset-naming workflow remain consistent. Historical v0.3.0 release and evaluation records intentionally remain unchanged.
+
+Verified with fmt, docs drift and installer syntax checks, clippy, all-target Rust tests, release build/install smoke test, cargo package, cargo publish dry-run, telemetry worker tests, and archived evidence checksums.
