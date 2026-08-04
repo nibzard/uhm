@@ -106,14 +106,16 @@ impl Timeouts {
 /// Build an agent for a specific destination. Proxy bypass is destination
 /// dependent, so the URL is deliberately part of construction.
 pub fn agent_for(url: &str, timeouts: Timeouts) -> Result<Agent, HttpError> {
-    let tls = tls_config()?;
+    let parsed = parse_url(url)?;
     let mut builder = ureq::AgentBuilder::new()
         .try_proxy_from_env(false)
-        .tls_config(tls)
         .timeout_connect(timeouts.connect)
         .timeout_write(timeouts.write)
         .timeout_read(timeouts.read);
-    let proxy = proxy_for(url)?;
+    if parsed.scheme() == "https" {
+        builder = builder.tls_config(tls_config()?);
+    }
+    let proxy = proxy_for(&parsed)?;
     let via_proxy = proxy.is_some();
     if let Some(proxy) = proxy {
         builder = builder.proxy(proxy);
@@ -248,19 +250,26 @@ fn configuration_error(message: String) -> HttpError {
     }
 }
 
-fn proxy_for(url: &str) -> Result<Option<ureq::Proxy>, HttpError> {
+fn parse_url(url: &str) -> Result<url::Url, HttpError> {
     let parsed = url::Url::parse(url).map_err(|_| HttpError {
         kind: crate::provider::ProviderErrorKind::RequestRejected,
         stage: FailureStage::Configuration,
         message: "request URL is invalid".into(),
         request_started: false,
     })?;
-    let host = parsed.host_str().ok_or_else(|| HttpError {
-        kind: crate::provider::ProviderErrorKind::RequestRejected,
-        stage: FailureStage::Configuration,
-        message: "request URL does not contain a host".into(),
-        request_started: false,
-    })?;
+    if parsed.host_str().is_none() {
+        return Err(HttpError {
+            kind: crate::provider::ProviderErrorKind::RequestRejected,
+            stage: FailureStage::Configuration,
+            message: "request URL does not contain a host".into(),
+            request_started: false,
+        });
+    }
+    Ok(parsed)
+}
+
+fn proxy_for(parsed: &url::Url) -> Result<Option<ureq::Proxy>, HttpError> {
+    let host = parsed.host_str().expect("validated request URL has a host");
     let port = parsed.port_or_known_default().unwrap_or(443);
     if no_proxy_matches(host, port) {
         return Ok(None);
