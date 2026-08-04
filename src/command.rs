@@ -7,7 +7,7 @@ use crate::outcome::Outcome;
 use crate::render::{ansi, card, spinner};
 use crate::{
     api, cache, context, history, model_selection, outcome, parent_shell, program, prompt,
-    recovery, safety, shell, telemetry, tty,
+    recovery, safety, shell, telemetry, tool_surface, tty,
 };
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Write};
@@ -136,6 +136,26 @@ pub fn handle(
     } else {
         context::gather(mode, &shell_name, config.context_timeout_ms)
     };
+    if !local_alias && mode != context::Mode::Minimal {
+        // Probing runs a local program, so consent is required before the first
+        // probe of a binary and is then remembered. Without a terminal there is
+        // nobody to ask, so only tools already allowed contribute.
+        let interactive = tty_available() && !args.json;
+        let observed = tool_surface::surface(
+            request,
+            &config.paths.data_dir,
+            &context::path_entries(),
+            Instant::now() + Duration::from_millis(config.context_timeout_ms),
+            &mut |identity| {
+                interactive
+                    && ask(&format!(
+                        "Run `{} --help` to learn its interface? [y/N] ",
+                        ansi::sanitize_untrusted_inline(&identity.name)
+                    ))
+            },
+        );
+        context::add_tool_surface(&mut snapshot, &observed);
+    }
     if let Some(session) = integration {
         context::add_shell_invocation(&mut snapshot, session, approved_history);
     }

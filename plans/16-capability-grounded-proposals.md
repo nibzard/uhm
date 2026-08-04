@@ -113,7 +113,26 @@ Piping stderr flips `isatty(2)` for the child, costing color and progress render
 - Phase 1 ships the honest behavior above without changing stream wiring.
 - Phase 3 adds pty-backed stderr retention so the child still sees a terminal while `uhm` keeps a bounded tail, with the contract line updated in the same change.
 
-## 2. Prefer one tool over two — withdrawn pending evidence
+## Measured behavior with the surface implemented
+
+Four live `--dry-run --fresh` proposals once phase 3 was wired, same intent as the baseline above.
+
+| Outcome | Samples |
+| --- | --- |
+| `steel browser start` — the real subcommand, never the invented `steel session` | 4 of 4 |
+| Still chained `&& open <url>`, a second unrelated tool | 3 of 4 |
+| Expressed the target through the named tool (`steel browser navigate`) | 1 of 4 |
+| Invented a `--session <name>` flag that top-level help does not show | 4 of 4 |
+
+The core defect is fixed: with the tool's own help in the request, no sample invented a subcommand, and clarification requests disappeared entirely. Both remaining problems are new information.
+
+Chaining an unrelated second tool survives the capability surface. The withdrawal recorded below was wrong, and the error was in the proxy: naming `start, navigate and live` inside the request told the model both that the tool existed *and* which subcommands to use, so it never had to choose a composition. Help in context supplies the surface without supplying that choice, and three of four samples still reached for `open`. Phase 2 is reinstated on this evidence.
+
+Top-level help does not reach nested flags. `steel --help` lists `browser` but not what `browser start` accepts, so the model filled the gap with a plausible invention. Probing one level deeper needs to know which subcommand matters, which is a model judgment and therefore a second call. Treat this as a documented limit of the phase rather than a defect to fix inside it.
+
+## 2. Prefer one tool over two — reinstated
+
+Withdrawn on two samples, then reinstated on four. The reasoning that follows is the original case; the measurement above is why it stands.
 
 The original reading was that one intent became two unrelated tools because `src/prompt.rs` permits compound commands without discouraging a second tool, and that developer-instruction guidance should say: prefer one tool's own subcommands, express a named tool's target through that tool, and do not hand an intent's payload to a general host utility when the named tool is the point of the request.
 

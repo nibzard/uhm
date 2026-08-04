@@ -35,6 +35,7 @@ mod shell;
 mod shell_integration;
 mod sse;
 mod telemetry;
+mod tool_surface;
 mod tty;
 
 use render::ansi;

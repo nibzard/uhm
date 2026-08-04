@@ -34,4 +34,5 @@ pub mod shell;
 pub mod shell_integration;
 mod sse;
 mod telemetry;
+mod tool_surface;
 mod tty;

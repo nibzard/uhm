@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const POLICY_VERSION: u32 = 4;
-pub const DISCLOSURE_VERSION: u32 = 3;
+pub const POLICY_VERSION: u32 = 5;
+pub const DISCLOSURE_VERSION: u32 = 4;
 pub const TOOL_CATALOG: &[&str] = &[
     "sh", "bash", "zsh", "fish", "git", "rg", "fd", "jq", "yq", "fzf", "gh", "python3", "node",
     "ruby", "go", "cargo", "make", "curl", "wget", "tar", "zip", "docker", "podman", "kubectl",
@@ -52,7 +52,8 @@ pub fn disclosure_payload() -> Value {
         "version": DISCLOSURE_VERSION,
         "default_mode":"standard",
         "leaves_device":true,
-        "groups":["Python 3 runtime path/version/isolated-mode support","OS and architecture","target shell","common tool presence","normalized working directory","bounded Git state","bounded directory entry names","invocation-only parent cwd and previous exit status when shell integration is used"],
+        "groups":["Python 3 runtime path/version/isolated-mode support","OS and architecture","target shell","common tool presence","normalized working directory","bounded Git state","bounded directory entry names","invocation-only parent cwd and previous exit status when shell integration is used","bounded help output of an installed tool your request names, after you allow that tool once"],
+        "tool_help":"when a request names an installed executable, uhm asks once per tool before running its help flag and may then include that bounded output; the answer is remembered until the tool changes",
         "shell_history":"off by default; when enabled, exactly one entry is previewed and requires confirmation",
         "local_input":"--local-input keeps piped content out of the model request",
         "inspect":"uhm context show", "minimize":"--context minimal", "minimize_config":"context_mode: minimal"
@@ -126,6 +127,25 @@ pub fn add_shell_invocation(
     }
 }
 
+/// Attach the observed self-description of tools the request names. Absent under
+/// `minimal`, which carries no general machine fields. The help text is a tool's
+/// own untrusted output, so it is sanitized here before it can reach a request or
+/// a terminal.
+pub fn add_tool_surface(snapshot: &mut Snapshot, observed: &[crate::tool_surface::Observed]) {
+    if snapshot.mode == "minimal" || observed.is_empty() {
+        return;
+    }
+    snapshot.machine["named_tools"] = observed
+        .iter()
+        .map(|tool| {
+            json!({
+                "name": crate::render::ansi::sanitize_untrusted_inline(&tool.name),
+                "help": crate::render::ansi::sanitize_untrusted(&tool.help),
+            })
+        })
+        .collect();
+}
+
 fn normalize_cwd(cwd: &Path) -> String {
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         if let Ok(relative) = cwd.strip_prefix(&home) {
@@ -159,15 +179,25 @@ fn entry_names(cwd: &Path, max: usize, max_bytes: usize) -> Vec<String> {
         })
         .collect()
 }
-fn path_entries() -> Vec<PathBuf> {
+pub(crate) fn path_entries() -> Vec<PathBuf> {
     std::env::var_os("PATH")
         .map(|v| std::env::split_paths(&v).collect())
         .unwrap_or_default()
 }
 fn executable(name: &str) -> bool {
-    path_entries().iter().any(|p| {
-        let f = p.join(name);
-        f.is_file() && is_executable(&f)
+    resolve_in(&path_entries(), name).is_some()
+}
+/// First supplied directory holding an executable regular file with this exact
+/// name. Callers pass a bare name; a name containing a separator resolves to
+/// nothing. The search list is a parameter so callers are not coupled to the
+/// process environment.
+pub(crate) fn resolve_in(search: &[PathBuf], name: &str) -> Option<PathBuf> {
+    if name.is_empty() || name.contains(std::path::MAIN_SEPARATOR) {
+        return None;
+    }
+    search.iter().find_map(|directory| {
+        let candidate = directory.join(name);
+        (candidate.is_file() && is_executable(&candidate)).then_some(candidate)
     })
 }
 #[cfg(unix)]
@@ -229,7 +259,10 @@ fn os_version(deadline: Instant) -> Option<String> {
         run(&["uname", "-r"], deadline)
     }
 }
-fn run(argv: &[&str], deadline: Instant) -> Option<String> {
+/// Run a bounded, inert probe: direct argv with no shell, stdin closed, stderr
+/// discarded, stdout capped, killed at the deadline. Output is returned only for
+/// a successful exit.
+pub(crate) fn run(argv: &[&str], deadline: Instant) -> Option<String> {
     if argv.is_empty() || Instant::now() >= deadline {
         return None;
     }
@@ -269,6 +302,41 @@ mod tests {
         let s = gather(Mode::Minimal, "/bin/sh", 50);
         assert_eq!(s.machine, json!({}));
     }
+    #[test]
+    fn minimal_carries_no_observed_tool_help() {
+        let mut snapshot = gather(Mode::Minimal, "/bin/sh", 50);
+        add_tool_surface(
+            &mut snapshot,
+            &[crate::tool_surface::Observed {
+                name: "steel".into(),
+                help: "usage: steel".into(),
+            }],
+        );
+        assert_eq!(snapshot.machine, json!({}));
+    }
+
+    #[test]
+    fn observed_tool_help_is_sanitized_before_it_can_leave() {
+        let mut snapshot = gather(Mode::Standard, "/bin/sh", 150);
+        add_tool_surface(
+            &mut snapshot,
+            &[crate::tool_surface::Observed {
+                name: "ste\u{1b}[31mel".into(),
+                help: "usage: \u{1b}[2Jsteel\nbrowser  start a session".into(),
+            }],
+        );
+        let rendered = snapshot.machine["named_tools"].to_string();
+        assert!(!rendered.contains('\u{1b}'), "{rendered}");
+        assert!(rendered.contains("browser"), "{rendered}");
+    }
+
+    #[test]
+    fn an_empty_observation_adds_no_field() {
+        let mut snapshot = gather(Mode::Standard, "/bin/sh", 150);
+        add_tool_surface(&mut snapshot, &[]);
+        assert!(snapshot.machine.get("named_tools").is_none());
+    }
+
     #[test]
     fn standard_tools_are_only_booleans() {
         let s = gather(Mode::Standard, "/bin/sh", 150);
