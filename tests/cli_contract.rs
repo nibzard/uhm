@@ -229,7 +229,12 @@ fn requested_missing_containment_fails_before_shell_execution() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(11));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("bwrap` is not available"));
+    let expected = if cfg!(target_os = "linux") {
+        "bwrap` is not available"
+    } else {
+        "available only on Linux"
+    };
+    assert!(String::from_utf8_lossy(&output.stderr).contains(expected));
     assert!(!marker.exists());
 }
 
