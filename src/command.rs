@@ -209,7 +209,9 @@ pub fn handle(
         },
     };
     let mut recovery_label_shown = false;
-    loop {
+    // Labeled so replacement paths nested in inner blocks can restart the job
+    // explicitly rather than binding `continue` to the wrong scope.
+    'job: loop {
         if matches!(route, "ask" | "explain")
             && !matches!(
                 &action,
@@ -1199,19 +1201,28 @@ pub fn handle(
                             "review or confirmation is required, but no terminal is available; use --force or --dry-run",
                         );
                     };
-                    eprint!("Run, revise, edit, copy, cancel? [R/v/e/c/q] ");
-                    let _ = std::io::stderr().flush();
-                    let Some(review_choice) = tty::read_line_cooked() else {
-                        interaction.decision("cancelled");
-                        return not_executed(
-                            args,
-                            &command,
-                            "review input closed; cancelled without execution",
-                        );
+                    let options = review_options(&budget);
+                    let decision = loop {
+                        eprint!("{}", review_prompt(options));
+                        let _ = std::io::stderr().flush();
+                        let Some(review_choice) = tty::read_line_cooked() else {
+                            interaction.decision("cancelled");
+                            return not_executed(
+                                args,
+                                &command,
+                                "review input closed; cancelled without execution",
+                            );
+                        };
+                        match review_decision(&review_choice, options) {
+                            ReviewDecision::Unavailable(reason) => {
+                                eprintln!("{}", ansi::warning(reason))
+                            }
+                            decision => break decision,
+                        }
                     };
-                    match review_choice.to_lowercase().as_str() {
-                        "" | "r" | "run" => {}
-                        "v" | "revise" if budget.can_replace() => {
+                    match decision {
+                        ReviewDecision::Run => {}
+                        ReviewDecision::Revise => {
                             eprint!("Feedback: ");
                             let _ = std::io::stderr().flush();
                             let feedback = tty::read_line_cooked().unwrap_or_default();
@@ -1243,7 +1254,7 @@ pub fn handle(
                             };
                             continue;
                         }
-                        "e" | "edit" if budget.replacement.is_none() => match edit(&command) {
+                        ReviewDecision::Edit => match edit(&command) {
                             Ok(v) => {
                                 let _ = budget.replace_with_edit();
                                 action = match (ProposedAction::Shell {
@@ -1277,13 +1288,16 @@ pub fn handle(
                                 return app_error(args, outcome::NOT_EXECUTED, "edit_error", &e)
                             }
                         },
-                        "c" | "copy" => {
+                        ReviewDecision::Copy => {
                             let _ = write_command(std::io::stdout(), &command);
                             return outcome::NOT_EXECUTED;
                         }
-                        _ => {
+                        ReviewDecision::Cancel => {
                             interaction.decision("cancelled");
                             return not_executed(args, &command, "cancelled by user");
+                        }
+                        ReviewDecision::Unavailable(_) => {
+                            unreachable!("the prompt loop only breaks on an available option")
                         }
                     }
                 } else if consequential && args.force && !args.json {
@@ -1355,85 +1369,116 @@ pub fn handle(
                             &detected,
                         );
                     };
-                    let available = result
+                    let diagnostics = result
                         .stderr_tail
                         .as_ref()
-                        .map(|v| ansi::sanitize_untrusted(&String::from_utf8_lossy(v)))
-                        .unwrap_or_else(|| {
-                            "diagnostics unavailable because stderr was attached to the terminal"
-                                .into()
-                        });
-                    eprintln!("uhm: command exited {} ({})", result.code, available);
-                    eprint!("Repair, edit, or stop? [r/e/N] ");
+                        .map(|v| ansi::sanitize_untrusted(&String::from_utf8_lossy(v)));
+                    eprintln!(
+                        "uhm: command exited {} ({})",
+                        result.code,
+                        diagnostics.as_deref().unwrap_or(NO_RETAINED_DIAGNOSTICS)
+                    );
+                    // Without retained diagnostics the repair seed holds only the
+                    // inputs that already produced this failure, so repair needs
+                    // the user to supply what the child printed.
+                    if diagnostics.is_none() {
+                        eprint!("Repair with feedback, edit, or stop? [r/e/N] ");
+                    } else {
+                        eprint!("Repair, edit, or stop? [r/e/N] ");
+                    }
                     let _ = std::io::stderr().flush();
-                    match tty::read_line_cooked()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .as_str()
-                    {
-                        "r" | "repair" | "y" | "yes" => {
-                            record_failed_attempt();
-                            let _ = budget.replace_with_model(Replacement::Repair);
-                            action = match propose(
-                                args,
-                                config,
-                                api_config,
-                                route,
-                                request,
-                                &snapshot,
-                                stdin.model_value_for(
-                                    args.local_input,
-                                    args.input_format.as_deref(),
-                                ),
-                                Some(
-                                    json!({"kind":"repair","prior_action":command,"exit_code":result.code,"signal":result.signal,"stderr":available}),
-                                ),
-                                &shell_name,
-                                &run_id,
-                                mode,
-                                related_run_id,
-                            ) {
-                                Ok((v, _, _, allowed)) => {
-                                    profile_allowed = allowed;
-                                    v
-                                }
-                                Err(e) => return model_error(args, &e),
-                            };
-                            continue;
-                        }
-                        "e" | "edit" => match edit(&command) {
-                            Ok(replacement) => {
-                                record_failed_attempt();
-                                let _ = budget.replace_with_edit();
-                                action = match (ProposedAction::Shell {
-                                    command: replacement,
-                                    metadata: crate::action::ProposalMetadata {
-                                        summary: "user-edited command".into(),
-                                        assumptions: Vec::new(),
-                                        effects: Vec::new(),
-                                        requirements: Vec::new(),
-                                    },
-                                    stdin_mode,
-                                })
-                                .validate()
-                                {
-                                    Ok(value) => value,
-                                    Err(error) => {
-                                        return app_error(
-                                            args,
-                                            outcome::NOT_EXECUTED,
-                                            "edit_error",
-                                            &error,
+                    // Breaking out of this block declines replacement and reports
+                    // the failure through the ordinary path below.
+                    'replacement: {
+                        match tty::read_line_cooked()
+                            .unwrap_or_default()
+                            .to_lowercase()
+                            .as_str()
+                        {
+                            "r" | "repair" | "y" | "yes" => {
+                                let feedback = if diagnostics.is_none() {
+                                    eprint!("Feedback: ");
+                                    let _ = std::io::stderr().flush();
+                                    let value = tty::read_line_cooked().unwrap_or_default();
+                                    if value.trim().is_empty() {
+                                        eprintln!(
+                                        "{}",
+                                        ansi::warning(
+                                            "no diagnostics and no feedback: repair would resend the same command"
                                         )
+                                    );
+                                        break 'replacement;
                                     }
+                                    Some(value.trim().to_owned())
+                                } else {
+                                    None
                                 };
-                                continue;
+                                record_failed_attempt();
+                                let _ = budget.replace_with_model(Replacement::Repair);
+                                action = match propose(
+                                    args,
+                                    config,
+                                    api_config,
+                                    route,
+                                    request,
+                                    &snapshot,
+                                    stdin.model_value_for(
+                                        args.local_input,
+                                        args.input_format.as_deref(),
+                                    ),
+                                    Some(shell_repair_payload(
+                                        &command,
+                                        &result,
+                                        diagnostics.as_deref(),
+                                        feedback.as_deref(),
+                                    )),
+                                    &shell_name,
+                                    &run_id,
+                                    mode,
+                                    related_run_id,
+                                ) {
+                                    Ok((v, _, _, allowed)) => {
+                                        profile_allowed = allowed;
+                                        v
+                                    }
+                                    Err(e) => return model_error(args, &e),
+                                };
+                                continue 'job;
                             }
-                            Err(e) => {
-                                return app_error(args, outcome::NOT_EXECUTED, "edit_error", &e)
-                            }
-                        },
-                        _ => {}
+                            "e" | "edit" => match edit(&command) {
+                                Ok(replacement) => {
+                                    record_failed_attempt();
+                                    let _ = budget.replace_with_edit();
+                                    action = match (ProposedAction::Shell {
+                                        command: replacement,
+                                        metadata: crate::action::ProposalMetadata {
+                                            summary: "user-edited command".into(),
+                                            assumptions: Vec::new(),
+                                            effects: Vec::new(),
+                                            requirements: Vec::new(),
+                                        },
+                                        stdin_mode,
+                                    })
+                                    .validate()
+                                    {
+                                        Ok(value) => value,
+                                        Err(error) => {
+                                            return app_error(
+                                                args,
+                                                outcome::NOT_EXECUTED,
+                                                "edit_error",
+                                                &error,
+                                            )
+                                        }
+                                    };
+                                    continue 'job;
+                                }
+                                Err(e) => {
+                                    return app_error(args, outcome::NOT_EXECUTED, "edit_error", &e)
+                                }
+                            },
+                            _ => {}
+                        }
                     }
                 }
                 let decision = if result.timed_out {
@@ -1566,6 +1611,100 @@ fn program_repair_payload(
         value["diagnostic"] = Value::String(diagnostic.to_owned());
     }
     value
+}
+
+/// Shown to the user when a terminal-attached child left no retained stderr.
+/// It describes `uhm`'s own stream wiring, so it is never sent to the model as
+/// if it were child output.
+const NO_RETAINED_DIAGNOSTICS: &str =
+    "diagnostics unavailable because stderr was attached to the terminal";
+
+fn shell_repair_payload(
+    command: &str,
+    result: &shell::Result,
+    diagnostics: Option<&str>,
+    feedback: Option<&str>,
+) -> Value {
+    json!({
+        "kind":"repair",
+        "prior_action":command,
+        "exit_code":result.code,
+        "signal":result.signal,
+        "stderr":diagnostics,
+        "feedback":feedback
+    })
+}
+
+/// Which review options the current budget can actually honor. Revision spends
+/// the global second model call; a local edit only needs the replacement slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReviewOptions {
+    revise: bool,
+    edit: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReviewDecision {
+    Run,
+    Revise,
+    Edit,
+    Copy,
+    Cancel,
+    Unavailable(&'static str),
+}
+
+fn review_options(budget: &Budget) -> ReviewOptions {
+    ReviewOptions {
+        revise: budget.can_replace(),
+        edit: budget.replacement.is_none(),
+    }
+}
+
+fn review_prompt(options: ReviewOptions) -> String {
+    let mut words = vec!["Run"];
+    let mut keys = vec!["R"];
+    if options.revise {
+        words.push("revise");
+        keys.push("v");
+    }
+    if options.edit {
+        words.push("edit");
+        keys.push("e");
+    }
+    words.push("copy");
+    keys.push("c");
+    words.push("cancel");
+    keys.push("q");
+    format!("{}? [{}] ", words.join(", "), keys.join("/"))
+}
+
+/// Resolve one review keystroke. An option that exists but is not currently
+/// offered explains itself so the caller can re-prompt; it never silently
+/// becomes a cancellation.
+fn review_decision(input: &str, options: ReviewOptions) -> ReviewDecision {
+    match input.trim().to_lowercase().as_str() {
+        "" | "r" | "run" => ReviewDecision::Run,
+        "v" | "revise" => {
+            if options.revise {
+                ReviewDecision::Revise
+            } else {
+                ReviewDecision::Unavailable(
+                    "revise is unavailable: this job has already spent its one replacement turn",
+                )
+            }
+        }
+        "e" | "edit" => {
+            if options.edit {
+                ReviewDecision::Edit
+            } else {
+                ReviewDecision::Unavailable(
+                    "edit is unavailable: this job has already spent its one replacement turn",
+                )
+            }
+        }
+        "c" | "copy" => ReviewDecision::Copy,
+        _ => ReviewDecision::Cancel,
+    }
 }
 
 fn program_contract_repair_payload(
@@ -2301,5 +2440,152 @@ mod tests {
         .unwrap();
         assert_eq!(response.run_id, run_id);
         assert_eq!(response.action.name.as_deref(), Some("UHM_PARENT_TEST"));
+    }
+
+    fn failed_shell_result(stderr_tail: Option<&[u8]>) -> shell::Result {
+        shell::Result {
+            code: 2,
+            signal: None,
+            stdout_tail: None,
+            stderr_tail: stderr_tail.map(<[u8]>::to_vec),
+            timed_out: false,
+            duration: std::time::Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn review_prompt_offers_only_the_options_the_budget_can_honor() {
+        assert_eq!(
+            review_prompt(ReviewOptions {
+                revise: true,
+                edit: true
+            }),
+            "Run, revise, edit, copy, cancel? [R/v/e/c/q] "
+        );
+        assert_eq!(
+            review_prompt(ReviewOptions {
+                revise: false,
+                edit: true
+            }),
+            "Run, edit, copy, cancel? [R/e/c/q] "
+        );
+        assert_eq!(
+            review_prompt(ReviewOptions {
+                revise: true,
+                edit: false
+            }),
+            "Run, revise, copy, cancel? [R/v/c/q] "
+        );
+        assert_eq!(
+            review_prompt(ReviewOptions {
+                revise: false,
+                edit: false
+            }),
+            "Run, copy, cancel? [R/c/q] "
+        );
+    }
+
+    #[test]
+    fn a_spent_replacement_slot_hides_revise_and_edit_from_the_review_prompt() {
+        let mut budget = Budget::default();
+        budget.initial_model(1);
+        assert_eq!(
+            review_options(&budget),
+            ReviewOptions {
+                revise: true,
+                edit: true
+            }
+        );
+        assert!(budget.replace_with_model(Replacement::Repair));
+        assert_eq!(
+            review_options(&budget),
+            ReviewOptions {
+                revise: false,
+                edit: false
+            }
+        );
+    }
+
+    #[test]
+    fn an_unavailable_option_explains_itself_instead_of_cancelling_the_job() {
+        let spent = ReviewOptions {
+            revise: false,
+            edit: false,
+        };
+        assert!(matches!(
+            review_decision("v", spent),
+            ReviewDecision::Unavailable(_)
+        ));
+        assert!(matches!(
+            review_decision("revise", spent),
+            ReviewDecision::Unavailable(_)
+        ));
+        assert!(matches!(
+            review_decision("e", spent),
+            ReviewDecision::Unavailable(_)
+        ));
+        assert!(matches!(
+            review_decision("edit", spent),
+            ReviewDecision::Unavailable(_)
+        ));
+    }
+
+    #[test]
+    fn review_decision_maps_every_advertised_key() {
+        let live = ReviewOptions {
+            revise: true,
+            edit: true,
+        };
+        for input in ["", "r", "run", "R"] {
+            assert_eq!(review_decision(input, live), ReviewDecision::Run, "{input}");
+        }
+        assert_eq!(review_decision("v", live), ReviewDecision::Revise);
+        assert_eq!(review_decision("e", live), ReviewDecision::Edit);
+        assert_eq!(review_decision("c", live), ReviewDecision::Copy);
+        assert_eq!(review_decision("copy", live), ReviewDecision::Copy);
+        for input in ["q", "n", "no", "cancel", "quit"] {
+            assert_eq!(
+                review_decision(input, live),
+                ReviewDecision::Cancel,
+                "{input}"
+            );
+        }
+        assert_eq!(review_decision("zzz", live), ReviewDecision::Cancel);
+    }
+
+    #[test]
+    fn shell_repair_payload_sends_null_rather_than_the_host_placeholder() {
+        let result = failed_shell_result(None);
+        let blind = shell_repair_payload("steel session start", &result, None, None);
+        assert_eq!(blind["stderr"], Value::Null);
+        assert!(!blind.to_string().contains(NO_RETAINED_DIAGNOSTICS));
+        assert!(!blind.to_string().contains("stderr was attached"));
+    }
+
+    #[test]
+    fn shell_repair_payload_carries_retained_diagnostics_and_user_feedback() {
+        let result = failed_shell_result(Some(b"unrecognized subcommand 'session'"));
+        let observed = shell_repair_payload(
+            "steel session start",
+            &result,
+            Some("unrecognized subcommand 'session'"),
+            None,
+        );
+        assert_eq!(
+            observed["stderr"],
+            Value::String("unrecognized subcommand 'session'".into())
+        );
+        assert_eq!(observed["feedback"], Value::Null);
+        let guided = shell_repair_payload(
+            "steel session start",
+            &result,
+            None,
+            Some("the subcommand is `sessions`, not `session`"),
+        );
+        assert_eq!(
+            guided["feedback"],
+            Value::String("the subcommand is `sessions`, not `session`".into())
+        );
+        assert_eq!(guided["exit_code"], Value::from(2));
     }
 }

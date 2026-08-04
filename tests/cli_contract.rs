@@ -62,6 +62,94 @@ fn reviewed_through_closed_pty(home: &Path, arguments: &str) -> Output {
         .unwrap()
 }
 
+/// Drive an interactive review through a real pty. `read_line_cooked` opens
+/// `/dev/tty`, so keystrokes must reach the controlling terminal rather than
+/// stdin, and the writing end must stay open until the child has read.
+fn reviewed_with_keystrokes(home: &Path, keys: &str, arguments: &str) -> Output {
+    let target = format!("{} {arguments}", binary());
+    let piped = if cfg!(target_os = "macos") {
+        format!("{{ printf '{keys}'; sleep 1; }} | script -q /dev/null {target}")
+    } else {
+        format!("{{ printf '{keys}'; sleep 1; }} | script -qefc '{target}' /dev/null")
+    };
+    Command::new("/bin/sh")
+        .args(["-c", &piped])
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("TERM", "dumb")
+        .output()
+        .unwrap()
+}
+
+fn review_fixture(temp: &Path) -> std::path::PathBuf {
+    let target = temp.join("existing.txt");
+    fs::write(&target, "original\n").unwrap();
+    let config_dir = temp.join("config/uhm");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.yaml"),
+        format!(
+            "aliases:\n  overwrite: 'printf changed > {}'\n",
+            target.display()
+        ),
+    )
+    .unwrap();
+    let data_dir = temp.join("data/uhm");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        data_dir.join("notice-revision"),
+        r#"{"endpoints":["https://api.openai.com/v1/responses"],"revision":5}"#,
+    )
+    .unwrap();
+    target
+}
+
+#[test]
+fn review_advertises_every_option_it_can_honor() {
+    if Command::new("script").arg("--version").output().is_err() && cfg!(not(target_os = "macos")) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let target = review_fixture(temp.path());
+    let output = reviewed_with_keystrokes(temp.path(), "q\\n", "--plain overwrite");
+    let rendered = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        rendered.contains("Run, revise, edit, copy, cancel? [R/v/e/c/q]"),
+        "{rendered}"
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
+}
+
+#[test]
+fn an_unrecognized_review_key_cancels_without_executing() {
+    if Command::new("script").arg("--version").output().is_err() && cfg!(not(target_os = "macos")) {
+        return;
+    }
+    for keys in ["q\\n", "zzz\\n"] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = review_fixture(temp.path());
+        let output = reviewed_with_keystrokes(temp.path(), keys, "--plain overwrite");
+        let rendered = String::from_utf8_lossy(&output.stdout);
+        assert!(rendered.contains("cancelled by user"), "{keys}: {rendered}");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
+    }
+}
+
+#[test]
+fn copying_from_review_emits_the_command_without_executing_it() {
+    if Command::new("script").arg("--version").output().is_err() && cfg!(not(target_os = "macos")) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let target = review_fixture(temp.path());
+    let output = reviewed_with_keystrokes(temp.path(), "c\\n", "--plain overwrite");
+    let rendered = String::from_utf8_lossy(&output.stdout);
+    assert!(rendered.contains("printf changed >"), "{rendered}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
+}
+
 #[test]
 fn exact_child_status_wins() {
     let temp = tempfile::tempdir().unwrap();
