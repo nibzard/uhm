@@ -121,7 +121,7 @@ fn prose_only_routes_never_execute_a_local_alias() {
     for route in ["ask", "explain"] {
         let output = configured(temp.path(), &yaml, &[route, "inspect"]);
         assert_eq!(output.status.code(), Some(10));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("prose-only"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("cannot execute local actions"));
         assert!(!marker.exists());
     }
 }

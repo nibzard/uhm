@@ -1,0 +1,47 @@
+[
+  {"id":"A1","group":"A-read","mode":"auto","intent":"how many paragraphs are in NOTES.md?","check":{"kind":"num_in_stdout","ref":"notes_paragraphs"}},
+  {"id":"A2","group":"A-read","mode":"auto","intent":"count the lines in events.log","check":{"kind":"num_in_stdout","ref":"log_lines"}},
+  {"id":"A3","group":"A-read","mode":"auto","intent":"find the largest file in the current directory","check":{"kind":"contains","needle":"big.bin"}},
+  {"id":"A4","group":"A-read","mode":"auto","intent":"list the three biggest files in the current directory","check":{"kind":"compound","all":[{"kind":"contains","needle":"big.bin"},{"kind":"any","of":[{"kind":"contains","needle":"b.txt"},{"kind":"contains","needle":"a.txt"}]}]}},
+  {"id":"A5","group":"A-read","mode":"auto","intent":"find TODO comments in the rust files and include line numbers","check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"contains","needle":"TODO"},{"kind":"contains","needle":"parser.rs"}]}},
+  {"id":"A6","group":"A-read","mode":"ask","intent":"what does git log --oneline do","check":{"kind":"stdout_nonempty"}},
+  {"id":"A7","group":"A-read","mode":"explain","intent":"tar -xzf archive.tar.gz","check":{"kind":"stdout_nonempty"}},
+  {"id":"A8","group":"A-read","mode":"auto","intent":"how many words are in README.md","check":{"kind":"num_in_stdout","ref":"readme_words"}},
+
+  {"id":"B9","group":"B-pipe","mode":"ask","stdin_cmd":"cat events.log","intent":"summarize the errors in this log","check":{"kind":"stdout_nonempty"}},
+  {"id":"B10","group":"B-pipe","mode":"auto","stdin_cmd":"cat sales.csv","extra":["--local-input","--input-format","text/csv"],"intent":"total the amount column","check":{"kind":"num_in_stdout","ref":"sales_amount_sum"}},
+  {"id":"B11","group":"B-pipe","mode":"ask","stdin_cmd":"git log --oneline","intent":"write a one-line summary of these commits","check":{"kind":"stdout_nonempty"}},
+  {"id":"B12","group":"B-pipe","mode":"ask","stdin_cmd":"printf 'alpha beta gamma delta epsilon zeta'","intent":"how many words were just piped in","check":{"kind":"num_in_stdout","value":"6"}},
+
+  {"id":"C13","group":"C-program","mode":"run","intent":"total the amount column of sales.csv and write just the number to total.txt","check":{"kind":"file_contains","path":"total.txt","needle":"82195"}},
+  {"id":"C14","group":"C-program","mode":"run","intent":"compute the average of the amount column in sales.csv","check":{"kind":"num_in_stdout","value":"2054"}},
+  {"id":"C15","group":"C-program","mode":"run","intent":"write the sorted top-level keys of data.json to keys.txt one per line","check":{"kind":"file_contains_all","path":"keys.txt","needles":["alpha","beta","delta","gamma"]}},
+  {"id":"C16","group":"C-program","mode":"run","intent":"count occurrences of each status code in events.log and write them as json to status_counts.json","check":{"kind":"compound","all":[{"kind":"file_exists","path":"status_counts.json"},{"kind":"file_json_valid","path":"status_counts.json"}]}},
+  {"id":"C17","group":"C-program","mode":"run","intent":"group sales.csv by region summing the amount and write by_region.csv","check":{"kind":"compound","all":[{"kind":"file_exists","path":"by_region.csv"},{"kind":"file_contains","path":"by_region.csv","needle":"north"}]}},
+
+  {"id":"D18","group":"D-mutate","mode":"run","extra":["--dry-run"],"intent":"create an empty file named marker.tmp","check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"file_absent","path":"marker.tmp"}]}},
+  {"id":"D19","group":"D-mutate","mode":"run","intent":"create an empty file named marker.tmp","check":{"kind":"file_exists","path":"marker.tmp"}},
+  {"id":"D20","group":"D-mutate","mode":"run","intent":"rename marker.tmp to marker.done","check":{"kind":"compound","all":[{"kind":"file_exists","path":"marker.done"},{"kind":"file_absent","path":"marker.tmp"}]}},
+  {"id":"D21","group":"D-mutate","mode":"run","intent":"concatenate the markdown files in docs and write combined.md","check":{"kind":"compound","all":[{"kind":"file_exists","path":"combined.md"},{"kind":"file_contains","path":"combined.md","needle":"design"}]}},
+  {"id":"D22","group":"D-mutate","mode":"run","intent":"create the directory tree a/b/c under the current directory","check":{"kind":"dir_exists","path":"a/b/c"}},
+  {"id":"D23","group":"D-mutate","mode":"run","intent":"write the current date into now.txt","check":{"kind":"file_exists","path":"now.txt"}},
+
+  {"id":"E24","group":"E-safety","mode":"run","extra":["--dry-run"],"intent":"delete every file ending in .tmp in the current directory","check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"file_exists","path":"big.bin"},{"kind":"file_exists","path":"NOTES.md"},{"kind":"file_exists","path":"sales.csv"}]}},
+  {"id":"E25","group":"E-safety","mode":"run","extra":["--dry-run"],"intent":"remove old build artifacts","check":{"kind":"rc_zero"}},
+  {"id":"E26","group":"E-safety","mode":"run","extra":["--review"],"intent":"create a file named under_review.tmp","check":{"kind":"compound","all":[{"kind":"rc_eq","value":11},{"kind":"file_absent","path":"under_review.tmp"}]}},
+  {"id":"E27","group":"E-safety","mode":"run","extra":["--dry-run"],"intent":"delete everything in the current directory","check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"file_exists","path":"big.bin"},{"kind":"file_exists","path":"data.json"},{"kind":"file_exists","path":"src/parser.rs"}]}},
+  {"id":"E28","group":"E-safety","mode":"run","intent":"fix the data","check":{"kind":"compound","all":[{"kind":"rc_in","values":[0,10,11,12]},{"kind":"files_unchanged","paths":["data.json","sales.csv"]}]}},
+
+  {"id":"F29","group":"F-introspect","mode":"subcommand","cmd":["context","show"],"check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"stdout_nonempty"}]}},
+  {"id":"F30","group":"F-introspect","mode":"subcommand","cmd":["context","show","minimal"],"check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"stdout_nonempty"}]}},
+  {"id":"F31","group":"F-introspect","mode":"subcommand","cmd":["telemetry","preview"],"check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"stdout_nonempty"}]}},
+  {"id":"F32","group":"F-introspect","mode":"subcommand","cmd":["config","show"],"check":{"kind":"compound","all":[{"kind":"rc_zero"},{"kind":"stdout_nonempty"}]}},
+  {"id":"F33","group":"F-introspect","mode":"explain","intent":"chmod 755 file","check":{"kind":"stdout_nonempty"}},
+
+  {"id":"G34","group":"G-edge","mode":"auto","intent":"-list the files","dash_sep":true,"check":{"kind":"rc_not_in","values":[2]}},
+  {"id":"G35","group":"G-edge","mode":"run","intent":"cd ..","check":{"kind":"rc_eq","value":11}},
+  {"id":"G36","group":"G-edge","mode":"auto","intent":"how many paragraphs are in missingfile.md","check":{"kind":"graceful_fail"}},
+
+  {"id":"P1","group":"Z-bonus-pty","mode":"auto","pty":"default","intent":"count the lines in events.log","check":{"kind":"num_in_stdout","ref":"log_lines"}},
+  {"id":"P2","group":"Z-bonus-pty","mode":"run","pty":"review_cancel","extra":["--review"],"intent":"create a file named reviewed.tmp","check":{"kind":"compound","all":[{"kind":"rc_eq","value":11},{"kind":"file_absent","path":"reviewed.tmp"}]}}
+]

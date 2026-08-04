@@ -1,0 +1,20 @@
+{
+  "v": 2,
+  "event": "interaction_summary",
+  "release": "0.3",
+  "os": "linux",
+  "arch": "x86_64",
+  "shell": "other",
+  "mode": "auto",
+  "route": "unknown",
+  "decision": "not_run",
+  "effects": "none",
+  "proposal_outcome": "not_requested",
+  "execution_outcome": "not_run",
+  "user_feedback": "unknown",
+  "latency": "lt_1s",
+  "cache": "unknown",
+  "parent_action": "not_applicable",
+  "interactive": false,
+  "notice_revision": 5
+}

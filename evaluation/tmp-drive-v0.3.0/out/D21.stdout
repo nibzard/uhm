@@ -1,0 +1,1 @@
+{"namespace":"uhm","outcome":"not_executed","exit_code":11,"executed":false,"command":"find docs -type f -name '*.md' -print0 | sort -z | xargs -0 -r cat > combined.md","message":"review is required; automation must use --force or --dry-run"}

@@ -1,0 +1,54 @@
+{
+  "notes_paragraphs": 5,
+  "notes_words": 95,
+  "readme_words": 38,
+  "log_lines": 60,
+  "log_status_counts": {
+    "200": 31,
+    "403": 7,
+    "404": 15,
+    "500": 7
+  },
+  "log_error_lines": 29,
+  "sales_rows": 40,
+  "sales_amount_sum": 82195,
+  "sales_amount_mean": 2054.875,
+  "by_region": {
+    "east": 21055,
+    "north": 19045,
+    "south": 20050,
+    "west": 22045
+  },
+  "data_json_keys": [
+    "alpha",
+    "beta",
+    "delta",
+    "gamma"
+  ],
+  "todo_in_rust": 1,
+  "git_commits": 2,
+  "git_branch": "master",
+  "largest_file": "big.bin",
+  "top3_files": [
+    "big.bin",
+    "b.txt",
+    "a.txt"
+  ],
+  "all_files": [
+    "big.bin",
+    "b.txt",
+    "a.txt",
+    "events.log",
+    "sales.csv",
+    "NOTES.md",
+    "README.md",
+    "src/parser.rs",
+    "data.json",
+    ".gitignore",
+    "blobs/small.txt",
+    "src/loader.py",
+    "docs/limits.md",
+    "config.yaml",
+    "docs/design.md"
+  ]
+}

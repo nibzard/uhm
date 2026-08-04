@@ -109,7 +109,7 @@ uhm run --dry-run count every occurrence of the word world in report.txt
 uhm run --review remove old build artifacts
 ```
 
-Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. `--force` skips the advisory prompt for a detected consequential action, still showing the warning.
+Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. In a non-interactive shell, a proposal that mutates existing state pauses with status 11 because it cannot ask for confirmation; inspect it with `--dry-run`, then rerun with `--force` to authorize the mutation. `--force` still shows any warning.
 
 If one essential detail is missing, `uhm` can ask one question and revise the proposal. A failed command can get one bounded repair attempt in an interactive terminal. There is no open-ended chat loop.
 

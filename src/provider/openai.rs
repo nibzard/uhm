@@ -35,7 +35,7 @@ impl ProviderAdapter for OpenAiAdapter {
             "model": invocation.model,
             "instructions": crate::prompt::DEVELOPER_INSTRUCTIONS,
             "input": invocation.input,
-            "tools": crate::prompt::tools(),
+            "tools": crate::prompt::tools_for_input(invocation.input),
             "tool_choice": "required",
             "parallel_tool_calls": false,
             "store": false,
@@ -202,13 +202,26 @@ fn validate_returned_tools(response: &Value) -> Result<(), String> {
     let tools = response["tools"]
         .as_array()
         .ok_or("response omitted resolved strict tool metadata")?;
-    if tools.len() != 5 {
-        return Err("response did not resolve exactly five proposal tools".into());
+    if !matches!(tools.len(), 2 | 5) {
+        return Err("response did not resolve a canonical proposal tool set".into());
     }
+    let mut names = Vec::new();
     for tool in tools {
         if tool["type"] != "function" || tool["strict"] != true {
             return Err("response resolved a proposal tool without strict mode".into());
         }
+        names.push(tool["name"].as_str().unwrap_or_default());
+    }
+    let prose = ["return_answer", "request_clarification"];
+    let complete = [
+        "return_answer",
+        "run_program",
+        "run_shell",
+        "require_parent_shell",
+        "request_clarification",
+    ];
+    if names != prose && names != complete {
+        return Err("response resolved a noncanonical proposal tool set".into());
     }
     Ok(())
 }
@@ -241,5 +254,48 @@ mod tests {
         assert_eq!(value["stream"], false);
         assert!(value.get("previous_response_id").is_none());
         assert_eq!(value["tools"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn prose_request_exposes_only_answer_and_clarification() {
+        let input = crate::prompt::proposal_input(
+            "ask",
+            "summarize",
+            json!({}),
+            json!({"present":true,"text":"hello"}),
+            None,
+        );
+        let request = OpenAiAdapter.build_request(&invocation(&input)).unwrap();
+        let value: Value = serde_json::from_str(&request.body).unwrap();
+        let names = value["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["return_answer", "request_clarification"]);
+    }
+
+    #[test]
+    fn accepts_resolved_prose_tool_subset() {
+        let prose_tools = crate::prompt::tools_for_input(&crate::prompt::proposal_input(
+            "ask",
+            "summarize",
+            json!({}),
+            json!({}),
+            None,
+        ));
+        let raw = json!({
+            "status":"completed",
+            "model":"test-model",
+            "tools":prose_tools,
+            "output":[{
+                "type":"function_call",
+                "status":"completed",
+                "name":"return_answer",
+                "arguments":"{\"text\":\"summary\"}"
+            }]
+        });
+        assert!(parse("test-model", &raw.to_string(), 1).is_ok());
     }
 }

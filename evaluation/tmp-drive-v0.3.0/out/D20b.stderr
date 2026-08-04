@@ -1,0 +1,1 @@
+{"namespace":"uhm.child","outcome":"executed","exit_code":0,"executed":true,"message":"detected effects: writes local data, reads local data, deletes local data"}

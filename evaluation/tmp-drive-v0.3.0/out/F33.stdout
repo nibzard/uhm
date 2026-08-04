@@ -1,0 +1,1 @@
+{"namespace":"uhm","outcome":"answer","exit_code":0,"executed":false,"message":"`chmod 755 file` sets permissions on `file` to `rwxr-xr-x`: the owner may read, write, and execute it; group members and others may read and execute it."}

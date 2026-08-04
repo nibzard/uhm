@@ -1,0 +1,10 @@
+[
+  {"id":"B9b","group":"B-pipe","mode":"auto","stdin_cmd":"cat events.log","intent":"summarize the errors in this log","check":{"kind":"stdout_nonempty"}},
+  {"id":"C13b","group":"C-program","mode":"run","extra":["--force"],"intent":"total the amount column of sales.csv and write just the number to total.txt","check":{"kind":"file_contains","path":"total.txt","needle":"82195"}},
+  {"id":"C15b","group":"C-program","mode":"run","extra":["--force"],"intent":"write the sorted top-level keys of data.json to keys.txt one per line","check":{"kind":"file_contains_all","path":"keys.txt","needles":["alpha","beta","delta","gamma"]}},
+  {"id":"C16b","group":"C-program","mode":"run","extra":["--force"],"intent":"count occurrences of each status code in events.log and write them as json to status_counts.json","check":{"kind":"compound","all":[{"kind":"file_exists","path":"status_counts.json"},{"kind":"file_json_valid","path":"status_counts.json"}]}},
+  {"id":"C17b","group":"C-program","mode":"run","extra":["--force"],"intent":"group sales.csv by region summing the amount and write by_region.csv","check":{"kind":"compound","all":[{"kind":"file_exists","path":"by_region.csv"},{"kind":"file_contains","path":"by_region.csv","needle":"north"}]}},
+  {"id":"D20b","group":"D-mutate","mode":"run","extra":["--force"],"intent":"rename marker.tmp to marker.done","check":{"kind":"compound","all":[{"kind":"file_exists","path":"marker.done"},{"kind":"file_absent","path":"marker.tmp"}]}},
+  {"id":"D21b","group":"D-mutate","mode":"run","extra":["--force"],"intent":"concatenate the markdown files in docs and write combined.md","check":{"kind":"compound","all":[{"kind":"file_exists","path":"combined.md"},{"kind":"file_contains","path":"combined.md","needle":"design"}]}},
+  {"id":"D23b","group":"D-mutate","mode":"run","extra":["--force"],"intent":"write the current date into now.txt","check":{"kind":"file_exists","path":"now.txt"}}
+]

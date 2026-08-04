@@ -34,7 +34,7 @@ These may appear before or after a subcommand, up to the first intent word.
 | `--context` | `minimal\|standard\|full` | Outbound context mode |
 | `--review` | — | Review every proposal (`run`/`revise`/`edit`/`copy`/`cancel`) |
 | `--dry-run` | — | Emit the exact proposal, never execute |
-| `--force` | — | Proceed past warnings without confirmation |
+| `--force` | — | Authorize non-interactive mutation and proceed past warnings without confirmation |
 | `--plain` | — | Cooked ASCII-safe UI, no styling or animation |
 | `--no-motion` | — | Disable animation, keep color and Unicode |
 | `--no-stream` | — | Buffer the response instead of streaming |
@@ -48,6 +48,8 @@ These may appear before or after a subcommand, up to the first intent word.
 | `-v, --verbose` | — | Verbose diagnostics |
 
 `--review`, `--dry-run`, and `--force` are **pairwise mutually exclusive**. See the [behavior table](behavior-contract.md) for how they interact across TTY/non-TTY and route.
+
+In a non-TTY environment, work that mutates existing state cannot prompt for confirmation and returns status 11 without executing. Use `--dry-run` to inspect the exact proposal, then repeat the invocation with `--force` if the mutation is intended. The JSON `message` gives the same next step.
 
 Generated Python uses the `uhm_helper_v1` resource contract. Its process stdin is closed and its cwd is private; `--local-input` exposes piped bytes only when the proposal selects `stdin_mode=local_path`. A preflight contract error may offer one user-triggered complete replacement in an interactive terminal. That replacement shares the global second-model-call slot, never runs automatically in non-TTY or JSON mode, and leaves room for only one execution because the rejected proposal did not run.
 

@@ -1,0 +1,104 @@
+{
+  "context": {
+    "machine": {
+      "architecture": "x86_64",
+      "entries": [
+        ".git",
+        ".gitignore",
+        "NOTES.md",
+        "README.md",
+        "a",
+        "a.txt",
+        "b.txt",
+        "big.bin",
+        "blobs",
+        "config.yaml",
+        "data.json",
+        "docs",
+        "events.log",
+        "marker.tmp",
+        "sales.csv",
+        "src"
+      ],
+      "git": {
+        "branch": "master",
+        "changed_count": 9,
+        "dirty": true
+      },
+      "os": {
+        "family": "linux",
+        "version": "6.8.0-124-generic"
+      },
+      "session": {
+        "ssh": true,
+        "tmux": true,
+        "tty": false
+      },
+      "target_shell": "/bin/bash",
+      "tools": {
+        "apt": true,
+        "aws": false,
+        "bash": true,
+        "brew": false,
+        "cargo": true,
+        "curl": true,
+        "dnf": false,
+        "docker": true,
+        "fd": false,
+        "fish": false,
+        "fzf": false,
+        "gcloud": false,
+        "gh": true,
+        "git": true,
+        "go": true,
+        "jq": true,
+        "kubectl": false,
+        "make": true,
+        "node": true,
+        "podman": false,
+        "python3": true,
+        "rg": true,
+        "ruby": false,
+        "sh": true,
+        "tar": true,
+        "wget": true,
+        "yq": false,
+        "zip": false,
+        "zsh": false
+      },
+      "working_directory": "…/work"
+    },
+    "mode": "standard",
+    "policy_version": 4,
+    "program_runtime": {
+      "available": true,
+      "isolated_no_site": true,
+      "resolved_path": "/usr/bin/python3.12",
+      "version": "3.12.3"
+    }
+  },
+  "disclosure": {
+    "config": "context_mode: minimal",
+    "default_mode": "standard",
+    "groups": [
+      "Python 3 runtime path/version/isolated-mode support",
+      "OS and architecture",
+      "target shell",
+      "common tool presence",
+      "normalized working directory",
+      "bounded Git state",
+      "bounded directory entry names",
+      "invocation-only parent cwd and previous exit status when shell integration is used"
+    ],
+    "inspect": "uhm context show",
+    "leaves_device": true,
+    "local_input": "--local-input keeps piped content out of the model request",
+    "minimize": "--context minimal",
+    "shell_history": "off by default; when enabled, exactly one entry is previewed and requires confirmation",
+    "version": 3
+  },
+  "prompt": "<user intent>",
+  "stdin": {
+    "present": "<depends on invocation>"
+  }
+}

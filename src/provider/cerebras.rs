@@ -31,7 +31,7 @@ impl ProviderAdapter for CerebrasAdapter {
     }
 
     fn build_request(&self, invocation: &Invocation<'_>) -> Result<HttpRequest, ProviderError> {
-        let tools = crate::prompt::tools()
+        let tools = crate::prompt::tools_for_input(invocation.input)
             .as_array()
             .expect("canonical tools are an array")
             .iter()
@@ -240,6 +240,28 @@ mod tests {
         assert!(!request.body.contains("maxItems"));
         assert!(!request.body.contains("\"pattern\""));
         assert_eq!(value["tools"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn prose_request_exposes_only_answer_and_clarification() {
+        let mut call = invocation();
+        let input = crate::prompt::proposal_input(
+            "explain",
+            "summarize",
+            json!({}),
+            json!({"present":true,"text":"hello"}),
+            None,
+        );
+        call.input = &input;
+        let request = CerebrasAdapter.build_request(&call).unwrap();
+        let value: Value = serde_json::from_str(&request.body).unwrap();
+        let names = value["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["return_answer", "request_clarification"]);
     }
 
     #[test]

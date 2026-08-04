@@ -1,0 +1,1 @@
+{"command":"builtin cd -- '..'","executed":false,"exit_code":11,"message":"install the optional shell wrapper to apply this typed action","namespace":"uhm","outcome":"requires_parent_shell","requires_parent_shell":true}

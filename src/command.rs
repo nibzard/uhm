@@ -220,7 +220,7 @@ pub fn handle(
                 args,
                 outcome::MODEL,
                 "route_contract_error",
-                "ask and explain are prose-only; the model proposed local execution",
+                "ask and explain cannot execute local actions; retry the prose request, or use `uhm run <intent>` to authorize execution",
             );
         }
         if route == "recover" && !recovery_label_shown && !args.json {
