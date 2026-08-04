@@ -1,0 +1,3 @@
+# Context
+
+Native macOS correctly reports that Bubblewrap is Linux-only, while Linux with an empty PATH reports that bwrap is unavailable. The fail-closed CLI regression now accepts the platform-specific diagnostic while continuing to require status 11 and no filesystem mutation.
