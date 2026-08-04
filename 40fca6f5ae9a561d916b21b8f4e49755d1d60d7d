@@ -1,0 +1,15 @@
+# Design: Layered post-v0.3.2 hardening
+
+## Problem
+The v0.3.2 black-box assessment passed but identified residual operational risks: unsandboxed children, inherited non-provider credentials, minimal-container installer assumptions, and incomplete release/provider evidence.
+
+## Approach
+Keep compatibility-preserving defaults while adding explicit controls: a common-secret deny preset, value-safe environment diagnostics, fail-closed Bubblewrap containment, portable temporary-directory selection, SBOM attestations, and credential-backed provider smoke infrastructure.
+
+## Key Trade-offs
+- Secret filtering and containment remain opt-in so existing cloud and filesystem workflows do not silently break.
+- Bubblewrap restricts network and writes but deliberately does not claim to hide readable host files.
+- Live provider tests are manually dispatched because they require repository credentials and incur external calls.
+
+## Verification
+421 Rust tests, strict Clippy, documentation/workflow checks, installer and provider self-tests, telemetry tests, release build, and crate packaging passed before release.
