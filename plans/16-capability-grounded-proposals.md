@@ -130,6 +130,30 @@ Chaining an unrelated second tool survives the capability surface. The withdrawa
 
 Top-level help does not reach nested flags. `steel --help` lists `browser` but not what `browser start` accepts, so the model filled the gap with a plausible invention. Probing one level deeper needs to know which subcommand matters, which is a model judgment and therefore a second call. Treat this as a documented limit of the phase rather than a defect to fix inside it.
 
+## Measured behavior with the single-tool guidance added
+
+Four more proposals after `src/prompt.rs` gained both the single-tool preference and a line naming `named_tools` as the authoritative surface for a tool's subcommands and flags.
+
+| Outcome | Before guidance | After guidance |
+| --- | --- | --- |
+| Chained an unrelated second tool (`&& open <url>`) | 3 of 4 | 0 of 4 |
+| Stayed inside the named tool | 1 of 4 | 4 of 4 |
+| Produced a command that actually opens the page | 1 of 4 | 0 of 4 |
+| Dropped the target entirely (`steel browser start --session hacker-news`) | 0 of 4 | 2 of 4 |
+| Invented a `--session` flag help does not list | 4 of 4 | 2 of 4 |
+
+The guidance did exactly what it was written to do and did not make the product better. Chaining is gone and every sample stayed inside the named tool, but composition got less complete rather than more correct: two samples started a session and silently discarded the URL, which is a worse failure than a wrong-but-complete attempt because nothing reports the missing half.
+
+One sample explains why, and names the fix itself: "The supplied Steel help lists `steel browser start` but no navigation command or URL argument for browser sessions. Should I start the session only, or provide the output of `steel describe browser` so I can use its documented navigation action?" Top-level help does not reach `steel browser navigate`, so no amount of composition guidance can recover it. The model is not failing to follow instructions; it is being asked to compose from a surface that omits the operation it needs.
+
+Keep the guidance — invented subcommands stay gone and the field is now named for what it is — but do not treat this phase as the fix. The depth limitation is the remaining defect.
+
+## 4. Reconsider the deeper probe
+
+This measurement reverses the earlier objection to spending a call. That objection was about clarification turns, where each turn asks the user for a fact the user cannot supply; more turns there only multiply useless questions. A model naming a subcommand whose help the host can read locally is a different operation: the answer is machine-readable, bounded, and already consented for that binary.
+
+The sample above is the model requesting exactly that probe. Scope the phase narrowly: the model may name one subcommand of an already-allowed tool, the host probes `<tool> <subcommand> --help` under the existing bounds and needs no fresh consent because the binary is already allowed, and one expansion re-proposes. No new outbound category and no new execution authority, only one more level of the same tool's self-description.
+
 ## 2. Prefer one tool over two — reinstated
 
 Withdrawn on two samples, then reinstated on four. The reasoning that follows is the original case; the measurement above is why it stands.
