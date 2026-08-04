@@ -1,0 +1,12 @@
+# Design: Fail-closed v0.3.2 safety hardening
+
+## Problem
+The v0.3.1 black-box assessment found that EOF at a TTY review prompt was converted to the empty default Run choice. It also found unpaused metadata mutations, duplicate first-use notices under concurrency, repeated corrupt-history warnings, and release/audit inconsistencies.
+
+## Approach
+Preserve Enter as the explicit displayed default, but distinguish TTY EOF/read failure and cancel with status 11. Conservatively classify touch, chmod, and chown as consequential because static shell inspection cannot reliably prove targets are new. Serialize first-use notice check/render/persist with an owner-only file lock. Keep full patch versions in history, deduplicate identical per-process history warnings, and make local/disclosure diagnostics name their actual source and purpose.
+
+## Key Trade-offs
+- New-file touch operations now require authorization in non-TTY use; this intentionally favors avoiding silent existing-state mutation.
+- The first-use lock is held while rendering so simultaneous processes cannot both print the notice.
+- Pressing Enter remains an explicit Run choice, while EOF and terminal failure are never authority.
