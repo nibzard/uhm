@@ -1,0 +1,18 @@
+# ADR: Use one native-trust HTTP transport
+
+## Status
+Accepted
+
+## Context
+The v0.3.2/v0.3.3 musl build used ureq rustls with bundled WebPKI roots only. Managed CONNECT proxies whose certificates chain to an injected private root therefore failed after CONNECT and before HTTP. Built-in proxy discovery also ignored NO_PROXY and used unintended precedence.
+
+## Decision
+Construct one rustls client policy for live provider calls, doctor, and telemetry. Load native or standard SSL trust sources, append UHM_CA_BUNDLE, keep verification mandatory, resolve proxy variables explicitly per destination, and classify failures by transport stage. Gate release artifacts with an offline private-CA CONNECT fixture.
+
+## Alternatives Considered
+- Enable ureq native-certs only: smaller patch, but no explicit additive bundle, deterministic proxy policy, or layer-specific diagnostics.
+- Disable certificate verification: rejected because it would turn a compatibility defect into a credential-interception risk.
+- Bypass the managed proxy: rejected because managed environments may have no direct DNS or egress.
+
+## Consequences
+Managed/private-CA environments work without weakening TLS; malformed trust and proxy configuration fail before provider data is sent. The transport now owns additional platform trust dependencies and the release pipeline requires Python and OpenSSL for its offline proxy fixture.
