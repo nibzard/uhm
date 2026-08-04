@@ -159,6 +159,25 @@ The selected provider's key is resolved in this order:
 
 Provider keys are never passed to generated programs and are removed from ordinary child-command environments. Other inherited credentials require explicit `execution.deny_env` entries.
 
+## HTTPS trust and proxies
+
+`uhm` loads the operating system's trusted certificate roots at runtime. Managed networks that intercept TLS can configure their private root through either standard certificate variables or the application-specific extension bundle:
+
+```sh
+# Standard trust-source selection. These follow platform/OpenSSL conventions.
+export SSL_CERT_FILE=/path/to/managed-ca-bundle.pem
+export SSL_CERT_DIR=/path/to/certificate-directory
+
+# Append one or more private roots to the resolved native/standard roots.
+export UHM_CA_BUNDLE=/path/to/private-root.pem
+```
+
+`UHM_CA_BUNDLE` extends the resolved trust store; it never disables certificate verification. A configured file that is unreadable, malformed, or contains no certificates is a configuration error. `uhm` has no insecure TLS fallback.
+
+For HTTPS destinations, proxy selection uses `HTTPS_PROXY`, then `ALL_PROXY`, then `HTTP_PROXY`, with each uppercase name checked before its lowercase form. HTTP destinations use `HTTP_PROXY`, then `ALL_PROXY`. `NO_PROXY`/`no_proxy` supports `*`, exact hosts and IP addresses, domain suffixes, bracketed IPv6 addresses, and optional port qualifiers.
+
+Keep the proxy configured in managed environments where direct DNS or egress is unavailable. Run `uhm doctor network` to identify trust configuration, proxy configuration, proxy/CONNECT, DNS, TCP, certificate, handshake, HTTP, and authentication failures separately.
+
 ## See also
 
 - [CLI reference](cli-reference.md) — `--provider`, `--model`, `--context`, and the rest of the flag surface

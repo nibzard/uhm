@@ -158,7 +158,7 @@ fn python_check(enabled: bool) -> Check {
 /// statuses (`ok`, `off`, `skipped`, `optional`) do not fail — `optional` covers
 /// the clipboard helper, which is genuinely optional. Everything else (e.g.
 /// `unsupported`, `missing`, `permissions`, `blocked`, `authentication`,
-/// `rate_limit`, `api`, `network_tls`) is a failure. The host check already
+/// `rate_limit`, `api`, or a transport-stage status) is a failure. The host check already
 /// emits `unsupported` on an unsupported platform, so this subsumes the old
 /// `report.supported` test.
 pub fn healthy(report: &Report) -> bool {
@@ -359,10 +359,16 @@ fn network_check(provider: crate::provider::ProviderId) -> Check {
             next: Some("configure the key, then rerun `uhm doctor network`".into()),
         };
     };
-    let agent = crate::http::agent(Duration::from_secs(3));
     let models_endpoint = match provider {
         crate::provider::ProviderId::Openai => "https://api.openai.com/v1/models",
         crate::provider::ProviderId::Cerebras => "https://api.cerebras.ai/v1/models",
+    };
+    let agent = match crate::http::agent_for(
+        models_endpoint,
+        crate::http::Timeouts::uniform(Duration::from_secs(3)),
+    ) {
+        Ok(agent) => agent,
+        Err(error) => return transport_check(error),
     };
     match agent
         .get(models_endpoint)
@@ -393,12 +399,47 @@ fn network_check(provider: crate::provider::ProviderId) -> Check {
             detail: format!("{provider} returned HTTP {code}"),
             next: Some("retry with --verbose or check the provider status page".into()),
         },
-        Err(ureq::Error::Transport(error)) => Check {
-            name: "provider network",
-            status: "network_tls",
-            detail: format!("connection failed ({:?})", error.kind()),
-            next: Some("check DNS, proxy, firewall, and TLS certificate settings".into()),
+        Err(error) => transport_check(agent.classify_error(error)),
+    }
+}
+
+fn transport_check(error: crate::http::HttpError) -> Check {
+    Check {
+        name: "provider network",
+        status: match error.stage {
+            crate::http::FailureStage::Configuration => "trust_config",
+            crate::http::FailureStage::ProxyConfiguration => "proxy_config",
+            crate::http::FailureStage::ProxyConnection => "proxy_connect",
+            crate::http::FailureStage::Dns => "dns",
+            crate::http::FailureStage::Tcp => "tcp",
+            crate::http::FailureStage::TlsCertificate => "tls_certificate",
+            crate::http::FailureStage::TlsHandshake => "tls_handshake",
+            crate::http::FailureStage::Http => "network",
         },
+        detail: error.message,
+        next: Some(match error.stage {
+            crate::http::FailureStage::Configuration => {
+                "fix the named CA bundle or trust-store setting, then rerun `uhm doctor network`"
+            }
+            crate::http::FailureStage::ProxyConfiguration => {
+                "fix the named proxy variable, then rerun `uhm doctor network`"
+            }
+            crate::http::FailureStage::ProxyConnection => {
+                "check proxy reachability, credentials, and CONNECT policy"
+            }
+            crate::http::FailureStage::Dns => {
+                "keep the managed proxy configured when direct DNS is unavailable"
+            }
+            crate::http::FailureStage::Tcp => "check destination reachability and firewall policy",
+            crate::http::FailureStage::TlsCertificate => {
+                "configure the private root with UHM_CA_BUNDLE or the standard SSL certificate variables"
+            }
+            crate::http::FailureStage::TlsHandshake => {
+                "check proxy interception and TLS protocol compatibility"
+            }
+            crate::http::FailureStage::Http => "retry or inspect the provider status",
+        }
+        .into()),
     }
 }
 

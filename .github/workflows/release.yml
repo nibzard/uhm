@@ -83,6 +83,10 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --release --locked --target "${{ matrix.target }}"
+      - name: Test release transport behind a private-CA CONNECT proxy
+        run: |
+          python3 scripts/test-private-ca-proxy.py \
+            --binary "target/${{ matrix.target }}/release/uhm"
       - name: Archive release
         shell: bash
         run: |

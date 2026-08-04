@@ -42,6 +42,29 @@ Prefer the secrets file to keep the key out of your shell environment, then `chm
 
 Exit code **13** means a configuration or credentials problem.
 
+## Proxy and TLS certificate failures
+
+`uhm doctor network` reports the failing transport layer rather than collapsing every failure into a generic network error. Its statuses distinguish trust configuration, proxy configuration, proxy/CONNECT, DNS, TCP, TLS certificate verification, TLS handshake, HTTP, and provider authentication.
+
+On a managed or corporate network, keep the injected proxy variables configured. Removing them may remove the only working DNS and egress path. If the proxy signs destination certificates with a private root, configure that root securely:
+
+```sh
+# Use a standard managed CA bundle or directory.
+export SSL_CERT_FILE=/path/to/managed-ca-bundle.pem
+export SSL_CERT_DIR=/path/to/certificate-directory
+
+# Or append a private root without replacing resolved native roots.
+export UHM_CA_BUNDLE=/path/to/private-root.pem
+
+uhm doctor network
+```
+
+An intentionally invalid API token returning `authentication`/HTTP `401` proves that proxy negotiation, DNS, TCP, and TLS completed. It does not prove that a real key is valid.
+
+Do not work around `tls_certificate` by unsetting a required proxy or disabling verification. `uhm` intentionally provides no insecure TLS mode. A malformed or empty configured CA bundle fails before the request and names only the setting/path, never certificate contents.
+
+Proxy precedence for HTTPS is `HTTPS_PROXY`, `ALL_PROXY`, then `HTTP_PROXY`; lowercase variants are supported. Use `NO_PROXY`/`no_proxy` for exact hosts, domain suffixes, IP addresses, bracketed IPv6 addresses, and optional ports.
+
 ## Model and API errors
 
 Exit code **10** covers model and API failures: rate limits, server errors, bad responses, or a model name your account cannot use.

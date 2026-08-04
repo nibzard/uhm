@@ -22,25 +22,25 @@ Fast path:
 curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
 ```
 
-The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.3.3` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
+The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.3.4` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
 
-If you want the manual path instead, download the archive for your machine from the [v0.3.3 release](https://github.com/nibzard/uhm/releases/tag/v0.3.3):
+If you want the manual path instead, download the archive for your machine from the [v0.3.4 release](https://github.com/nibzard/uhm/releases/tag/v0.3.4):
 
 | System | Archive |
 |---|---|
-| Linux x86-64 | `uhm-v0.3.3-x86_64-unknown-linux-musl.tar.gz` |
-| Linux arm64 | `uhm-v0.3.3-aarch64-unknown-linux-musl.tar.gz` |
-| macOS Intel | `uhm-v0.3.3-x86_64-apple-darwin.tar.gz` |
-| macOS Apple silicon | `uhm-v0.3.3-aarch64-apple-darwin.tar.gz` |
+| Linux x86-64 | `uhm-v0.3.4-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `uhm-v0.3.4-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `uhm-v0.3.4-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `uhm-v0.3.4-aarch64-apple-darwin.tar.gz` |
 
 Verify the download before installing it:
 
 ```sh
-grep 'uhm-v0.3.3-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
-grep 'uhm-v0.3.3-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
-tar --no-same-owner -xzf uhm-v0.3.3-<target>.tar.gz
+grep 'uhm-v0.3.4-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
+grep 'uhm-v0.3.4-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
+tar --no-same-owner -xzf uhm-v0.3.4-<target>.tar.gz
 mkdir -p "$HOME/.local/bin"
-install -m 755 uhm-v0.3.3-<target>/uhm "$HOME/.local/bin/uhm"
+install -m 755 uhm-v0.3.4-<target>/uhm "$HOME/.local/bin/uhm"
 uhm --version
 ```
 
@@ -49,7 +49,7 @@ The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, 
 Rust users can build the same binary from source:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.3 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.4 uhm-cli
 ```
 
 The crates.io package is prepared but publication is deferred until ownership is ready.
@@ -65,6 +65,8 @@ uhm list the three biggest files
 ```
 
 `uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and `chmod 600 <path>` to keep the key out of your shell environment. `uhm doctor network` checks the selected provider. Cerebras is available as an explicit alternative; set `CEREBRAS_API_KEY` and choose it with `--provider cerebras --model <id>` or persistent configuration.
+
+Managed and corporate networks are supported through the standard upper- or lower-case `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY` variables. `uhm` loads native certificate roots, honors `SSL_CERT_FILE`/`SSL_CERT_DIR`, and can append a private root with `UHM_CA_BUNDLE`. Certificate verification always remains enabled; see [troubleshooting](docs/troubleshooting.md#proxy-and-tls-certificate-failures).
 
 Before the first outbound request, `uhm` prints a short data notice to stderr. It records that the current notice revision was shown.
 

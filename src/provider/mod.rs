@@ -63,6 +63,11 @@ impl Authorization {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderErrorKind {
     Credential,
+    Trust,
+    Proxy,
+    Dns,
+    Tls,
+    Network,
     Auth,
     RateLimited,
     Transient,
@@ -163,7 +168,13 @@ impl Transport for NetworkTransport {
             status: response.status,
             reader: response.reader,
         })
-        .map_err(|error| ProviderError::after_request(error.kind, error.message))
+        .map_err(|error| {
+            if error.request_started {
+                ProviderError::after_request(error.kind, error.message)
+            } else {
+                ProviderError::before_request(error.kind, error.message)
+            }
+        })
     }
 }
 

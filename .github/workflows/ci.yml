@@ -164,3 +164,8 @@ jobs:
 
       - name: Build static release binary
         run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Test packaged transport behind a private-CA CONNECT proxy
+        run: |
+          python3 scripts/test-private-ca-proxy.py \
+            --binary target/x86_64-unknown-linux-musl/release/uhm

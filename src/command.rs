@@ -203,7 +203,7 @@ pub fn handle(
                 }
                 Err(e) => {
                     interaction.proposal(false, false);
-                    return app_error(args, outcome::MODEL, "model_error", &e);
+                    return model_error(args, &e);
                 }
             },
         },
@@ -274,9 +274,7 @@ pub fn handle(
                         related_run_id,
                     ) {
                         Ok(value) => value,
-                        Err(error) => {
-                            return app_error(args, outcome::MODEL, "model_error", &error)
-                        }
+                        Err(error) => return model_error(args, &error),
                     };
                     action = result.0;
                     profile_allowed = result.3;
@@ -378,7 +376,7 @@ pub fn handle(
                         profile_allowed = allowed;
                         v
                     }
-                    Err(e) => return app_error(args, outcome::MODEL, "model_error", &e),
+                    Err(e) => return model_error(args, &e),
                 };
                 continue;
             }
@@ -592,9 +590,7 @@ pub fn handle(
                                     profile_allowed = allowed;
                                     value
                                 }
-                                Err(error) => {
-                                    return app_error(args, outcome::MODEL, "model_error", &error)
-                                }
+                                Err(error) => return model_error(args, &error),
                             };
                             continue;
                         }
@@ -712,9 +708,7 @@ pub fn handle(
                                     profile_allowed = allowed;
                                     value
                                 }
-                                Err(error) => {
-                                    return app_error(args, outcome::MODEL, "model_error", &error)
-                                }
+                                Err(error) => return model_error(args, &error),
                             };
                             continue;
                         }
@@ -884,9 +878,7 @@ pub fn handle(
                                     profile_allowed = allowed;
                                     value
                                 }
-                                Err(error) => {
-                                    return app_error(args, outcome::MODEL, "model_error", &error)
-                                }
+                                Err(error) => return model_error(args, &error),
                             };
                             continue;
                         }
@@ -1137,7 +1129,7 @@ pub fn handle(
                                 profile_allowed = allowed;
                                 v
                             }
-                            Err(e) => return app_error(args, outcome::MODEL, "model_error", &e),
+                            Err(e) => return model_error(args, &e),
                         };
                         continue;
                     }
@@ -1247,9 +1239,7 @@ pub fn handle(
                                     profile_allowed = allowed;
                                     v
                                 }
-                                Err(e) => {
-                                    return app_error(args, outcome::MODEL, "model_error", &e)
-                                }
+                                Err(e) => return model_error(args, &e),
                             };
                             continue;
                         }
@@ -1407,9 +1397,7 @@ pub fn handle(
                                     profile_allowed = allowed;
                                     v
                                 }
-                                Err(e) => {
-                                    return app_error(args, outcome::MODEL, "model_error", &e)
-                                }
+                                Err(e) => return model_error(args, &e),
                             };
                             continue;
                         }
@@ -1610,7 +1598,7 @@ fn propose(
     run_id: &str,
     mode: context::Mode,
     related_run_id: Option<&str>,
-) -> Result<(ProposedAction, bool, u8, bool), String> {
+) -> Result<(ProposedAction, bool, u8, bool), ProposalError> {
     let context_value = serde_json::to_value(snapshot).map_err(|e| e.to_string())?;
     let context_hash = blake3::hash(serde_json::to_string(&context_value).unwrap().as_bytes())
         .to_hex()
@@ -1704,7 +1692,10 @@ fn propose(
             ) {
                 history::warn(&history_error);
             }
-            return Err(error.message);
+            return Err(ProposalError {
+                message: error.message,
+                kind: error.kind,
+            });
         }
     };
     let action = response.action;
@@ -1997,6 +1988,40 @@ fn app_error(args: &Args, code: i32, name: &str, message: &str) -> i32 {
         eprintln!("uhm: {}", message)
     }
     code
+}
+
+#[derive(Debug)]
+struct ProposalError {
+    message: String,
+    kind: Option<crate::provider::ProviderErrorKind>,
+}
+
+impl From<String> for ProposalError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            kind: None,
+        }
+    }
+}
+
+fn model_error(args: &Args, error: &ProposalError) -> i32 {
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "namespace": "uhm",
+                "outcome": "model_error",
+                "exit_code": outcome::MODEL,
+                "executed": false,
+                "error_kind": error.kind,
+                "message": error.message,
+            })
+        )
+    } else {
+        eprintln!("uhm: {}", error.message)
+    }
+    outcome::MODEL
 }
 pub(crate) fn target_shell(config: &Config, over: Option<&str>) -> Result<String, String> {
     normalize_shell(

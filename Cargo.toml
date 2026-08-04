@@ -1,6 +1,6 @@
 [package]
 name = "uhm-cli"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 rust-version = "1.82"
 authors = ["Nikola Balic"]
@@ -24,6 +24,7 @@ include = [
   "/scripts/provider-benchmark-report.py",
   "/scripts/qualification_policy.py",
   "/scripts/provider-qualification-manifest.py",
+  "/scripts/test-private-ca-proxy.py",
   "/scripts/seal-qualification-holdout.py",
   "/benchmark/build-worker.sh",
   "/benchmark/schemas/*.json",
@@ -66,12 +67,16 @@ blake3 = "=1.5.5"
 fs2 = "0.4"
 libc = "0.2"
 signal-hook = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 tempfile = "=3.13.0"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 unicode-width = "0.2"
+url = "2"
 
 [profile.release]
 panic = "unwind"   # raw-mode cleanup relies on Drop running

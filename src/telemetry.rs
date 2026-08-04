@@ -486,7 +486,10 @@ fn send_to(endpoint: &str, event: &Event, timeout: Duration) -> SendResult {
         Ok(value) => value,
         Err(_) => return SendResult::PreSend,
     };
-    let agent = crate::http::agent(timeout);
+    let agent = match crate::http::agent_for(endpoint, crate::http::Timeouts::uniform(timeout)) {
+        Ok(agent) => agent,
+        Err(_) => return SendResult::PreSend,
+    };
     match agent
         .post(endpoint)
         .set("Content-Type", "application/json")

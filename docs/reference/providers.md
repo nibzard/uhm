@@ -31,7 +31,7 @@ Provider and model resolve independently in this order:
 | `fixed` | Use the resolved explicit provider/model pair; optionally try one configured alternate for an allowed pre-proposal failure |
 | `evidence` | Resolve only from exact reviewed qualification-manifest evidence; otherwise return unavailable |
 
-The v0.3.3 checked-in manifest has no entries, so evidence mode currently selects no pair.
+The v0.3.4 checked-in manifest has no entries, so evidence mode currently selects no pair.
 
 ## Fallback error classes
 
@@ -48,4 +48,6 @@ uhm doctor all
 uhm doctor all network
 ```
 
-`network` checks the selected provider. `all` reports both adapters; `all network` includes reachability and authentication for both.
+`network` checks the selected provider. `all` reports both adapters; `all network` includes reachability and authentication for both. Doctor and live provider calls use the same proxy resolver, native/custom trust configuration, TLS client, and error classifier. A doctor request uses the provider's models route to avoid a billable generation.
+
+Transport failures are reported by stage: trust configuration, proxy configuration, proxy/CONNECT, DNS, TCP, TLS certificate, TLS handshake, or HTTP. Live JSON errors use distinct `trust`, `proxy`, `dns`, `tls`, and `network` error kinds; none are eligible fallback triggers by default.
