@@ -125,7 +125,8 @@ pub fn handle(
                 stdin_mode: StdinMode::None,
             })
     };
-    let mut snapshot = if alias.is_some() {
+    let local_alias = alias.is_some();
+    let mut snapshot = if local_alias {
         interaction.suppress();
         context::gather(
             context::Mode::Minimal,
@@ -150,7 +151,7 @@ pub fn handle(
         request,
         related_run_id,
     ) {
-        eprintln!("uhm: history: {}", e);
+        history::warn(&e);
     }
     if let Err(e) = history::record_context(
         &config.paths.data_dir,
@@ -161,7 +162,7 @@ pub fn handle(
         mode.as_str(),
         related_run_id,
     ) {
-        eprintln!("uhm: history: {}", e);
+        history::warn(&e);
     }
     if route == "recover" {
         let _ = history::record_recovery_event(
@@ -237,7 +238,7 @@ pub fn handle(
             &action,
             related_run_id,
         ) {
-            eprintln!("uhm: history: {}", e);
+            history::warn(&e);
         }
         if !profile_allowed {
             interaction.decision("invalid");
@@ -529,7 +530,7 @@ pub fn handle(
                     &diagnostics,
                     related_run_id,
                 ) {
-                    eprintln!("uhm: history: {error}");
+                    history::warn(&error);
                 }
                 for diagnostic in diagnostics
                     .iter()
@@ -643,7 +644,7 @@ pub fn handle(
                         recovery_classification.items.len(),
                         related_run_id,
                     ) {
-                        eprintln!("uhm: history: {error}");
+                        history::warn(&error);
                     }
                 }
                 let consequential = program::has_writable_files(&proposal)
@@ -673,11 +674,15 @@ pub fn handle(
                     }
                     eprint!("Run, revise, edit, copy, cancel? [R/v/e/c/q] ");
                     let _ = std::io::stderr().flush();
-                    match tty::read_line_cooked()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .as_str()
-                    {
+                    let Some(review_choice) = tty::read_line_cooked() else {
+                        interaction.decision("cancelled");
+                        return not_executed(
+                            args,
+                            &proposal.source,
+                            "review input closed; cancelled without execution",
+                        );
+                    };
+                    match review_choice.to_lowercase().as_str() {
                         "" | "r" | "run" => {}
                         "v" | "revise" if budget.can_replace() => {
                             eprint!("Feedback: ");
@@ -962,7 +967,7 @@ pub fn handle(
                         program::writable_paths(&proposal).len(),
                         related_run_id,
                     ) {
-                        eprintln!("uhm: history: {error}");
+                        history::warn(&error);
                     }
                 } else if let Some(reason) = &result.recovery_reason {
                     if !args.json {
@@ -1015,7 +1020,7 @@ pub fn handle(
                     Some(&result.stderr_tail),
                     result.code != 0,
                 ) {
-                    eprintln!("uhm: history: {}", error);
+                    history::warn(&error);
                 }
                 receipt(
                     config,
@@ -1088,7 +1093,12 @@ pub fn handle(
                 if parent_shell::required(&command) {
                     interaction.route("parent_shell");
                     interaction.decision("needs_parent");
-                    return not_executed(args,&command,"the model returned free-form parent-shell source; uhm will not parse or apply it—retry for a typed parent action");
+                    let message = if local_alias {
+                        "the local alias contains parent-shell source; local aliases cannot directly change the current shell—use a typed parent-shell action through the shell integration"
+                    } else {
+                        "the model returned free-form parent-shell source; uhm will not parse or apply it—retry for a typed parent action"
+                    };
+                    return not_executed(args, &command, message);
                 }
                 if args.local_input && stdin_mode == StdinMode::Original {
                     interaction.decision("unavailable");
@@ -1198,11 +1208,15 @@ pub fn handle(
                     };
                     eprint!("Run, revise, edit, copy, cancel? [R/v/e/c/q] ");
                     let _ = std::io::stderr().flush();
-                    match tty::read_line_cooked()
-                        .unwrap_or_default()
-                        .to_lowercase()
-                        .as_str()
-                    {
+                    let Some(review_choice) = tty::read_line_cooked() else {
+                        interaction.decision("cancelled");
+                        return not_executed(
+                            args,
+                            &command,
+                            "review input closed; cancelled without execution",
+                        );
+                    };
+                    match review_choice.to_lowercase().as_str() {
                         "" | "r" | "run" => {}
                         "v" | "revise" if budget.can_replace() => {
                             eprint!("Feedback: ");
@@ -1458,7 +1472,7 @@ pub fn handle(
                     result.stderr_tail.as_deref(),
                     result.code != 0,
                 ) {
-                    eprintln!("uhm: history: {}", error);
+                    history::warn(&error);
                 }
                 receipt(
                     config,
@@ -1663,7 +1677,7 @@ fn propose(
                 api_config.selection_mode,
                 related_run_id,
             ) {
-                eprintln!("uhm: history: {error}");
+                history::warn(&error);
             }
             response
         }
@@ -1685,7 +1699,7 @@ fn propose(
                 api_config.selection_mode,
                 related_run_id,
             ) {
-                eprintln!("uhm: history: {history_error}");
+                history::warn(&history_error);
             }
             return Err(error.message);
         }
@@ -1765,11 +1779,7 @@ fn receipt(
         schema_version: 1,
         run_id: id.into(),
         timestamp: history::now_secs(),
-        app_version: env!("CARGO_PKG_VERSION")
-            .split('.')
-            .take(2)
-            .collect::<Vec<_>>()
-            .join("."),
+        app_version: env!("CARGO_PKG_VERSION").into(),
         mode: mode.into(),
         context_mode: context_mode.as_str().into(),
         route: route.into(),
@@ -1808,7 +1818,7 @@ fn receipt(
         user_feedback: "unknown".into(),
     };
     if let Err(e) = history::append_receipt(&config.paths.data_dir, &config.history, &entry) {
-        eprintln!("uhm: history: {}", e)
+        history::warn(&e)
     }
 }
 fn merged_effects(a: &[Effect], b: &[Effect]) -> Vec<Effect> {

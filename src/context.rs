@@ -55,7 +55,7 @@ pub fn disclosure_payload() -> Value {
         "groups":["Python 3 runtime path/version/isolated-mode support","OS and architecture","target shell","common tool presence","normalized working directory","bounded Git state","bounded directory entry names","invocation-only parent cwd and previous exit status when shell integration is used"],
         "shell_history":"off by default; when enabled, exactly one entry is previewed and requires confirmation",
         "local_input":"--local-input keeps piped content out of the model request",
-        "inspect":"uhm context show", "minimize":"--context minimal", "config":"context_mode: minimal"
+        "inspect":"uhm context show", "minimize":"--context minimal", "minimize_config":"context_mode: minimal"
     })
 }
 
@@ -282,6 +282,11 @@ mod tests {
     #[test]
     fn disclosure_is_versioned() {
         assert_eq!(disclosure_payload()["version"], DISCLOSURE_VERSION);
+        assert_eq!(
+            disclosure_payload()["minimize_config"],
+            "context_mode: minimal"
+        );
+        assert!(disclosure_payload().get("config").is_none());
     }
     #[test]
     fn integration_adds_only_the_bounded_invocation_fields() {

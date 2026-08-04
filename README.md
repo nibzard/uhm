@@ -22,25 +22,25 @@ Fast path:
 curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
 ```
 
-The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.3.1` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
+The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.3.2` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
 
-If you want the manual path instead, download the archive for your machine from the [v0.3.1 release](https://github.com/nibzard/uhm/releases/tag/v0.3.1):
+If you want the manual path instead, download the archive for your machine from the [v0.3.2 release](https://github.com/nibzard/uhm/releases/tag/v0.3.2):
 
 | System | Archive |
 |---|---|
-| Linux x86-64 | `uhm-v0.3.1-x86_64-unknown-linux-musl.tar.gz` |
-| Linux arm64 | `uhm-v0.3.1-aarch64-unknown-linux-musl.tar.gz` |
-| macOS Intel | `uhm-v0.3.1-x86_64-apple-darwin.tar.gz` |
-| macOS Apple silicon | `uhm-v0.3.1-aarch64-apple-darwin.tar.gz` |
+| Linux x86-64 | `uhm-v0.3.2-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `uhm-v0.3.2-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `uhm-v0.3.2-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `uhm-v0.3.2-aarch64-apple-darwin.tar.gz` |
 
 Verify the download before installing it:
 
 ```sh
-grep 'uhm-v0.3.1-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
-grep 'uhm-v0.3.1-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
-tar -xzf uhm-v0.3.1-<target>.tar.gz
+grep 'uhm-v0.3.2-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
+grep 'uhm-v0.3.2-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
+tar --no-same-owner -xzf uhm-v0.3.2-<target>.tar.gz
 mkdir -p "$HOME/.local/bin"
-install -m 755 uhm-v0.3.1-<target>/uhm "$HOME/.local/bin/uhm"
+install -m 755 uhm-v0.3.2-<target>/uhm "$HOME/.local/bin/uhm"
 uhm --version
 ```
 
@@ -49,7 +49,7 @@ The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, 
 Rust users can build the same binary from source:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.1 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.2 uhm-cli
 ```
 
 The crates.io package is prepared but publication is deferred until ownership is ready.
@@ -109,7 +109,7 @@ uhm run --dry-run count every occurrence of the word world in report.txt
 uhm run --review remove old build artifacts
 ```
 
-Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. In a non-interactive shell, a proposal that mutates existing state pauses with status 11 because it cannot ask for confirmation; inspect it with `--dry-run`, then rerun with `--force` to authorize the mutation. `--force` still shows any warning.
+Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. In a non-interactive shell, a proposal that may mutate existing state or file metadata pauses with status 11 because it cannot ask for confirmation; inspect it with `--dry-run`, then rerun with `--force` to authorize the mutation. Metadata-changing utilities such as `touch`, `chmod`, and `chown` are gated conservatively because local classification cannot reliably prove that every target is new. `--force` still shows any warning.
 
 If one essential detail is missing, `uhm` can ask one question and revise the proposal. A failed command can get one bounded repair attempt in an interactive terminal. There is no open-ended chat loop.
 

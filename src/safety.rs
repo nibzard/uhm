@@ -138,9 +138,13 @@ fn classify_segment(seg: &str) -> (Tier, Vec<String>) {
     let cmd_word = normalized_command(first_command_word(&words));
     let mut tier = Tier::None;
 
-    if matches!(cmd_word, "mkdir" | "touch") {
+    if cmd_word == "mkdir" {
         tier = higher(tier, Tier::Low);
         reasons.push(format!("{} writes local filesystem metadata", cmd_word));
+    }
+    if cmd_word == "touch" {
+        tier = higher(tier, Tier::Destructive);
+        reasons.push("touch creates or changes filesystem metadata".into());
     }
 
     if has_dynamic_shell_syntax(seg) {
@@ -209,9 +213,9 @@ fn classify_segment(seg: &str) -> (Tier, Vec<String>) {
             reasons.push("git deletes local state".into());
         }
     }
-    if matches!(cmd_word, "chmod" | "chown") && words.iter().any(|w| w.starts_with("-R")) {
+    if matches!(cmd_word, "chmod" | "chown") {
         tier = higher(tier, Tier::Destructive);
-        reasons.push(format!("{} -R", cmd_word));
+        reasons.push(format!("{} changes filesystem metadata", cmd_word));
     }
     if cmd_word == "kill" {
         tier = higher(tier, Tier::Destructive);
@@ -599,6 +603,8 @@ mod tests {
         );
         assert_eq!(classify("cp source important.txt").tier, Tier::Destructive);
         assert_eq!(classify("sh -c 'rm file.txt'").tier, Tier::Destructive);
+        assert_eq!(classify("touch existing.txt").tier, Tier::Destructive);
+        assert_eq!(classify("chmod 600 existing.txt").tier, Tier::Destructive);
     }
 
     #[test]

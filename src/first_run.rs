@@ -5,6 +5,7 @@ use crate::{
     dirs,
     render::{ansi, layout},
 };
+use fs2::FileExt;
 use std::io::Write;
 
 pub const NOTICE_REVISION: u8 = 5;
@@ -28,6 +29,34 @@ pub fn is_current(config: &Config) -> bool {
 
 pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, String> {
     let marker = config.paths.data_dir.join("notice-revision");
+    if is_current(config) {
+        return Ok(RENDERED_MARKER);
+    }
+
+    // Serialize the check-render-persist sequence. Without this lock, two
+    // first requests can both pass the initial check and render the notice.
+    dirs::ensure_private_dir(&config.paths.data_dir)?;
+    let lock_path = config.paths.data_dir.join("notice.lock");
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let notice_lock = options
+        .open(&lock_path)
+        .map_err(|e| format!("open first-use notice lock: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        notice_lock
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("set first-use notice lock permissions: {e}"))?;
+    }
+    notice_lock
+        .lock_exclusive()
+        .map_err(|e| format!("lock first-use notice: {e}"))?;
     if is_current(config) {
         return Ok(RENDERED_MARKER);
     }
@@ -120,7 +149,6 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
         .flush()
         .map_err(|e| format!("flush first-use notice: {}", e))?;
 
-    dirs::ensure_private_dir(&config.paths.data_dir)?;
     write_private_atomic(&marker, marker_value(config).as_bytes())?;
     Ok(RENDERED_MARKER)
 }

@@ -13,15 +13,31 @@ use crate::dirs;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 pub const SCHEMA_VERSION: u32 = 1;
 const JOURNAL: &str = "history.v1.jsonl";
 const LEGACY: &str = "history.jsonl";
 const LOCK: &str = "history.lock";
 const RUNS: &str = "runs";
+
+/// Emit each history diagnostic at most once per process. A single command
+/// records several lifecycle events, all of which can encounter the same
+/// corrupt journal; repeating the identical warning adds no useful context.
+pub fn warn(error: &str) {
+    static REPORTED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let reported = REPORTED.get_or_init(|| Mutex::new(HashSet::new()));
+    let should_report = reported
+        .lock()
+        .map(|mut errors| errors.insert(error.to_owned()))
+        .unwrap_or(true);
+    if should_report {
+        eprintln!("uhm: history: {error}");
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

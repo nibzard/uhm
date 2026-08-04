@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_uhm")
@@ -34,6 +34,21 @@ fn configured_fresh(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
     fs::write(config_dir.join("config.yaml"), yaml).unwrap();
     Command::new(binary())
         .args(arguments)
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("TERM", "dumb")
+        .output()
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn reviewed_through_closed_pty(home: &Path, arguments: &str) -> Output {
+    let command = format!("{} {arguments}", binary());
+    Command::new("script")
+        .args(["-qefc", &command, "/dev/null"])
+        .stdin(Stdio::null())
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_DATA_HOME", home.join("data"))
@@ -109,6 +124,74 @@ fn nonexecuted_review_is_nonzero_and_contains_no_controls() {
     assert_eq!(output.status.code(), Some(11));
     assert!(!output.stderr.contains(&0x1b));
     assert!(String::from_utf8_lossy(&output.stderr).contains("confirmation is required"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn tty_eof_cancels_explicit_and_automatic_review_without_execution() {
+    if Command::new("script").arg("--version").output().is_err() {
+        return;
+    }
+    for arguments in ["--plain --review overwrite", "--plain overwrite"] {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("existing.txt");
+        fs::write(&target, "original\n").unwrap();
+        let config_dir = temp.path().join("config/uhm");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.yaml"),
+            format!(
+                "aliases:\n  overwrite: 'printf changed > {}'\n",
+                target.display()
+            ),
+        )
+        .unwrap();
+        let data_dir = temp.path().join("data/uhm");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(
+            data_dir.join("notice-revision"),
+            r#"{"endpoints":["https://api.openai.com/v1/responses"],"revision":5}"#,
+        )
+        .unwrap();
+
+        let output = reviewed_through_closed_pty(temp.path(), arguments);
+        assert_eq!(output.status.code(), Some(11), "{arguments}");
+        assert_eq!(fs::read_to_string(&target).unwrap(), "original\n");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("cancelled without execution"));
+    }
+}
+
+#[test]
+fn metadata_mutations_pause_without_a_terminal() {
+    let temp = tempfile::tempdir().unwrap();
+    let target = temp.path().join("existing.txt");
+    fs::write(&target, "original\n").unwrap();
+    let yaml = format!(
+        "aliases:\n  retime: 'touch {}'\n  remode: 'chmod 600 {}'\n",
+        target.display(),
+        target.display()
+    );
+    for alias in ["retime", "remode"] {
+        let output = configured(temp.path(), &yaml, &["--plain", alias]);
+        assert_eq!(output.status.code(), Some(11), "{alias}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("no terminal is available"));
+    }
+}
+
+#[test]
+fn local_parent_shell_alias_diagnostic_names_the_local_source() {
+    for command in ["cd /tmp", "export UHM_TEST=1", "source ./env.sh"] {
+        let temp = tempfile::tempdir().unwrap();
+        let output = configured(
+            temp.path(),
+            &format!("aliases:\n  parent: '{command}'\n"),
+            &["--plain", "parent"],
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(11));
+        assert!(stderr.contains("local alias contains parent-shell source"));
+        assert!(!stderr.contains("model returned"));
+    }
 }
 
 #[test]
@@ -311,6 +394,47 @@ fn first_use_notice_precedes_work_and_is_rendered_once() {
 }
 
 #[test]
+fn concurrent_first_use_renders_exactly_one_notice() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_dir = temp.path().join("config/uhm");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.yaml"),
+        "aliases:\n  notice-noop: true\n",
+    )
+    .unwrap();
+
+    let mut children = Vec::new();
+    for _ in 0..20 {
+        children.push(
+            Command::new(binary())
+                .args(["--plain", "notice-noop"])
+                .env("HOME", temp.path())
+                .env("XDG_CONFIG_HOME", temp.path().join("config"))
+                .env("XDG_DATA_HOME", temp.path().join("data"))
+                .env("XDG_CACHE_HOME", temp.path().join("cache"))
+                .env("TERM", "dumb")
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    let outputs: Vec<_> = children
+        .into_iter()
+        .map(|child| child.wait_with_output().unwrap())
+        .collect();
+    assert!(outputs.iter().all(|output| output.status.success()));
+    let notices = outputs
+        .iter()
+        .filter(|output| {
+            String::from_utf8_lossy(&output.stderr).contains("selected provider receives")
+        })
+        .count();
+    assert_eq!(notices, 1);
+}
+
+#[test]
 fn local_command_on_a_fresh_config_skips_the_first_use_notice() {
     // `config show` does no outbound work, so on a fresh install it must neither
     // print the first-use data notice nor persist its marker (Fix 4). Asserting
@@ -400,4 +524,40 @@ fn disabled_recovery_creates_no_recovery_timeline_events() {
             .as_str()
             .is_some_and(|kind| kind.starts_with("recovery_"))
     }));
+}
+
+#[test]
+fn execution_finished_records_the_full_application_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "aliases:\n  local-noop: true\n";
+    assert!(configured(temp.path(), yaml, &["local-noop"])
+        .status
+        .success());
+    let history = configured(temp.path(), yaml, &["--json", "history", "show", "last"]);
+    let events: serde_json::Value = serde_json::from_slice(&history.stdout).unwrap();
+    let finished = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "execution_finished")
+        .unwrap();
+    assert_eq!(finished["app_version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn one_invocation_reports_identical_history_corruption_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "aliases:\n  local-noop: true\n";
+    assert!(configured(temp.path(), yaml, &["local-noop"])
+        .status
+        .success());
+    let journal = temp.path().join("data/uhm/history.v1.jsonl");
+    let mut bytes = fs::read(&journal).unwrap();
+    bytes[0] = b'[';
+    fs::write(&journal, bytes).unwrap();
+
+    let output = configured(temp.path(), yaml, &["local-noop"]);
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("history corruption at line 1").count(), 1);
 }

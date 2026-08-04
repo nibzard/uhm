@@ -49,7 +49,7 @@ These may appear before or after a subcommand, up to the first intent word.
 
 `--review`, `--dry-run`, and `--force` are **pairwise mutually exclusive**. See the [behavior table](behavior-contract.md) for how they interact across TTY/non-TTY and route.
 
-In a non-TTY environment, work that mutates existing state cannot prompt for confirmation and returns status 11 without executing. Use `--dry-run` to inspect the exact proposal, then repeat the invocation with `--force` if the mutation is intended. The JSON `message` gives the same next step.
+In a non-TTY environment, work that may mutate existing state or file metadata cannot prompt for confirmation and returns status 11 without executing. This conservatively includes `touch`, `chmod`, and `chown`. Use `--dry-run` to inspect the exact proposal, then repeat the invocation with `--force` if the mutation is intended. The JSON `message` gives the same next step. EOF, terminal hangup, or a read error at an interactive review prompt also returns status 11 without execution.
 
 Generated Python uses the `uhm_helper_v1` resource contract. Its process stdin is closed and its cwd is private; `--local-input` exposes piped bytes only when the proposal selects `stdin_mode=local_path`. A preflight contract error may offer one user-triggered complete replacement in an interactive terminal. That replacement shares the global second-model-call slot, never runs automatically in non-TTY or JSON mode, and leaves room for only one execution because the rejected proposal did not run.
 

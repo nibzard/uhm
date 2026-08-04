@@ -17,7 +17,9 @@ The action proposed by the model and the action passed to the child shell are th
 
 `--review`, `--dry-run`, and `--force` are mutually exclusive. Ask/explain accept the global rendering and model options, but execution controls do not grant them execution authority.
 
-For automation, status 11 is an authorization pause rather than a child-command failure. Inspect the exact proposal with `--dry-run`; if it is correct, repeat the original invocation with `--force`. This applies to generated-program artifacts, redirects, renames, deletions, and other actions that mutate existing state. Benign creation such as a new empty file or directory may execute without the pause.
+For automation, status 11 is an authorization pause rather than a child-command failure. Inspect the exact proposal with `--dry-run`; if it is correct, repeat the original invocation with `--force`. This applies to generated-program artifacts, redirects, renames, deletions, and other actions that mutate existing state. Metadata-changing utilities such as `touch`, `chmod`, and `chown` are gated conservatively because local classification cannot reliably prove that every target is new. Benign directory creation may execute without the pause.
+
+At an interactive review prompt, EOF, terminal hangup, and input read errors cancel with status 11. They never select the displayed default action; only input successfully read from the terminal can authorize execution.
 
 The no-argument TTY path collects one intent, completes one bounded interaction, and exits. It is not a REPL. A clarification, revision, program-contract repair, or failed-command repair may consume at most one second turn; they cannot coexist in the same interaction. A hard program-contract error may be repaired before execution, so that path permits two calls but only one execution. Non-TTY invocations never repair automatically.
 

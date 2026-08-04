@@ -163,7 +163,7 @@ say "uhm installer: verifying checksum"
 verify_sha256 "${tmp_dir}/SHA256SUMS" "${tmp_dir}/${archive}"
 
 say "uhm installer: extracting ${archive}"
-(cd "$tmp_dir" && tar -xzf "$archive")
+(cd "$tmp_dir" && tar --no-same-owner -xzf "$archive")
 
 source_binary="${tmp_dir}/uhm-${version}-${target}/uhm"
 [ -x "$source_binary" ] || fail "release archive did not contain an executable uhm binary"
