@@ -8,7 +8,7 @@ Provider selection looks like a configuration problem, but automatic selection i
 
 Fixed mode answers, “Which provider and model did the operator explicitly choose?” It is allowed even when no qualification evidence exists because the choice is direct and inspectable.
 
-Evidence mode answers, “Which candidate has reviewed evidence for this exact request class and contract?” It therefore fails closed when evidence is missing or stale. The shipped v0.3.4 manifest is empty, so no pair is currently selected automatically.
+Evidence mode answers, “Which candidate has reviewed evidence for this exact request class and contract?” It therefore fails closed when evidence is missing or stale. The shipped v0.3.5 manifest is empty, so no pair is currently selected automatically.
 
 ## Model names are not identities
 

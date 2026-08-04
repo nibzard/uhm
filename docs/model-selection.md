@@ -2,7 +2,7 @@
 
 # Model selection
 
-The v0.3.4 default is the explicit fixed pair `openai:gpt-5.6-terra`. No provider/model pair is currently qualified for automatic selection because the shipped qualification manifest and holdout commitment are intentionally unavailable.
+The v0.3.5 default is the explicit fixed pair `openai:gpt-5.6-terra`. No provider/model pair is currently qualified for automatic selection because the shipped qualification manifest and holdout commitment are intentionally unavailable.
 
 Choose the page that matches what you need:
 
