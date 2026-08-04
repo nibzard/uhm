@@ -27,6 +27,14 @@ uhm list the three biggest files in this directory
 
 `uhm` turns that into one typed action, shows you the proposal, runs the ordinary work, and prints the result. Result data goes to **stdout**; progress and the review UI go to **stderr**, so piping the result elsewhere just works.
 
+Quote the intent whenever it contains `?`, `'`, `*`, or `!` — the shell expands those characters before `uhm` runs, and zsh (the macOS default) turns an unmatched `?` or `*` into a hard error:
+
+```sh
+uhm 'how many paragraphs are in README.md?'
+```
+
+zsh users who prefer to skip quoting can add `alias uhm='noglob uhm'` to `~/.zshrc`; an unpaired apostrophe still needs a quoted intent.
+
 ## 3. Preview before it runs
 
 `--dry-run` prints the exact proposal without executing anything:
@@ -51,6 +59,8 @@ Pipe UTF-8 text and ask about it. The bytes travel only with the model request:
 cat NOTES.md | uhm count paragraphs
 cat data.csv | uhm ask "how many columns does this file have"
 ```
+
+A question about a file's content needs the file's bytes on stdin, as above — naming the file in a bare question gives the model nothing to read.
 
 With `--local-input`, the piped body stays on-device and only a presence, byte-count, and UTF-8 status summary (plus any `--input-format` label) is sent, which the generated program reads from a private spool:
 

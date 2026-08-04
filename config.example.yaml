@@ -18,6 +18,7 @@
 # shell_context:
 #   last_history_entry: false    # sensitive opt-in; previews one entry before sending
 # stdin_max_bytes: 16777216      # exact stdin spool limit
+# stdin_first_byte_timeout_ms: 1000  # wait this long for piped stdin's first byte
 # request_max_bytes: 262144      # complete untrusted model-input JSON
 # response_max_bytes: 2097152    # streamed or buffered API response
 

@@ -71,6 +71,13 @@ impl Budget {
     }
 }
 
+/// Why a shell-route job can never be verified-restorable: recorded on its
+/// history event and rendered on the proposal block.
+const SHELL_RECOVERY_REASON: &str = "shell execution has a receipt but no controlled preimage";
+/// The parent-shell equivalent of `SHELL_RECOVERY_REASON`.
+const PARENT_SHELL_RECOVERY_REASON: &str =
+    "parent-shell changes have a receipt but no controlled preimage";
+
 #[allow(clippy::too_many_arguments)]
 pub fn handle(
     args: &Args,
@@ -413,11 +420,12 @@ pub fn handle(
                 interaction.route("parent_shell");
                 let effects = merged_effects(&metadata.effects, &[Effect::ShellState]);
                 interaction.effects(&effects);
-                if recovery::capture_requested(
+                let capture_requested = recovery::capture_requested(
                     &config.paths.data_dir,
                     &config.recovery,
                     args.recoverable,
-                ) {
+                );
+                if capture_requested {
                     let _ = history::record_recovery_event(
                         &config.paths.data_dir,
                         &config.history,
@@ -426,7 +434,7 @@ pub fn handle(
                         mode.as_str(),
                         history::EventKind::RecoveryClassified,
                         recovery::RecoveryClass::BestEffortOnly.as_str(),
-                        Some("parent-shell changes have a receipt but no controlled preimage"),
+                        Some(PARENT_SHELL_RECOVERY_REASON),
                         0,
                         related_run_id,
                     );
@@ -447,15 +455,37 @@ pub fn handle(
                         &command,
                         &metadata.summary,
                         safety::Tier::Low,
-                        &effects,
+                        &metadata.effects,
+                        &[Effect::ShellState],
                         &[],
                     );
+                    if capture_requested {
+                        eprintln!(
+                            "Recovery: {} — {}",
+                            recovery::RecoveryClass::BestEffortOnly.as_str(),
+                            PARENT_SHELL_RECOVERY_REASON
+                        );
+                    }
                     if matches!(
                         parent_action.kind,
                         crate::action::ParentActionKind::SourceFile
                     ) {
                         eprintln!("Source warning: this file executes with your full shell authority and may exit or replace the shell before cleanup or acknowledgement.")
                     }
+                }
+                // An explicit --recoverable asks for a preimage this route can
+                // never produce, so the job stops instead of proceeding
+                // silently; --force overrides, like the program route's gate.
+                if args.recoverable && !args.force {
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "verified_restore_unavailable",
+                        &format!(
+                            "{PARENT_SHELL_RECOVERY_REASON}; use --force to run without a verified restore"
+                        ),
+                    );
                 }
                 let Some(session) = integration else {
                     interaction.decision("needs_parent");
@@ -561,9 +591,8 @@ pub fn handle(
                     .filter(|value| value.severity == program::DiagnosticSeverity::Warning)
                 {
                     eprintln!(
-                        "uhm: program contract warning [{}]: {}",
-                        diagnostic.code,
-                        ansi::sanitize_untrusted_inline(&diagnostic.message)
+                        "uhm: program contract warning: {}",
+                        program_diagnostic_text(diagnostic, args.verbose)
                     );
                 }
                 if let Some(diagnostic) = diagnostics.iter().find(|value| {
@@ -583,7 +612,7 @@ pub fn handle(
                     if budget.can_replace() && tty_available() && !args.json {
                         eprintln!(
                             "Program contract error: {}",
-                            ansi::sanitize_untrusted_inline(&diagnostic.message)
+                            program_diagnostic_text(diagnostic, args.verbose)
                         );
                         eprint!("Repair or stop? [r/N] ");
                         let _ = std::io::stderr().flush();
@@ -629,7 +658,7 @@ pub fn handle(
                             outcome::NOT_EXECUTED
                         },
                         &diagnostic.code,
-                        &diagnostic.message,
+                        &program_diagnostic_text(diagnostic, args.verbose),
                     );
                 }
                 let recovery_classification = if program::has_writable_files(&proposal) {
@@ -677,7 +706,13 @@ pub fn handle(
                     return dry_run(args, &proposal.source);
                 }
                 if review && !args.json {
-                    program_preview(&proposal, &snapshot, config, &recovery_classification);
+                    program_preview(
+                        &proposal,
+                        &snapshot,
+                        config,
+                        &recovery_classification,
+                        &detected,
+                    );
                 }
                 if args.json && review && !args.force {
                     return not_executed(
@@ -695,6 +730,7 @@ pub fn handle(
                         );
                     }
                     let options = review_options(&budget);
+                    let mut reprompted = false;
                     let decision = loop {
                         eprint!("{}", review_prompt(options));
                         let _ = std::io::stderr().flush();
@@ -710,6 +746,11 @@ pub fn handle(
                             ReviewDecision::Unavailable(reason) => {
                                 eprintln!("{}", ansi::warning(reason))
                             }
+                            ReviewDecision::Unrecognized if !reprompted => {
+                                reprompted = true;
+                                eprintln!("{}", ansi::warning(UNRECOGNIZED_REVIEW_REPLY));
+                            }
+                            ReviewDecision::Unrecognized => break ReviewDecision::Cancel,
                             decision => break decision,
                         }
                     };
@@ -771,14 +812,18 @@ pub fn handle(
                             }
                         },
                         ReviewDecision::Copy => {
-                            let _ = write_command(std::io::stdout(), &proposal.source);
+                            let _ = write_command(
+                                std::io::stdout(),
+                                &proposal.source,
+                                std::io::stdout().is_terminal(),
+                            );
                             return outcome::NOT_EXECUTED;
                         }
                         ReviewDecision::Cancel => {
                             interaction.decision("cancelled");
                             return not_executed(args, &proposal.source, "cancelled by user");
                         }
-                        ReviewDecision::Unavailable(_) => {
+                        ReviewDecision::Unavailable(_) | ReviewDecision::Unrecognized => {
                             unreachable!("the prompt loop only breaks on an available option")
                         }
                     }
@@ -1170,11 +1215,12 @@ pub fn handle(
                 let classification = safety::classify(&command);
                 let effects = merged_effects(&classification.effects, &metadata.effects);
                 interaction.effects(&effects);
-                if recovery::capture_requested(
+                let capture_requested = recovery::capture_requested(
                     &config.paths.data_dir,
                     &config.recovery,
                     args.recoverable,
-                ) {
+                );
+                if capture_requested {
                     let _ = history::record_recovery_event(
                         &config.paths.data_dir,
                         &config.history,
@@ -1183,7 +1229,7 @@ pub fn handle(
                         mode.as_str(),
                         history::EventKind::RecoveryClassified,
                         recovery::RecoveryClass::BestEffortOnly.as_str(),
-                        Some("shell execution has a receipt but no controlled preimage"),
+                        Some(SHELL_RECOVERY_REASON),
                         0,
                         related_run_id,
                     );
@@ -1201,7 +1247,8 @@ pub fn handle(
                         &command,
                         &metadata.summary,
                         classification.tier,
-                        &effects,
+                        &metadata.effects,
+                        &classification.effects,
                         &classification.reasons,
                     );
                     eprintln!(
@@ -1211,6 +1258,13 @@ pub fn handle(
                             .as_str()
                             .unwrap_or("(not disclosed)")
                     );
+                    if capture_requested {
+                        eprintln!(
+                            "Recovery: {} — {}",
+                            recovery::RecoveryClass::BestEffortOnly.as_str(),
+                            SHELL_RECOVERY_REASON
+                        );
+                    }
                     for a in &metadata.assumptions {
                         eprintln!("Assumption: {}", ansi::sanitize_untrusted_inline(a));
                     }
@@ -1231,6 +1285,7 @@ pub fn handle(
                         );
                     };
                     let options = review_options(&budget);
+                    let mut reprompted = false;
                     let decision = loop {
                         eprint!("{}", review_prompt(options));
                         let _ = std::io::stderr().flush();
@@ -1246,6 +1301,11 @@ pub fn handle(
                             ReviewDecision::Unavailable(reason) => {
                                 eprintln!("{}", ansi::warning(reason))
                             }
+                            ReviewDecision::Unrecognized if !reprompted => {
+                                reprompted = true;
+                                eprintln!("{}", ansi::warning(UNRECOGNIZED_REVIEW_REPLY));
+                            }
+                            ReviewDecision::Unrecognized => break ReviewDecision::Cancel,
                             decision => break decision,
                         }
                     };
@@ -1318,14 +1378,18 @@ pub fn handle(
                             }
                         },
                         ReviewDecision::Copy => {
-                            let _ = write_command(std::io::stdout(), &command);
+                            let _ = write_command(
+                                std::io::stdout(),
+                                &command,
+                                std::io::stdout().is_terminal(),
+                            );
                             return outcome::NOT_EXECUTED;
                         }
                         ReviewDecision::Cancel => {
                             interaction.decision("cancelled");
                             return not_executed(args, &command, "cancelled by user");
                         }
-                        ReviewDecision::Unavailable(_) => {
+                        ReviewDecision::Unavailable(_) | ReviewDecision::Unrecognized => {
                             unreachable!("the prompt loop only breaks on an available option")
                         }
                     }
@@ -1333,6 +1397,20 @@ pub fn handle(
                     eprintln!(
                         "{}",
                         ansi::warning("Proceeding because --force was supplied.")
+                    );
+                }
+                // An explicit --recoverable asks for a preimage this route can
+                // never produce, so the job stops instead of proceeding
+                // silently; --force overrides, like the program route's gate.
+                if args.recoverable && !args.force {
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "verified_restore_unavailable",
+                        &format!(
+                            "{SHELL_RECOVERY_REASON}; use --force to run without a verified restore"
+                        ),
                     );
                 }
                 let child_stdin = (stdin_mode == StdinMode::Original).then(|| stdin.bytes());
@@ -1687,6 +1765,7 @@ enum ReviewDecision {
     Copy,
     Cancel,
     Unavailable(&'static str),
+    Unrecognized,
 }
 
 fn review_options(budget: &Budget) -> ReviewOptions {
@@ -1696,30 +1775,32 @@ fn review_options(budget: &Budget) -> ReviewOptions {
     }
 }
 
+/// Shown once when a review reply matches no option. The prompt loop then
+/// restates the live options; a second unrecognized reply cancels, so a closed
+/// or hostile terminal can never hold the prompt open.
+const UNRECOGNIZED_REVIEW_REPLY: &str =
+    "that reply matches no option; a second unrecognized reply cancels";
+
 fn review_prompt(options: ReviewOptions) -> String {
-    let mut words = vec!["Run"];
-    let mut keys = vec!["R"];
+    let mut choices = vec!["Run [R]"];
     if options.revise {
-        words.push("revise");
-        keys.push("v");
+        choices.push("revise [v]");
     }
     if options.edit {
-        words.push("edit");
-        keys.push("e");
+        choices.push("edit [e]");
     }
-    words.push("copy");
-    keys.push("c");
-    words.push("cancel");
-    keys.push("q");
-    format!("{}? [{}] ", words.join(", "), keys.join("/"))
+    choices.push("copy [c]");
+    choices.push("cancel [q]");
+    format!("{}? ", choices.join(", "))
 }
 
 /// Resolve one review keystroke. An option that exists but is not currently
 /// offered explains itself so the caller can re-prompt; it never silently
-/// becomes a cancellation.
+/// becomes a cancellation. Input matching no option is `Unrecognized` so the
+/// caller can re-prompt with the live options before treating it as a cancel.
 fn review_decision(input: &str, options: ReviewOptions) -> ReviewDecision {
     match input.trim().to_lowercase().as_str() {
-        "" | "r" | "run" => ReviewDecision::Run,
+        "" | "r" | "run" | "y" | "yes" => ReviewDecision::Run,
         "v" | "revise" => {
             if options.revise {
                 ReviewDecision::Revise
@@ -1739,7 +1820,77 @@ fn review_decision(input: &str, options: ReviewOptions) -> ReviewDecision {
             }
         }
         "c" | "copy" => ReviewDecision::Copy,
-        _ => ReviewDecision::Cancel,
+        "q" | "cancel" | "quit" => ReviewDecision::Cancel,
+        _ => ReviewDecision::Unrecognized,
+    }
+}
+
+/// User-facing sentence for a program-contract reason code: what was wrong
+/// and what to do. Returns `None` for a code with no mapping, which the
+/// per-code test treats as a shipping error. Two codes carry a different
+/// meaning as a warning than as a hard error and map per severity.
+fn program_diagnostic_sentence(
+    code: &str,
+    severity: program::DiagnosticSeverity,
+) -> Option<&'static str> {
+    let warning = severity == program::DiagnosticSeverity::Warning;
+    Some(match code {
+        "invalid_python_syntax" => {
+            "the proposed program is not valid Python; repair the proposal or rephrase the request"
+        }
+        "builtin_input_is_unsupported" => {
+            "the proposed program waits for keyboard input, which never arrives here; repair the proposal so it reads its declared input instead"
+        }
+        "process_stdin_is_closed" => {
+            "the proposed program reads process stdin, which is closed for programs; repair the proposal so it reads the piped-input file instead"
+        }
+        "declared_path_opened_directly" => {
+            "the proposed program opens a declared file by its raw path instead of through its resource handle; repair the proposal or rephrase the request"
+        }
+        "unknown_resource" => {
+            "the proposed program uses a file it never declared; repair the proposal or rephrase the request"
+        }
+        "helper_not_referenced" => {
+            "the proposed program declares files or piped input but never uses the runtime helper that provides them; repair the proposal or rephrase the request"
+        }
+        "duplicate_resource" => {
+            "the proposed program declares the same file id or path twice; repair the proposal or rephrase the request"
+        }
+        "runtime_unavailable" => {
+            "a working Python 3 is required to check and run programs and none was found; install python3 and re-run"
+        }
+        "stdin_not_consumed" if warning => {
+            "piped input was supplied but the proposed program may never read it, so the result may ignore that input"
+        }
+        "stdin_not_consumed" => {
+            "the proposed program expects piped input and none was supplied; pipe the input into uhm or rephrase the request"
+        }
+        "read_resource_not_consumed" => {
+            "a file declared for reading may never be read, so the result may ignore it"
+        }
+        "write_resource_not_consumed" if warning => {
+            "the proposed program writes its declared file in a way that cannot be checked before it runs"
+        }
+        "write_resource_not_consumed" => {
+            "the proposed program declares a file it should write but never writes it; repair the proposal or rephrase the request"
+        }
+        _ => return None,
+    })
+}
+/// The default-path terminal text for a program-contract diagnostic. The
+/// internal reason code appears only under -v; the raw diagnostic message
+/// stays in history and in the model-facing repair payload.
+fn program_diagnostic_text(
+    diagnostic: &program::ProgramContractDiagnostic,
+    verbose: bool,
+) -> String {
+    let sentence = program_diagnostic_sentence(&diagnostic.code, diagnostic.severity)
+        .map(str::to_string)
+        .unwrap_or_else(|| ansi::sanitize_untrusted_inline(&diagnostic.message));
+    if verbose {
+        format!("{sentence} [{}]", diagnostic.code)
+    } else {
+        sentence
     }
 }
 
@@ -2004,11 +2155,33 @@ fn program_preview(
     snapshot: &context::Snapshot,
     config: &Config,
     recovery: &recovery::Classification,
+    detected: &[Effect],
 ) {
-    eprintln!("{}", ansi::primary("Proposed Python microprogram"));
-    eprintln!("{}", ansi::sanitize_untrusted(&proposal.source));
-    eprintln!("{}", ansi::sanitize_untrusted(&proposal.summary));
     eprintln!(
+        "{}",
+        program_preview_text(proposal, snapshot, config, recovery, detected)
+    );
+}
+/// Builds the program proposal block as one string so its content — the only
+/// place the program route discloses what it will touch — stays testable.
+fn program_preview_text(
+    proposal: &crate::action::ProgramProposal,
+    snapshot: &context::Snapshot,
+    config: &Config,
+    recovery: &recovery::Classification,
+    detected: &[Effect],
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(ansi::primary("Proposed Python microprogram"));
+    lines.push(ansi::sanitize_untrusted(&proposal.source));
+    lines.push(ansi::sanitize_untrusted(&proposal.summary));
+    if !(proposal.effects.is_empty() && detected.is_empty()) {
+        lines.push(format!(
+            "Effects: {}",
+            card::effects_line(&proposal.effects, detected)
+        ));
+    }
+    lines.push(format!(
         "Runtime: {} -I -S\nWorking directory: private temporary directory\nResult: {:?}",
         snapshot
             .program_runtime
@@ -2020,44 +2193,47 @@ fn program_preview(
         } else {
             "stdout"
         }
-    );
-    eprintln!("Contract: {}\nProcess stdin: closed", proposal.contract);
+    ));
+    lines.push(format!(
+        "Contract: {}\nProcess stdin: closed",
+        proposal.contract
+    ));
     for file in &proposal.files {
-        eprintln!(
+        lines.push(format!(
             "Resource {} ({:?}): {}",
             ansi::sanitize_untrusted_inline(&file.id),
             file.access,
             ansi::sanitize_untrusted_inline(&file.path)
-        );
+        ));
     }
-    eprintln!(
+    lines.push(format!(
         "Recovery: {} — {}",
         recovery.class.as_str(),
         ansi::sanitize_untrusted_inline(&recovery.reason)
-    );
+    ));
     for item in &recovery.items {
-        eprintln!(
+        lines.push(format!(
             "  {}: {} ({})",
             ansi::sanitize_untrusted_inline(&item.destination.display().to_string()),
             item.class.as_str(),
             ansi::sanitize_untrusted_inline(&item.reason)
-        );
+        ));
     }
     for assumption in &proposal.assumptions {
-        eprintln!(
+        lines.push(format!(
             "Assumption: {}",
             ansi::sanitize_untrusted_inline(assumption)
-        );
+        ));
     }
-    eprintln!(
+    lines.push(format!(
         "Limits: {}s wall, {}s CPU, {} MiB address space, {} MiB combined output, {} MiB workspace",
         config.program.timeout_secs,
         config.program.cpu_secs,
         config.program.address_space_bytes / (1024 * 1024),
         config.program.output_max_bytes / (1024 * 1024),
         config.program.workspace_max_bytes / (1024 * 1024),
-    );
-    eprintln!(
+    ));
+    lines.push(format!(
         "Host controls: CPU/open-files applied at spawn; address-space {}; child-process limit {} on {}.",
         if cfg!(target_os = "macos") {
             "unavailable"
@@ -2070,8 +2246,11 @@ fn program_preview(
             "unavailable"
         },
         std::env::consts::OS
+    ));
+    lines.push(
+        "Not sandboxed: the program runs with your user permissions and can access data your user can access.".into(),
     );
-    eprintln!("Not sandboxed: the program runs with your user permissions and can access data your user can access.");
+    lines.join("\n")
 }
 fn dry_run(args: &Args, command: &str) -> i32 {
     if args.json {
@@ -2088,12 +2267,18 @@ fn dry_run(args: &Args, command: &str) -> i32 {
             .json()
         )
     } else {
-        let _ = write_command(std::io::stdout(), command);
+        let _ = write_command(std::io::stdout(), command, std::io::stdout().is_terminal());
     }
     0
 }
-fn write_command(mut out: impl Write, command: &str) -> std::io::Result<()> {
+/// Emits the command bytes exactly when the channel is a pipe, so consumers
+/// like `| sh` and byte comparisons see no added terminator; a terminal gets
+/// one trailing newline so the next shell prompt starts on its own line.
+fn write_command(mut out: impl Write, command: &str, terminal: bool) -> std::io::Result<()> {
     out.write_all(command.as_bytes())?;
+    if terminal {
+        out.write_all(b"\n")?;
+    }
     out.flush()
 }
 fn clarification(args: &Args, q: &str) -> i32 {
@@ -2293,6 +2478,16 @@ mod tests {
         }
     }
     #[test]
+    fn command_channel_terminates_terminals_and_keeps_pipes_exact() {
+        let mut piped = Vec::new();
+        write_command(&mut piped, "rm -rf -- logs", false).unwrap();
+        assert_eq!(piped, b"rm -rf -- logs");
+        let mut terminal = Vec::new();
+        write_command(&mut terminal, "rm -rf -- logs", true).unwrap();
+        assert_eq!(terminal, b"rm -rf -- logs\n");
+    }
+
+    #[test]
     fn gate_blocks_missing_marker() {
         assert!(ensure_disclosure(None).is_err());
         assert!(ensure_disclosure(Some(crate::first_run::RENDERED_MARKER)).is_ok());
@@ -2478,6 +2673,80 @@ mod tests {
         assert_eq!(response.action.name.as_deref(), Some("UHM_PARENT_TEST"));
     }
 
+    #[test]
+    fn recoverable_parent_shell_action_stops_before_any_receipt_without_force() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config::test(crate::dirs::Paths {
+            config_file: root.path().join("config"),
+            data_dir: root.path().join("data"),
+            cache_dir: root.path().join("cache"),
+        });
+        let proposal = ProposedAction::ParentShell {
+            action: crate::action::ParentAction {
+                kind: crate::action::ParentActionKind::SetEnvironment,
+                path: None,
+                name: Some("UHM_PARENT_TEST".into()),
+                value: Some("works".into()),
+            },
+            metadata: ProposalMetadata {
+                summary: "Set a test value.".into(),
+                effects: vec![Effect::ShellState],
+                ..ProposalMetadata::default()
+            },
+        };
+        let args = Args {
+            recoverable: true,
+            shell: Some("bash".into()),
+            ..Args::default()
+        };
+        let api = api::ApiConfig {
+            provider: crate::provider::ProviderId::Openai,
+            model: "unused".into(),
+            key: String::new(),
+            max_tokens: 1,
+            reasoning_effort: "low".into(),
+            request_max_bytes: 1024,
+            response_max_bytes: 1024,
+            alternate: None,
+            fallback_on: Vec::new(),
+            selection_mode: crate::config::SelectionMode::Fixed,
+            permitted_action_types: None,
+            resolved_fingerprint: None,
+            resolved_model: None,
+        };
+        let mut interaction = telemetry::Interaction::new("run", false, false);
+        let run_id = interaction.run_id.clone();
+        let code = handle(
+            &args,
+            &config,
+            &api,
+            "set a value",
+            "run",
+            &crate::input::Spool::default(),
+            crate::first_run::RENDERED_MARKER,
+            &mut interaction,
+            Some(proposal),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(code, outcome::NOT_EXECUTED);
+        let events = history::events_for(&config.paths.data_dir, &run_id).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == history::EventKind::RecoveryClassified),
+            "the requested-but-ineligible capture must be recorded"
+        );
+        assert!(
+            events.iter().all(|event| !matches!(
+                event.kind,
+                history::EventKind::ExecutionFinished | history::EventKind::JobFinished
+            )),
+            "an explicit --recoverable this route cannot honor must stop before any receipt"
+        );
+    }
+
     fn failed_shell_result(stderr_tail: Option<&[u8]>) -> shell::Result {
         shell::Result {
             code: 2,
@@ -2508,28 +2777,28 @@ mod tests {
                 revise: true,
                 edit: true
             }),
-            "Run, revise, edit, copy, cancel? [R/v/e/c/q] "
+            "Run [R], revise [v], edit [e], copy [c], cancel [q]? "
         );
         assert_eq!(
             review_prompt(ReviewOptions {
                 revise: false,
                 edit: true
             }),
-            "Run, edit, copy, cancel? [R/e/c/q] "
+            "Run [R], edit [e], copy [c], cancel [q]? "
         );
         assert_eq!(
             review_prompt(ReviewOptions {
                 revise: true,
                 edit: false
             }),
-            "Run, revise, copy, cancel? [R/v/c/q] "
+            "Run [R], revise [v], copy [c], cancel [q]? "
         );
         assert_eq!(
             review_prompt(ReviewOptions {
                 revise: false,
                 edit: false
             }),
-            "Run, copy, cancel? [R/c/q] "
+            "Run [R], copy [c], cancel [q]? "
         );
     }
 
@@ -2584,21 +2853,150 @@ mod tests {
             revise: true,
             edit: true,
         };
-        for input in ["", "r", "run", "R"] {
+        for input in ["", "r", "run", "R", "y", "yes", "Y", "YES"] {
             assert_eq!(review_decision(input, live), ReviewDecision::Run, "{input}");
         }
         assert_eq!(review_decision("v", live), ReviewDecision::Revise);
         assert_eq!(review_decision("e", live), ReviewDecision::Edit);
         assert_eq!(review_decision("c", live), ReviewDecision::Copy);
         assert_eq!(review_decision("copy", live), ReviewDecision::Copy);
-        for input in ["q", "n", "no", "cancel", "quit"] {
+        for input in ["q", "cancel", "quit"] {
             assert_eq!(
                 review_decision(input, live),
                 ReviewDecision::Cancel,
                 "{input}"
             );
         }
-        assert_eq!(review_decision("zzz", live), ReviewDecision::Cancel);
+        for input in ["n", "no", "zzz"] {
+            assert_eq!(
+                review_decision(input, live),
+                ReviewDecision::Unrecognized,
+                "{input}"
+            );
+        }
+    }
+
+    /// Every reason code the preflight can emit, harvested from the source of
+    /// `src/program.rs` — both the embedded AST checker's `add('code',…)`
+    /// calls and the Rust-side `code: "…"` constructions — so a new code
+    /// cannot ship without joining the user-facing mapping.
+    fn program_reason_codes() -> Vec<String> {
+        let source = include_str!("program.rs");
+        let mut codes: Vec<String> = Vec::new();
+        let mut collect = |marker: &str, terminator: char| {
+            for (index, _) in source.match_indices(marker) {
+                let rest = &source[index + marker.len()..];
+                if let Some(end) = rest.find(terminator) {
+                    let code = rest[..end].to_string();
+                    if !code.is_empty() && !codes.contains(&code) {
+                        codes.push(code);
+                    }
+                }
+            }
+        };
+        collect("add('", '\'');
+        collect("code: \"", '"');
+        codes
+    }
+
+    #[test]
+    fn every_program_contract_reason_code_maps_to_a_user_sentence() {
+        let codes = program_reason_codes();
+        for expected in [
+            "write_resource_not_consumed",
+            "runtime_unavailable",
+            "invalid_python_syntax",
+            "duplicate_resource",
+        ] {
+            assert!(
+                codes.iter().any(|code| code == expected),
+                "code harvesting lost {expected}"
+            );
+        }
+        for code in &codes {
+            for severity in [
+                program::DiagnosticSeverity::HardError,
+                program::DiagnosticSeverity::Warning,
+                program::DiagnosticSeverity::Availability,
+            ] {
+                let sentence = program_diagnostic_sentence(code, severity).unwrap_or_else(|| {
+                    panic!("reason code {code} ({severity:?}) has no user-facing sentence")
+                });
+                assert!(
+                    !sentence.contains(code) && !sentence.contains('_'),
+                    "{code}: internal vocabulary in {sentence:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_program_contract_text_hides_the_internal_code_and_verbose_shows_it() {
+        for code in program_reason_codes() {
+            for severity in [
+                program::DiagnosticSeverity::HardError,
+                program::DiagnosticSeverity::Warning,
+                program::DiagnosticSeverity::Availability,
+            ] {
+                let diagnostic = program::ProgramContractDiagnostic {
+                    code: code.clone(),
+                    severity,
+                    message: format!("internal text for {code}"),
+                };
+                let plain = program_diagnostic_text(&diagnostic, false);
+                assert!(
+                    !plain.contains(&code),
+                    "default path leaked {code}: {plain}"
+                );
+                assert!(
+                    program_diagnostic_text(&diagnostic, true).contains(&code),
+                    "-v must keep {code} visible"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn program_preview_renders_effects_and_marks_declared_only_ones() {
+        let proposal = crate::action::ProgramProposal {
+            runtime: crate::action::ProgramRuntime::Python3,
+            contract: "uhm_helper_v1".into(),
+            source: "print('ok')".into(),
+            summary: "test".into(),
+            assumptions: vec![],
+            stdin_mode: crate::action::ProgramStdinMode::None,
+            files: vec![],
+            effects: vec![Effect::ReadLocal, Effect::WriteLocal],
+        };
+        let snapshot = context::Snapshot {
+            policy_version: 0,
+            mode: "standard".into(),
+            program_runtime: crate::runtime::PythonInventory::unavailable(),
+            machine: json!({}),
+        };
+        let root = tempfile::tempdir().unwrap();
+        let config = Config::test(crate::dirs::Paths {
+            config_file: root.path().join("config"),
+            data_dir: root.path().join("data"),
+            cache_dir: root.path().join("cache"),
+        });
+        let recovery = recovery::Classification {
+            requested: false,
+            class: recovery::RecoveryClass::Unavailable,
+            reason: "stdout-only programs have no managed artifact preimage".into(),
+            items: Vec::new(),
+        };
+        let text = program_preview_text(
+            &proposal,
+            &snapshot,
+            &config,
+            &recovery,
+            &[Effect::ReadLocal],
+        );
+        assert!(
+            text.contains("Effects: reads local data, writes local data (declared)"),
+            "the program route must disclose its merged effects: {text}"
+        );
     }
 
     #[test]

@@ -84,6 +84,8 @@ pub fn gather(
         clipboard_check(),
         environment_check(config),
         containment_check(config),
+        repair_recover_check(config),
+        undo_restore_check(config),
     ];
     let providers = if all_providers {
         vec![
@@ -171,6 +173,29 @@ pub fn healthy(report: &Report) -> bool {
 }
 
 pub fn render(report: &Report) {
+    for line in render_lines(report) {
+        println!("{}", line);
+    }
+}
+
+/// Column widths come from the widest name and status in this report, and
+/// the status pad is computed from the unstyled status text, so multi-word
+/// names, long statuses, and ANSI styling bytes never push the detail column
+/// out of alignment.
+fn render_lines(report: &Report) -> Vec<String> {
+    let name_width = report
+        .checks
+        .iter()
+        .map(|check| check.name.len())
+        .max()
+        .unwrap_or(0);
+    let status_width = report
+        .checks
+        .iter()
+        .map(|check| check.status.len())
+        .max()
+        .unwrap_or(0);
+    let mut lines = Vec::new();
     for check in &report.checks {
         let state = match check.status {
             "ok" => ansi::success("OK"),
@@ -178,10 +203,63 @@ pub fn render(report: &Report) {
             "warning" => ansi::warning("warning"),
             _ => ansi::critical(check.status),
         };
-        println!("{:<16} {:<9} {}", check.name, state, check.detail);
+        let pad = " ".repeat(status_width.saturating_sub(check.status.len()));
+        lines.push(format!(
+            "{:<name_width$} {}{} {}",
+            check.name, state, pad, check.detail
+        ));
         if let Some(next) = &check.next {
-            println!("{:<27} {}", "", next);
+            lines.push(format!(
+                "{:<indent$} {}",
+                "",
+                next,
+                indent = name_width + status_width + 1
+            ));
         }
+    }
+    lines
+}
+
+/// Whether `uhm repair` and `uhm recover` can complete on this install: both
+/// seed from the retained intent, which only the full history detail keeps.
+fn repair_recover_check(config: &Config) -> Check {
+    let usable =
+        config.history.enabled && config.history.detail == crate::config::HistoryDetail::Full;
+    Check {
+        name: "repair/recover",
+        status: if usable { "ok" } else { "off" },
+        detail: if usable {
+            "usable; history retains intents (history.detail: full)".into()
+        } else if !config.history.enabled {
+            "not usable: history is disabled, so no run retains the intent these commands replay"
+                .into()
+        } else {
+            format!(
+                "not usable: history.detail is {} and repair/recover need the retained intent",
+                config.history.detail.as_str()
+            )
+        },
+        next: (!usable).then(|| {
+            "set history.enabled: true and history.detail: full to make uhm repair/recover work"
+                .into()
+        }),
+    }
+}
+
+/// Whether `uhm undo`/`uhm restore` can complete on this install: both need
+/// a captured preimage, and capture is off until explicitly enabled.
+fn undo_restore_check(config: &Config) -> Check {
+    let enabled = crate::recovery::effective_enabled(&config.paths.data_dir, &config.recovery);
+    Check {
+        name: "undo/restore",
+        status: if enabled { "ok" } else { "off" },
+        detail: if enabled {
+            "usable; eligible managed-file jobs capture preimages for uhm undo/restore".into()
+        } else {
+            "not usable: recovery snapshot capture is off, so runs retain no preimage".into()
+        },
+        next: (!enabled)
+            .then(|| "run `uhm recovery on`, or pass --recoverable to capture one job".into()),
     }
 }
 
@@ -500,6 +578,101 @@ mod tests {
             detail: String::new(),
             next: None,
         }
+    }
+
+    /// Visible text of a rendered line, with ANSI escape sequences removed.
+    fn visible(line: &str) -> String {
+        let mut cleaned = String::new();
+        let mut in_escape = false;
+        for character in line.chars() {
+            if in_escape {
+                in_escape = character != 'm';
+            } else if character == '\u{1b}' {
+                in_escape = true;
+            } else {
+                cleaned.push(character);
+            }
+        }
+        cleaned
+    }
+
+    #[test]
+    fn detail_column_stays_aligned_across_multiword_names_and_statuses() {
+        let report = Report {
+            supported: true,
+            checks: vec![
+                Check {
+                    name: "host",
+                    status: "ok",
+                    detail: "detail-anchor a".into(),
+                    next: None,
+                },
+                Check {
+                    name: "child environment",
+                    status: "warning",
+                    detail: "detail-anchor b".into(),
+                    next: None,
+                },
+                Check {
+                    name: "provider network",
+                    status: "skipped",
+                    detail: "detail-anchor c".into(),
+                    next: None,
+                },
+                Check {
+                    name: "provider network",
+                    status: "authentication",
+                    detail: "detail-anchor d".into(),
+                    next: None,
+                },
+            ],
+        };
+        let lines = render_lines(&report);
+        let columns: Vec<usize> = lines
+            .iter()
+            .map(|line| visible(line).find("detail-anchor").unwrap())
+            .collect();
+        assert!(
+            columns.iter().all(|column| *column == columns[0]),
+            "misaligned detail columns {columns:?} in {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn default_install_reports_repair_recover_and_undo_as_not_usable() {
+        let root = tempfile::tempdir().unwrap();
+        let config = Config::test(crate::dirs::Paths {
+            config_file: root.path().join("c"),
+            data_dir: root.path().join("d"),
+            cache_dir: root.path().join("x"),
+        });
+        let repair = repair_recover_check(&config);
+        assert_eq!(repair.status, "off");
+        assert!(repair.detail.contains("not usable"), "{}", repair.detail);
+        assert!(repair
+            .next
+            .as_deref()
+            .unwrap()
+            .contains("history.detail: full"));
+        let undo = undo_restore_check(&config);
+        assert_eq!(undo.status, "off");
+        assert!(undo.detail.contains("not usable"), "{}", undo.detail);
+        assert!(undo.next.as_deref().unwrap().contains("uhm recovery on"));
+    }
+
+    #[test]
+    fn enabled_retention_reports_repair_recover_and_undo_as_usable() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = Config::test(crate::dirs::Paths {
+            config_file: root.path().join("c"),
+            data_dir: root.path().join("d"),
+            cache_dir: root.path().join("x"),
+        });
+        config.history.detail = crate::config::HistoryDetail::Full;
+        std::fs::create_dir_all(&config.paths.data_dir).unwrap();
+        crate::recovery::enable(&config.paths.data_dir).unwrap();
+        assert_eq!(repair_recover_check(&config).status, "ok");
+        assert_eq!(undo_restore_check(&config).status, "ok");
     }
 
     #[test]

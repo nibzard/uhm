@@ -1123,6 +1123,108 @@ pub fn list(
     Ok(rows.into_iter().rev().take(limit).collect())
 }
 
+/// One human row per run: id, local time, route, coarse outcome, and event
+/// count. The outcome is drawn only from allowlisted keys of the final
+/// event's data, so the listing never shows content the redacted export
+/// withholds.
+pub fn render_list_row(row: &Value) -> String {
+    format!(
+        "{}  {}  {:<14} {:<12} {} events{}",
+        row["run_id"].as_str().unwrap_or("?"),
+        format_local_timestamp(row["timestamp"].as_u64().unwrap_or(0)),
+        row["route"].as_str().unwrap_or("unknown"),
+        row_outcome(&row["outcome"]),
+        row["events"].as_u64().unwrap_or(0),
+        if row["failed"].as_bool() == Some(true) {
+            "  failed"
+        } else {
+            ""
+        }
+    )
+}
+
+fn row_outcome(data: &Value) -> String {
+    // Every key consulted here is in EXPORT_DATA_KEYS.
+    ["exit_category", "state", "result", "decision"]
+        .iter()
+        .find_map(|key| data.get(*key).and_then(Value::as_str))
+        .unwrap_or("unknown")
+        .into()
+}
+
+/// One human block per journal event: kind, relative age, and the data
+/// fields the export allowlist permits for that kind, so the rendered view
+/// can never print a field the `--json` export would withhold.
+pub fn render_event_block(event: &Event, now: u64) -> String {
+    let kind = serde_json::to_value(event.kind)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    let mut block = format!(
+        "#{:<3} {:<28} {}",
+        event.sequence,
+        kind,
+        relative_time(event.timestamp, now)
+    );
+    let mut fields = Vec::new();
+    if let Some(data) = event.data.as_object() {
+        for key in EXPORT_DATA_KEYS {
+            match data.get(*key) {
+                None | Some(Value::Null) => {}
+                Some(value) => fields.push(format!("{key}: {}", field_text(value))),
+            }
+        }
+    }
+    if !fields.is_empty() {
+        block.push_str("\n     ");
+        block.push_str(&fields.join(" · "));
+    }
+    block
+}
+
+fn field_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Array(items) => items.iter().map(field_text).collect::<Vec<_>>().join(","),
+        other => other.to_string(),
+    }
+}
+
+fn relative_time(timestamp: u64, now: u64) -> String {
+    let elapsed = now.saturating_sub(timestamp);
+    match elapsed {
+        0..=59 => format!("{elapsed}s ago"),
+        60..=3_599 => format!("{}m ago", elapsed / 60),
+        3_600..=86_399 => format!("{}h ago", elapsed / 3_600),
+        _ => format!("{}d ago", elapsed / 86_400),
+    }
+}
+
+/// Local wall-clock rendering of an epoch timestamp for the human history
+/// views. Falls back to the raw epoch when the platform conversion fails.
+#[cfg(unix)]
+pub fn format_local_timestamp(epoch: u64) -> String {
+    let time = epoch as libc::time_t;
+    let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+        return epoch.to_string();
+    }
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday,
+        tm.tm_hour,
+        tm.tm_min,
+        tm.tm_sec
+    )
+}
+
+#[cfg(not(unix))]
+pub fn format_local_timestamp(epoch: u64) -> String {
+    epoch.to_string()
+}
+
 pub fn search(data: &Path, needle: &str) -> Result<Vec<Event>, String> {
     let needle = needle.to_lowercase();
     Ok(read(data)?
@@ -1361,31 +1463,36 @@ pub fn export(data: &Path, output: &Path, include_content: bool) -> Result<usize
     Ok(values.len())
 }
 
+/// Per-event data keys the redacted export keeps. The human `history list`
+/// and `history show` renderers draw only from this same set, so nothing the
+/// export withholds — intents, hashes, reasons, artifact names — can reach
+/// the terminal through them.
+pub(crate) const EXPORT_DATA_KEYS: &[&str] = &[
+    "bytes",
+    "retained_bytes",
+    "level",
+    "proposal_kind",
+    "runtime",
+    "declared_effects",
+    "detected_effects",
+    "decision",
+    "execution_attempted",
+    "exit_category",
+    "signal",
+    "latency_bucket",
+    "cache_state",
+    "second_turn_used",
+    "user_feedback",
+    "result",
+    "state",
+    "item_count",
+    "attempt",
+];
+
 fn redacted_export_event(event: &Event) -> Value {
-    const DATA_KEYS: &[&str] = &[
-        "bytes",
-        "retained_bytes",
-        "level",
-        "proposal_kind",
-        "runtime",
-        "declared_effects",
-        "detected_effects",
-        "decision",
-        "execution_attempted",
-        "exit_category",
-        "signal",
-        "latency_bucket",
-        "cache_state",
-        "second_turn_used",
-        "user_feedback",
-        "result",
-        "state",
-        "item_count",
-        "attempt",
-    ];
     let mut data = serde_json::Map::new();
     if let Some(source) = event.data.as_object() {
-        for key in DATA_KEYS {
+        for key in EXPORT_DATA_KEYS {
             if let Some(value) = source.get(*key) {
                 data.insert((*key).into(), value.clone());
             }
@@ -1909,6 +2016,102 @@ mod tests {
         assert!(!text.contains("checksum"));
         assert!(!text.contains("intent_hash"));
     }
+    #[test]
+    fn list_row_renders_outcome_and_local_time_from_allowlisted_fields() {
+        let row = json!({
+            "run_id": "abcdefgh1234",
+            "timestamp": 1_785_875_452u64,
+            "route": "run_shell",
+            "mode": "auto",
+            "events": 8,
+            "failed": false,
+            "outcome": {
+                "decision": "completed",
+                "exit_category": "success",
+                "intent": "SENTINEL_CONTENT"
+            }
+        });
+        let rendered = render_list_row(&row);
+        assert!(rendered.contains("success"), "{rendered}");
+        assert!(!rendered.contains("1785875452"), "{rendered}");
+        let dated = rendered.split_whitespace().any(|token| {
+            token.len() == 10 && token.as_bytes()[4] == b'-' && token.as_bytes()[7] == b'-'
+        });
+        assert!(dated, "{rendered}");
+        assert!(!rendered.contains("SENTINEL_CONTENT"), "{rendered}");
+    }
+
+    #[test]
+    fn event_blocks_render_only_export_allowlisted_data() {
+        let d = tempfile::tempdir().unwrap();
+        record_request(
+            d.path(),
+            &cfg(HistoryDetail::Full),
+            "abcdefgh1234",
+            "run_shell",
+            "auto",
+            "minimal",
+            "read /secret",
+            None,
+        )
+        .unwrap();
+        append_receipt(
+            d.path(),
+            &cfg(HistoryDetail::Full),
+            &receipt("abcdefgh1234"),
+        )
+        .unwrap();
+        let events = events_for(d.path(), "abcdefgh1234").unwrap();
+        let now = now_secs();
+        let rendered = events
+            .iter()
+            .map(|event| render_event_block(event, now))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("request_created"), "{rendered}");
+        assert!(rendered.contains("exit_category: success"), "{rendered}");
+        assert!(rendered.contains("ago"), "{rendered}");
+        assert!(!rendered.contains("/secret"), "{rendered}");
+        for event in &events {
+            let export = redacted_export_event(event);
+            let kept: BTreeSet<&str> = export["data"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            let block = render_event_block(event, now);
+            for key in event.data.as_object().into_iter().flat_map(|d| d.keys()) {
+                if !kept.contains(key.as_str()) {
+                    assert!(
+                        !block.contains(&format!("{key}:")),
+                        "withheld key {key} rendered: {block}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn relative_time_buckets_are_humane() {
+        assert_eq!(relative_time(100, 100), "0s ago");
+        assert_eq!(relative_time(100, 159), "59s ago");
+        assert_eq!(relative_time(100, 160), "1m ago");
+        assert_eq!(relative_time(0, 7_200), "2h ago");
+        assert_eq!(relative_time(0, 200_000), "2d ago");
+        assert_eq!(relative_time(200, 100), "0s ago");
+    }
+
+    #[test]
+    fn local_timestamp_is_a_readable_date_not_an_epoch() {
+        let rendered = format_local_timestamp(1_785_875_452);
+        assert_eq!(rendered.len(), 19, "{rendered}");
+        assert_eq!(rendered.as_bytes()[4], b'-');
+        assert_eq!(rendered.as_bytes()[7], b'-');
+        assert_eq!(rendered.as_bytes()[10], b' ');
+        assert!(!rendered.contains("1785875452"));
+    }
+
     #[test]
     fn full_intent_is_utf8_bounded_and_truncated_seed_is_refused() {
         let d = tempfile::tempdir().unwrap();

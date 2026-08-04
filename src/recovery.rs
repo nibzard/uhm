@@ -196,6 +196,10 @@ pub struct RestorePreview {
     pub run_id: String,
     pub state: String,
     pub forced: bool,
+    /// Set when the `last` alias skipped a newer non-restorable manifest, so
+    /// the selection is named instead of silently landing on an older run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias_note: Option<String>,
     pub items: Vec<PreviewItem>,
     pub concurrent_writer_warning: &'static str,
 }
@@ -232,6 +236,9 @@ pub struct PruneReport {
     pub snapshots_removed: usize,
     pub bytes_removed: u64,
     pub retained_pinned: usize,
+    /// Manifests with removable snapshots that a plain prune kept because they
+    /// are inside the age and total-byte caps; `--all` removes them.
+    pub retained_within_limits: usize,
     pub expired_runs: Vec<String>,
 }
 
@@ -862,6 +869,81 @@ fn resolve_manifest_run(data: &Path, selected: &str, limit: usize) -> Result<Str
         .ok_or_else(|| "no retained recovery manifest is available".into())
 }
 
+/// The manifest states a verified undo or forced restore can act on.
+fn restorable_state(state: RecoveryState) -> bool {
+    matches!(
+        state,
+        RecoveryState::Available
+            | RecoveryState::Conflicted
+            | RecoveryState::UndoPreflight
+            | RecoveryState::UndoInProgress
+    )
+}
+
+/// Resolves a run selection for undo and restore. The `last` alias picks the
+/// most recent manifest in a restorable state, so a newer restored or corrupt
+/// manifest never shadows the run the user can act on; when one was skipped,
+/// the returned note names the choice.
+fn resolve_restorable_run(
+    data: &Path,
+    selected: &str,
+    limit: usize,
+) -> Result<(String, Option<String>), String> {
+    if selected != "last" {
+        validate_run_id(selected)?;
+        return Ok((selected.into(), None));
+    }
+    let directory = runs_dir(data);
+    let mut newest_any: Option<(u64, String, RecoveryState)> = None;
+    let mut newest_restorable: Option<(u64, String)> = None;
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err("no retained recovery manifest is available".into());
+        }
+        Err(error) => return Err(format!("scan recovery runs: {error}")),
+    };
+    for entry in entries.take(limit) {
+        let Ok(entry) = entry else { continue };
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if validate_run_id(&name).is_err() || !entry.path().join(MANIFEST).is_file() {
+            continue;
+        }
+        if let Ok(manifest) = read_manifest(data, &name) {
+            if newest_any
+                .as_ref()
+                .is_none_or(|(time, _, _)| manifest.updated_at > *time)
+            {
+                newest_any = Some((manifest.updated_at, name.clone(), manifest.state));
+            }
+            if restorable_state(manifest.state)
+                && newest_restorable
+                    .as_ref()
+                    .is_none_or(|(time, _)| manifest.updated_at > *time)
+            {
+                newest_restorable = Some((manifest.updated_at, name));
+            }
+        }
+    }
+    match (newest_restorable, newest_any) {
+        (Some((_, run)), Some((_, newest_run, newest_state))) if newest_run != run => {
+            let note = format!(
+                "selected run {run}, the most recent restorable manifest; skipped newer run {newest_run} because its state is {}",
+                newest_state.as_str()
+            );
+            Ok((run, Some(note)))
+        }
+        (Some((_, run)), _) => Ok((run, None)),
+        (None, Some((_, run, state))) => Err(format!(
+            "no restorable recovery manifest is available; the most recent manifest {run} is {}",
+            state.as_str()
+        )),
+        (None, None) => Err("no retained recovery manifest is available".into()),
+    }
+}
+
 fn snapshot_path(
     data: &Path,
     manifest: &RecoveryManifest,
@@ -967,15 +1049,9 @@ pub fn preview_restore(
     config: &RecoveryConfig,
     forced: bool,
 ) -> Result<RestorePreview, String> {
-    let run = resolve_manifest_run(data, selected, config.scan_limit)?;
+    let (run, alias_note) = resolve_restorable_run(data, selected, config.scan_limit)?;
     let manifest = read_manifest(data, &run)?;
-    if !matches!(
-        manifest.state,
-        RecoveryState::Available
-            | RecoveryState::Conflicted
-            | RecoveryState::UndoPreflight
-            | RecoveryState::UndoInProgress
-    ) {
+    if !restorable_state(manifest.state) {
         return Err(format!(
             "recovery manifest is {}, not restorable",
             manifest.state.as_str()
@@ -999,6 +1075,7 @@ pub fn preview_restore(
         run_id: run,
         state: manifest.state.as_str().into(),
         forced,
+        alias_note,
         items,
         concurrent_writer_warning: "Each rename is atomic, but the collection is not a transaction; another writer can race the final hash check and rename.",
     })
@@ -1061,18 +1138,12 @@ pub fn restore(
 ) -> Result<OperationReport, String> {
     validate_run_id(operation_run_id)?;
     let _guard = lock(data)?;
-    let source = resolve_manifest_run(data, selected, config.scan_limit)?;
+    let (source, _alias_note) = resolve_restorable_run(data, selected, config.scan_limit)?;
     let mut manifest = read_manifest(data, &source)?;
     // Force is irreversible provenance: a resumed ordinary `undo` must not
     // downgrade an operation that previously crossed the force boundary.
     let forced = forced || manifest.forced_restore;
-    if !matches!(
-        manifest.state,
-        RecoveryState::Available
-            | RecoveryState::Conflicted
-            | RecoveryState::UndoPreflight
-            | RecoveryState::UndoInProgress
-    ) {
+    if !restorable_state(manifest.state) {
         return Err(format!(
             "recovery manifest is {}, not restorable",
             manifest.state.as_str()
@@ -1548,6 +1619,7 @@ pub fn prune(
                 snapshots_removed: 0,
                 bytes_removed: 0,
                 retained_pinned: 0,
+                retained_within_limits: 0,
                 expired_runs: Vec::new(),
             })
         }
@@ -1577,6 +1649,7 @@ pub fn prune(
         snapshots_removed: 0,
         bytes_removed: 0,
         retained_pinned: 0,
+        retained_within_limits: 0,
         expired_runs: Vec::new(),
     };
     for mut manifest in manifests {
@@ -1599,6 +1672,11 @@ pub fn prune(
             continue;
         }
         if !all && manifest.created_at >= cutoff && total <= config.max_total_bytes {
+            if manifest.items.iter().any(|item| {
+                item.snapshot_file.is_some() && !matches!(item.state, ItemState::Expired)
+            }) {
+                report.retained_within_limits += 1;
+            }
             continue;
         }
         let candidate = all || manifest.created_at < cutoff || total > config.max_total_bytes;
@@ -2468,6 +2546,83 @@ mod tests {
         assert!(transition(&mut manifest, RecoveryState::Available).is_err());
         assert!(transition(&mut manifest, RecoveryState::CommitPartial).is_ok());
         assert!(transition(&mut manifest, RecoveryState::Available).is_ok());
+    }
+
+    #[test]
+    fn last_alias_prefers_the_restorable_manifest_and_names_the_skipped_run() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        for (run, name) in [
+            ("run-restorable1", "first.txt"),
+            ("run-shadowing99", "second.txt"),
+        ] {
+            let (destination, staging) = paths(root.path(), name);
+            std::fs::write(&destination, b"before").unwrap();
+            let mut coordinator =
+                prepare(&data, run, &config, &[(destination, staging.clone())]).unwrap();
+            std::fs::write(&staging, b"after").unwrap();
+            coordinator.commit(config.max_total_bytes).unwrap();
+        }
+        restore(&data, "run-shadowing99", "undo-shadow0001", &config, false).unwrap();
+        let mut shadowing = read_manifest(&data, "run-shadowing99").unwrap();
+        shadowing.updated_at = read_manifest(&data, "run-restorable1").unwrap().updated_at + 100;
+        write_manifest(&data, &shadowing).unwrap();
+
+        let preview = preview_restore(&data, "last", &config, false).unwrap();
+        assert_eq!(preview.run_id, "run-restorable1");
+        let note = preview
+            .alias_note
+            .expect("skipping a newer non-restorable manifest must be named");
+        assert!(note.contains("run-restorable1"), "{note}");
+        assert!(note.contains("run-shadowing99"), "{note}");
+        assert!(note.contains("restored"), "{note}");
+
+        let explicit = preview_restore(&data, "run-restorable1", &config, false).unwrap();
+        assert!(explicit.alias_note.is_none());
+    }
+
+    #[test]
+    fn last_alias_with_only_non_restorable_manifests_reports_their_state() {
+        let (_root, data, config, run) = committed_replacement();
+        restore(&data, &run, "undo-00000042", &config, false).unwrap();
+        let error = preview_restore(&data, "last", &config, false).unwrap_err();
+        assert!(error.contains("no restorable recovery manifest"), "{error}");
+        assert!(error.contains(&run), "{error}");
+        assert!(error.contains("restored"), "{error}");
+    }
+
+    #[test]
+    fn prune_all_removes_retained_in_cap_snapshots_and_plain_prune_reports_the_skip() {
+        let (_root, data, config, run) = committed_replacement();
+        let retained = prune(&data, &config, false, false).unwrap();
+        assert_eq!(retained.snapshots_removed, 0);
+        assert_eq!(retained.retained_within_limits, 1);
+        assert_eq!(status(&data, None, &config).unwrap().snapshots, 1);
+        let removed = prune(&data, &config, false, true).unwrap();
+        assert_eq!(removed.snapshots_removed, 1);
+        assert_eq!(removed.retained_within_limits, 0);
+        assert_eq!(status(&data, None, &config).unwrap().snapshots, 0);
+        assert_eq!(
+            read_manifest(&data, &run).unwrap().state,
+            RecoveryState::Expired
+        );
+    }
+
+    #[test]
+    fn prune_dry_run_all_removes_nothing() {
+        let (_root, data, config, run) = committed_replacement();
+        let report = prune(&data, &config, true, true).unwrap();
+        assert_eq!(report.snapshots_removed, 1);
+        let snapshot = run_dir(&data, &run)
+            .join(SNAPSHOTS)
+            .join("output-000.preimage");
+        assert!(snapshot.exists());
+        assert_eq!(status(&data, None, &config).unwrap().snapshots, 1);
+        assert_eq!(
+            read_manifest(&data, &run).unwrap().state,
+            RecoveryState::Available
+        );
     }
 
     #[test]

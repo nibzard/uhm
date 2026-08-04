@@ -36,6 +36,7 @@ For every key, the winner is the highest step on this list:
 | `context_mode` | `standard` | `minimal\|standard\|full` |
 | `context_timeout_ms` | `150` | one shared context-probe deadline |
 | `stdin_max_bytes` | `16777216` (16 MiB) | exact stdin spool limit |
+| `stdin_first_byte_timeout_ms` | `1000` | first-byte deadline for non-terminal stdin; expiry proceeds without piped input |
 | `request_max_bytes` | `262144` (256 KiB) | complete untrusted model-input JSON |
 | `response_max_bytes` | `2097152` (2 MiB) | streamed or buffered API response |
 | `cache_enabled` | `true` | caches the **response** only, never the prompt |

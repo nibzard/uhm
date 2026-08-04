@@ -305,6 +305,19 @@ fn run(argv: Vec<String>) -> i32 {
                 args.review = true;
                 args.fresh = true;
             }
+            // The disabled setting outranks the seed diagnostics: on an
+            // install that never captured anything, recovery-family commands
+            // name the switch that makes them work.
+            Err(error)
+                if !recovery::effective_enabled(&config.paths.data_dir, &config.recovery) =>
+            {
+                return app_error(
+                    &args,
+                    outcome::CONFIG,
+                    "recovery_not_enabled",
+                    &format!("{error}; recovery snapshot capture is off, so runs retain no preimage — enable it with `uhm recovery on` or capture one job with --recoverable"),
+                )
+            }
             Err(error) => {
                 return app_error(&args, outcome::NOT_EXECUTED, "recovery_unavailable", &error)
             }
@@ -332,7 +345,8 @@ fn run(argv: Vec<String>) -> i32 {
             approved_history,
         );
     }
-    let stdin = match input::Spool::read(config.stdin_max_bytes) {
+    let stdin = match input::Spool::read(config.stdin_max_bytes, config.stdin_first_byte_timeout_ms)
+    {
         Ok(v) => v,
         Err(e) => return app_error(&args, outcome::USAGE, "input_error", &e),
     };
@@ -622,6 +636,11 @@ fn management(
             if !forced && (args.force || words.iter().skip(1).any(|word| *word == "--force")) {
                 return app_error(args, outcome::USAGE, "usage_error", "--force cannot convert a conflicted operation into verified undo; use `uhm restore <run-id> --force`");
             }
+            // Capture consent is consulted before manifest resolution: on an
+            // install that never captured anything, the actionable cause is
+            // the disabled setting, not the missing manifest.
+            let capture_enabled =
+                recovery::effective_enabled(&config.paths.data_dir, &config.recovery);
             let preview = match recovery::preview_restore(
                 &config.paths.data_dir,
                 selected,
@@ -629,6 +648,14 @@ fn management(
                 forced,
             ) {
                 Ok(value) => value,
+                Err(error) if !capture_enabled => {
+                    return app_error(
+                        args,
+                        outcome::CONFIG,
+                        "recovery_not_enabled",
+                        &format!("{error}; recovery snapshot capture is off, so runs retain no preimage — enable it with `uhm recovery on` or capture one job with --recoverable"),
+                    )
+                }
                 Err(error) => {
                     return app_error(args, outcome::NOT_EXECUTED, "recovery_unavailable", &error)
                 }
@@ -641,6 +668,9 @@ fn management(
                     );
                 }
             } else {
+                if let Some(note) = &preview.alias_note {
+                    eprintln!("{}", note);
+                }
                 eprintln!(
                     "{} {} from run {}",
                     if forced {
@@ -676,6 +706,9 @@ fn management(
             }
             if !forced {
                 if args.json || !std::io::stderr().is_terminal() {
+                    if !args.json {
+                        eprintln!("Not executed: confirmation needs a terminal. Verified undo: rerun `uhm undo {}` interactively. Forced overwrite, never recorded as verified: `uhm restore {} --force`.", preview.run_id, preview.run_id);
+                    }
                     return outcome::NOT_EXECUTED;
                 }
                 eprint!("Restore every listed item? [y/N] ");
@@ -787,7 +820,7 @@ fn management(
                     if !config.history.enabled {
                         return app_error(args, outcome::CONFIG, "recovery_history_disabled", "recovery needs the metadata journal for durable linkage; enable history first");
                     }
-                    eprintln!("Recovery duplicates eligible managed file preimages under {}. Supported classes: owned single-link regular files without ACLs/xattrs, up to {} bytes each. Retention: {} days and {} total bytes. Snapshots never enter telemetry or OpenAI requests. Disable with `uhm recovery off`; remove retained snapshots with `uhm recovery prune`.", config.paths.data_dir.join("runs").display(), config.recovery.max_file_bytes, config.recovery.max_age_days, config.recovery.max_total_bytes);
+                    eprintln!("Recovery duplicates eligible managed file preimages under {}. Supported classes: owned single-link regular files without ACLs/xattrs, up to {} bytes each. Retention: {} days and {} total bytes. Snapshots never enter telemetry or OpenAI requests. Disable with `uhm recovery off`; remove retained snapshots with `uhm recovery prune --all`.", config.paths.data_dir.join("runs").display(), config.recovery.max_file_bytes, config.recovery.max_age_days, config.recovery.max_total_bytes);
                     match recovery::enable(&config.paths.data_dir) {
                         Ok(()) => { println!("recovery snapshot capture on"); 0 }
                         Err(error) => app_error(args, outcome::CONFIG, "recovery_error", &error),
@@ -805,7 +838,7 @@ fn management(
                                 },
                                 Err(error) => return app_error(args, outcome::CONFIG, "recovery_prune_error", &error),
                             }
-                        } else { println!("recovery off; retained snapshots remain until expiry (use `uhm recovery prune` to remove them now)"); }
+                        } else { println!("recovery off; retained snapshots remain until expiry (use `uhm recovery prune --all` to remove them now)"); }
                         0
                     }
                     Err(error) => app_error(args, outcome::CONFIG, "recovery_error", &error),
@@ -818,14 +851,20 @@ fn management(
                 }
                 "prune" => {
                     let dry = args.dry_run || words.contains(&"--dry-run");
-                    match recovery::prune(&config.paths.data_dir, &config.recovery, dry, false) {
+                    let all = words.contains(&"--all");
+                    match recovery::prune(&config.paths.data_dir, &config.recovery, dry, all) {
                         Ok(report) => {
                             if !dry {
                                 for run in &report.expired_runs {
                                     let _ = history::record_recovery_event(&config.paths.data_dir, &config.history, run, "recovery", "minimal", history::EventKind::RecoveryExpired, "expired", Some("retained snapshots were explicitly pruned"), 0, None);
                                 }
                             }
-                            if args.json { println!("{}", serde_json::to_string(&report).unwrap()); } else { println!("{} {} snapshots ({} bytes); {} pinned retained", if dry { "would prune" } else { "pruned" }, report.snapshots_removed, report.bytes_removed, report.retained_pinned); }
+                            if args.json { println!("{}", serde_json::to_string(&report).unwrap()); } else {
+                                println!("{} {} snapshots ({} bytes); {} pinned retained", if dry { "would prune" } else { "pruned" }, report.snapshots_removed, report.bytes_removed, report.retained_pinned);
+                                if report.retained_within_limits > 0 {
+                                    println!("{} manifest(s) skipped: within the {}-day age and {}-byte total caps (use `uhm recovery prune --all` to remove retained snapshots now)", report.retained_within_limits, config.recovery.max_age_days, config.recovery.max_total_bytes);
+                                }
+                            }
                             0
                         }
                         Err(error) => app_error(args, outcome::CONFIG, "recovery_prune_error", &error),
@@ -848,7 +887,7 @@ fn management(
                         Err(error) => app_error(args, outcome::NOT_EXECUTED, "recovery_resume_failed", &error),
                     }
                 }
-                _ => app_error(args, outcome::USAGE, "usage_error", "usage: uhm recovery on|off [--prune]|status [<run-id|last>]|prune [--dry-run]|pin|unpin <run-id|last>|resume <run-id>"),
+                _ => app_error(args, outcome::USAGE, "usage_error", "usage: uhm recovery on|off [--prune]|status [<run-id|last>]|prune [--dry-run] [--all]|pin|unpin <run-id|last>|resume <run-id>"),
             }
         }
         "config" => {
@@ -940,18 +979,7 @@ fn management(
                                 println!("{}", serde_json::to_string(&rows).unwrap())
                             } else {
                                 for row in rows {
-                                    println!(
-                                        "{}  {}  {:<14} {} events{}",
-                                        row["run_id"].as_str().unwrap_or("?"),
-                                        row["timestamp"].as_u64().unwrap_or(0),
-                                        row["route"].as_str().unwrap_or("unknown"),
-                                        row["events"].as_u64().unwrap_or(0),
-                                        if row["failed"].as_bool() == Some(true) {
-                                            "  failed"
-                                        } else {
-                                            ""
-                                        }
-                                    )
+                                    println!("{}", history::render_list_row(&row))
                                 }
                             };
                             0
@@ -971,15 +999,17 @@ fn management(
                     match history::events_for(&config.paths.data_dir, id) {
                         Ok(events) => {
                             if args.json {
-                                println!("{}", serde_json::to_string_pretty(&events).unwrap())
-                            } else {
+                                // Raw journal view: one JSON event per line.
                                 for event in events {
                                     println!(
-                                        "#{:<3} {}  {}",
-                                        event.sequence,
-                                        event.timestamp,
+                                        "{}",
                                         serde_json::to_string(&event).unwrap_or_default()
                                     )
+                                }
+                            } else {
+                                let now = history::now_secs();
+                                for event in events {
+                                    println!("{}", history::render_event_block(&event, now))
                                 }
                             };
                             0
@@ -1337,5 +1367,5 @@ fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     code
 }
 fn print_help() {
-    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]\n  uhm recover <run-id|last> [guidance]\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network|environment]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]     requires retained history (history.detail: full)\n  uhm recover <run-id|last> [guidance]    requires retained history (history.detail: full)\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network|environment]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
 }

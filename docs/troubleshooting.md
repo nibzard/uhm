@@ -74,6 +74,26 @@ Exit code **10** covers model and API failures: rate limits, server errors, bad 
 - If evidence mode reports unavailable, no exact current reviewed qualification exists. Choose an explicit fixed provider/model or update the checked-in evidence through the qualification workflow.
 - A configured fallback happens only for its typed allowlist and uses the second/final model call. A later clarification or repair is then intentionally unavailable.
 
+## The shell rejects the intent before `uhm` runs
+
+zsh — the macOS default shell — expands `?`, `*`, and `!` before `uhm` receives the intent, so `uhm how many paragraphs are in README.md?` fails with `zsh:1: no matches found: README.md?`, and an unpaired apostrophe (`uhm what's the biggest file here`) fails with `unmatched '` in any shell. Quote the intent whenever it contains `?`, `'`, `*`, or `!`:
+
+```sh
+uhm 'how many paragraphs are in README.md?'
+```
+
+zsh users who prefer to skip quoting can add `alias uhm='noglob uhm'` to `~/.zshrc`, which disables glob expansion for `uhm` invocations; an unpaired apostrophe still needs a quoted intent.
+
+## A job pauses before starting (piped stdin)
+
+`uhm` reads stdin whenever it is not a terminal. A producer has one second by default (`stdin_first_byte_timeout_ms`) to deliver its first byte; if nothing arrives, `uhm` prints one stderr line and proceeds without piped input. Once the first byte arrives, the stream is read to EOF under `stdin_max_bytes` with no further deadline, so a slow streaming producer such as `git diff | uhm ...` is never truncated.
+
+If a launcher holds `uhm`'s stdin open without ever sending anything — CI runners, cron with inherited descriptors, `ssh` without `-n` — declare no input explicitly and skip the wait entirely:
+
+```sh
+uhm 'count files here' </dev/null
+```
+
 ## Nothing ran (exit 11)
 
 Exit code **11** means no command executed. Common causes:

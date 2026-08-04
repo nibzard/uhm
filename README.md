@@ -75,8 +75,10 @@ Before the first outbound request, `uhm` prints a short data notice to stderr. I
 Get the answer produced by a local tool:
 
 ```sh
-uhm how many paragraphs are in README.md?
+uhm 'how many paragraphs are in README.md?'
 ```
+
+The quotes matter: zsh — the macOS default shell — expands an unquoted `?`, `*`, or `!` before `uhm` runs. Quote any intent that contains `?`, `'`, `*`, or `!`.
 
 Transform files and keep the result pipeable:
 
@@ -88,6 +90,12 @@ Use exact piped bytes as request data:
 
 ```sh
 git diff | uhm ask summarize this for a commit message
+```
+
+Ask about a file's content — a question about what a file says needs the file's bytes on stdin:
+
+```sh
+cat meeting-notes.md | uhm 'what is this document about'
 ```
 
 Keep piped content on your machine while letting a generated program process it:

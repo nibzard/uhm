@@ -200,6 +200,7 @@ pub struct Config {
     pub context_mode: String,
     pub context_timeout_ms: u64,
     pub stdin_max_bytes: usize,
+    pub stdin_first_byte_timeout_ms: u64,
     pub request_max_bytes: usize,
     pub response_max_bytes: usize,
     pub history: HistoryConfig,
@@ -230,6 +231,7 @@ struct FileConfig {
     context_mode: Option<String>,
     context_timeout_ms: Option<u64>,
     stdin_max_bytes: Option<usize>,
+    stdin_first_byte_timeout_ms: Option<u64>,
     request_max_bytes: Option<usize>,
     response_max_bytes: Option<usize>,
     history: Option<HistoryConfig>,
@@ -254,6 +256,7 @@ const KEYS: &[&str] = &[
     "context_mode",
     "context_timeout_ms",
     "stdin_max_bytes",
+    "stdin_first_byte_timeout_ms",
     "request_max_bytes",
     "response_max_bytes",
     "history",
@@ -284,6 +287,7 @@ impl Config {
             context_mode: "standard".into(),
             context_timeout_ms: 150,
             stdin_max_bytes: 16 * 1024 * 1024,
+            stdin_first_byte_timeout_ms: 1_000,
             request_max_bytes: 256 * 1024,
             response_max_bytes: 2 * 1024 * 1024,
             history: HistoryConfig::default(),
@@ -380,6 +384,11 @@ impl Config {
                 "stdin_max_bytes",
                 self.stdin_max_bytes.to_string(),
                 self.source("stdin_max_bytes"),
+            ),
+            (
+                "stdin_first_byte_timeout_ms",
+                self.stdin_first_byte_timeout_ms.to_string(),
+                self.source("stdin_first_byte_timeout_ms"),
             ),
             (
                 "request_max_bytes",
@@ -584,6 +593,7 @@ fn apply_file(config: &mut Config, file: FileConfig) {
     apply!(config, file, context_mode);
     apply!(config, file, context_timeout_ms);
     apply!(config, file, stdin_max_bytes);
+    apply!(config, file, stdin_first_byte_timeout_ms);
     apply!(config, file, request_max_bytes);
     apply!(config, file, response_max_bytes);
     apply!(config, file, history);
@@ -638,6 +648,9 @@ fn validate(c: &Config) -> Result<(), String> {
     }
     if !(50..=5_000).contains(&c.context_timeout_ms) {
         return Err("config context_timeout_ms must be between 50 and 5000".into());
+    }
+    if !(50..=60_000).contains(&c.stdin_first_byte_timeout_ms) {
+        return Err("config stdin_first_byte_timeout_ms must be between 50 and 60000".into());
     }
     if !matches!(c.context_mode.as_str(), "minimal" | "standard" | "full") {
         return Err("config context_mode must be minimal, standard, or full".into());
@@ -737,6 +750,22 @@ mod tests {
         assert!(c.telemetry.enabled);
         assert!(!c.shell_context.last_history_entry);
         assert!(!c.recovery.enabled);
+    }
+    #[test]
+    fn stdin_first_byte_deadline_is_bounded_and_surfaced() {
+        let c = Config::defaults(paths());
+        assert_eq!(c.stdin_first_byte_timeout_ms, 1_000);
+        assert!(c
+            .show_lines()
+            .iter()
+            .any(|(key, value, _)| *key == "stdin_first_byte_timeout_ms" && value == "1000"));
+        validate(&c).unwrap();
+        let mut unbounded = Config::defaults(paths());
+        unbounded.stdin_first_byte_timeout_ms = 0;
+        assert!(validate(&unbounded).is_err());
+        let mut excessive = Config::defaults(paths());
+        excessive.stdin_first_byte_timeout_ms = 120_000;
+        assert!(validate(&excessive).is_err());
     }
     #[test]
     fn rejects_removed_provider_base_url() {

@@ -124,6 +124,38 @@ for n in ast.walk(tree):
             if a.name=='sys': sys_aliases.add(a.asname or a.name)
 stdin_names={a for a,b in aliases if b=='stdin_path'}
 resource_names={a for a,b in aliases if b=='resource'}
+def resource_literal(n):
+    if not isinstance(n,ast.Call): return None
+    is_resource=(isinstance(n.func,ast.Name) and n.func.id in resource_names) or (isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Name) and n.func.value.id in module_aliases and n.func.attr=='resource')
+    if is_resource and len(n.args)==1 and isinstance(n.args[0],ast.Constant) and isinstance(n.args[0].value,str): return n.args[0].value
+    return None
+def target_names(t):
+    if isinstance(t,ast.Name): return [t.id]
+    if isinstance(t,ast.Starred): return target_names(t.value)
+    if isinstance(t,(ast.Tuple,ast.List)): return [name for e in t.elts for name in target_names(e)]
+    return []
+handle_bindings={}
+def bind(name,rid):
+    handle_bindings[name]=None if name in handle_bindings else rid
+for n in ast.walk(tree):
+    if isinstance(n,ast.Assign) and len(n.targets)==1 and isinstance(n.targets[0],ast.Name): bind(n.targets[0].id,resource_literal(n.value))
+    elif isinstance(n,ast.Assign):
+        for t in n.targets:
+            for name in target_names(t): bind(name,None)
+    elif isinstance(n,(ast.AnnAssign,ast.AugAssign,ast.For,ast.AsyncFor)):
+        for name in target_names(n.target): bind(name,None)
+    elif isinstance(n,ast.NamedExpr): bind(n.target.id,None)
+    elif isinstance(n,ast.comprehension):
+        for name in target_names(n.target): bind(name,None)
+    elif isinstance(n,(ast.With,ast.AsyncWith)):
+        for item in n.items:
+            if item.optional_vars:
+                for name in target_names(item.optional_vars): bind(name,None)
+    elif isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef)): bind(n.name,None)
+    elif isinstance(n,ast.ExceptHandler) and n.name: bind(n.name,None)
+    elif isinstance(n,ast.arg): bind(n.arg,None)
+    elif isinstance(n,(ast.Import,ast.ImportFrom)):
+        for a in n.names: bind(a.asname or a.name.split('.')[0],None)
 for n in ast.walk(tree):
     if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='input': add('builtin_input_is_unsupported','hard_error','Built-in input() is unsupported because process stdin is closed.')
     if isinstance(n,ast.Attribute) and isinstance(n.value,ast.Name) and n.value.id in sys_aliases and n.attr in ('stdin','__stdin__'): add('process_stdin_is_closed','hard_error','Process stdin is closed; use uhm_runtime.stdin_path.')
@@ -131,10 +163,10 @@ for n in ast.walk(tree):
     if isinstance(n,ast.Attribute) and isinstance(n.value,ast.Name) and n.value.id in module_aliases and n.attr=='stdin_path': stdin_used=True
     if isinstance(n,ast.Attribute) and n.attr=='write_path':
         owner=n.value
-        if isinstance(owner,ast.Call):
-            is_resource=(isinstance(owner.func,ast.Name) and owner.func.id in resource_names) or (isinstance(owner.func,ast.Attribute) and isinstance(owner.func.value,ast.Name) and owner.func.value.id in module_aliases and owner.func.attr=='resource')
-            if is_resource and len(owner.args)==1 and isinstance(owner.args[0],ast.Constant) and isinstance(owner.args[0].value,str): write_resource_calls.add(owner.args[0].value)
-            elif is_resource: dynamic_write=True
+        rid=resource_literal(owner)
+        if rid is None and isinstance(owner,ast.Name): rid=handle_bindings.get(owner.id)
+        if rid is not None: write_resource_calls.add(rid)
+        else: dynamic_write=True
     if isinstance(n,ast.Call):
         direct_open=(isinstance(n.func,ast.Name) and n.func.id=='open') or (isinstance(n.func,ast.Attribute) and n.func.attr=='open')
         if direct_open and n.args and isinstance(n.args[0],ast.Constant) and n.args[0].value in paths: add('declared_path_opened_directly','hard_error','Source opens a declared logical path directly; use resource IDs.')
@@ -1450,6 +1482,71 @@ mod tests {
     }
 
     #[test]
+    fn ast_preflight_accepts_every_static_resource_write_form() {
+        if !crate::runtime::inventory().available {
+            return;
+        }
+        let files = vec![ProgramFile {
+            id: "target".into(),
+            path: "target.csv".into(),
+            access: ProgramFileAccess::ReadWrite,
+        }];
+        for source in [
+            "from uhm_runtime import resource\nresource('target').write_path.write_text(resource('target').read_path.read_text())",
+            "from uhm_runtime import resource\nw=resource('target').write_path\nw.write_text(resource('target').read_path.read_text())",
+            "from uhm_runtime import resource\nr=resource('target')\nr.write_path.write_text(r.read_path.read_text())",
+            "import uhm_runtime as u\nr=u.resource('target')\nr.write_path.write_text(r.read_path.read_text())",
+        ] {
+            let mut value = proposal(source);
+            value.files = files.clone();
+            let diagnostics = preflight(&value, &crate::runtime::inventory(), false);
+            assert!(diagnostics.is_empty(), "{source}\n{diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn ast_preflight_separates_unwritten_resources_from_unprovable_writes() {
+        if !crate::runtime::inventory().available {
+            return;
+        }
+        let files = vec![ProgramFile {
+            id: "target".into(),
+            path: "target.csv".into(),
+            access: ProgramFileAccess::ReadWrite,
+        }];
+        let mut unwritten = proposal(
+            "from uhm_runtime import resource\nprint(resource('target').read_path.read_text())",
+        );
+        unwritten.files = files.clone();
+        let diagnostics = preflight(&unwritten, &crate::runtime::inventory(), false);
+        assert!(
+            diagnostics.iter().any(
+                |diagnostic| diagnostic.code == "write_resource_not_consumed"
+                    && diagnostic.severity == DiagnosticSeverity::HardError
+            ),
+            "{diagnostics:?}"
+        );
+        let mut rebound = proposal(
+            "from uhm_runtime import resource\nr=resource('target')\nr=None\nr.write_path.write_text('x')",
+        );
+        rebound.files = files;
+        let diagnostics = preflight(&rebound, &crate::runtime::inventory(), false);
+        assert!(
+            diagnostics.iter().any(
+                |diagnostic| diagnostic.code == "write_resource_not_consumed"
+                    && diagnostic.severity == DiagnosticSeverity::Warning
+            ),
+            "{diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == DiagnosticSeverity::HardError),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
     fn helper_exposes_only_private_capability_paths_and_unlinks_contract() {
         let inventory = crate::runtime::inventory();
         if !inventory.available {
@@ -1534,6 +1631,8 @@ mod tests {
             path: "document.txt".into(),
             access: ProgramFileAccess::ReadWrite,
         }];
+        let diagnostics = preflight(&value, &inventory, false);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert!(execute(Request {
             proposal: &value,
             python: &inventory,
