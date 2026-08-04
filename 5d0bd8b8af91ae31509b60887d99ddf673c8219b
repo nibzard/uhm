@@ -1,0 +1,15 @@
+# Design: Prose-only provider tool filtering
+
+## Problem
+Ask/explain requests could receive an execution-shaped model proposal. The client rejected it safely, but valid piped summaries failed with a route-contract error.
+
+## Approach
+Restrict the tools exposed to providers for ask/explain to answer and clarification while retaining the client-side contract check as defense in depth. Prompt contract v12 also prevents clarification for facts discoverable through the requested local read.
+
+## Key Trade-offs
+- Route authority is enforced before model selection instead of recovered afterward.
+- OpenAI response validation now accepts only the canonical two-tool prose subset or full five-tool set.
+- Prompt-version bumps invalidate stale cached proposals.
+
+## Verification
+Full Rust tests, clippy, docs synchronization, evidence checksums, repeated live B9 and C16 checks, and the archived tmp-drive evaluation.
