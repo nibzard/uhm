@@ -44,7 +44,7 @@ pub fn command(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (executable, arguments, cwd, writable_roots);
-        return Err("Bubblewrap containment is available only on Linux".into());
+        Err("Bubblewrap containment is available only on Linux".into())
     }
     #[cfg(target_os = "linux")]
     {
