@@ -31,7 +31,7 @@ Provider and model resolve independently in this order:
 | `fixed` | Use the resolved explicit provider/model pair; optionally try one configured alternate for an allowed pre-proposal failure |
 | `evidence` | Resolve only from exact reviewed qualification-manifest evidence; otherwise return unavailable |
 
-The v0.3.0 checked-in manifest has no entries, so evidence mode currently selects no pair.
+The v0.3.1 checked-in manifest has no entries, so evidence mode currently selects no pair.
 
 ## Fallback error classes
 
