@@ -345,10 +345,14 @@ pub fn handle(
                 interaction.route("clarification");
                 interaction.decision("not_run");
                 if !budget.can_replace() || !tty_available() {
+                    // The job is already over, so the outstanding detail is
+                    // information rather than an invitation. The question keeps
+                    // its place on stdout; only the framing around it changes.
                     if budget.model_calls >= 2 && !args.json {
-                        eprintln!(
-                            "The clarification cannot be continued because the two-call budget is exhausted."
-                        );
+                        eprintln!("{}", CLARIFICATION_ENDED);
+                        let code = clarification(args, &question);
+                        eprintln!("{}", CLARIFICATION_RETRY);
+                        return code;
                     }
                     return clarification(args, &question);
                 }
@@ -670,19 +674,28 @@ pub fn handle(
                             "program review is required, but no terminal is available; use --force or --dry-run",
                         );
                     }
-                    eprint!("Run, revise, edit, copy, cancel? [R/v/e/c/q] ");
-                    let _ = std::io::stderr().flush();
-                    let Some(review_choice) = tty::read_line_cooked() else {
-                        interaction.decision("cancelled");
-                        return not_executed(
-                            args,
-                            &proposal.source,
-                            "review input closed; cancelled without execution",
-                        );
+                    let options = review_options(&budget);
+                    let decision = loop {
+                        eprint!("{}", review_prompt(options));
+                        let _ = std::io::stderr().flush();
+                        let Some(review_choice) = tty::read_line_cooked() else {
+                            interaction.decision("cancelled");
+                            return not_executed(
+                                args,
+                                &proposal.source,
+                                "review input closed; cancelled without execution",
+                            );
+                        };
+                        match review_decision(&review_choice, options) {
+                            ReviewDecision::Unavailable(reason) => {
+                                eprintln!("{}", ansi::warning(reason))
+                            }
+                            decision => break decision,
+                        }
                     };
-                    match review_choice.to_lowercase().as_str() {
-                        "" | "r" | "run" => {}
-                        "v" | "revise" if budget.can_replace() => {
+                    match decision {
+                        ReviewDecision::Run => {}
+                        ReviewDecision::Revise => {
                             eprint!("Feedback: ");
                             let _ = std::io::stderr().flush();
                             let feedback = tty::read_line_cooked().unwrap_or_default();
@@ -714,43 +727,39 @@ pub fn handle(
                             };
                             continue;
                         }
-                        "e" | "edit" if budget.replacement.is_none() => {
-                            match edit(&proposal.source) {
-                                Ok(source) => {
-                                    proposal.source = source;
-                                    action = match (ProposedAction::Program { program: proposal })
-                                        .validate()
-                                    {
-                                        Ok(value) => value,
-                                        Err(error) => {
-                                            return app_error(
-                                                args,
-                                                outcome::NOT_EXECUTED,
-                                                "edit_error",
-                                                &error,
-                                            )
-                                        }
-                                    };
-                                    let _ = budget.replace_with_edit();
-                                    continue;
-                                }
-                                Err(error) => {
-                                    return app_error(
-                                        args,
-                                        outcome::NOT_EXECUTED,
-                                        "edit_error",
-                                        &error,
-                                    )
-                                }
+                        ReviewDecision::Edit => match edit(&proposal.source) {
+                            Ok(source) => {
+                                proposal.source = source;
+                                action = match (ProposedAction::Program { program: proposal })
+                                    .validate()
+                                {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        return app_error(
+                                            args,
+                                            outcome::NOT_EXECUTED,
+                                            "edit_error",
+                                            &error,
+                                        )
+                                    }
+                                };
+                                let _ = budget.replace_with_edit();
+                                continue;
                             }
-                        }
-                        "c" | "copy" => {
+                            Err(error) => {
+                                return app_error(args, outcome::NOT_EXECUTED, "edit_error", &error)
+                            }
+                        },
+                        ReviewDecision::Copy => {
                             let _ = write_command(std::io::stdout(), &proposal.source);
                             return outcome::NOT_EXECUTED;
                         }
-                        _ => {
+                        ReviewDecision::Cancel => {
                             interaction.decision("cancelled");
                             return not_executed(args, &proposal.source, "cancelled by user");
+                        }
+                        ReviewDecision::Unavailable(_) => {
+                            unreachable!("the prompt loop only breaks on an available option")
                         }
                     }
                 } else if consequential && args.force && !args.json {
@@ -1613,6 +1622,13 @@ fn program_repair_payload(
     value
 }
 
+/// Framing for a clarification that can no longer be answered. Neither line may
+/// be phrased as a question: the job has ended, and asking again would offer an
+/// interaction that cannot be honored.
+const CLARIFICATION_ENDED: &str =
+    "uhm: this job ended without an action; another detail was needed and its two model calls are spent.";
+const CLARIFICATION_RETRY: &str = "uhm: re-run the request with that detail included.";
+
 /// Shown to the user when a terminal-attached child left no retained stderr.
 /// It describes `uhm`'s own stream wiring, so it is never sent to the model as
 /// if it were child output.
@@ -2451,6 +2467,18 @@ mod tests {
             timed_out: false,
             duration: std::time::Duration::ZERO,
         }
+    }
+
+    #[test]
+    fn an_unanswerable_clarification_is_framed_as_a_statement() {
+        for line in [CLARIFICATION_ENDED, CLARIFICATION_RETRY] {
+            assert!(
+                !line.trim_end().ends_with('?'),
+                "an ended job must not ask: {line}"
+            );
+            assert!(line.starts_with("uhm: "), "{line}");
+        }
+        assert!(CLARIFICATION_RETRY.contains("re-run"));
     }
 
     #[test]
