@@ -1,0 +1,3 @@
+# Context
+
+The initial v0.3.3 tag failed its native macOS quality gate because the non-Linux cfg branch used an explicit return that Clippy classified as needless under -D warnings. This expression-only form is behaviorally identical and is compiled only on non-Linux targets. Linux Clippy and all 421 tests passed locally; the native macOS release gate provides the final platform verification.
