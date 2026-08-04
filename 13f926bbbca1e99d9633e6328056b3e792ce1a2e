@@ -1,0 +1,1 @@
+Release gate correction: parse and validate the destination before transport setup, and load the native/custom TLS trust configuration only for HTTPS URLs. This keeps plain-HTTP deadline behavior independent of platform certificate-store startup cost while preserving the shared HTTPS trust path and private-CA proxy support.
