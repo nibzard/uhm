@@ -108,6 +108,8 @@ uhm config [show|check]
 
 `show` (the default) prints every key with its source. `check` validates the config file and exits non-zero on error. See [Configuration](configuration.md).
 
+`uhm doctor environment` reports recognized inherited credential and capability names that would reach shell children, never their values, and reports whether requested containment is available.
+
 ### context — inspect outbound context
 
 ```
@@ -143,7 +145,7 @@ Emit the optional wrapper that can apply one accepted typed parent-shell action 
 ### doctor — local and network checks
 
 ```
-uhm doctor [all] [network]
+uhm doctor [all] [network|environment]
 ```
 
 Local configuration and terminal checks. `network` checks reachability and authentication for the selected provider. `all` inspects both built-in adapters; `all network` also checks both configured credentials and endpoints. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.

@@ -93,7 +93,9 @@ impl Default for HistoryConfig {
 pub struct ExecutionConfig {
     pub timeout_secs: u64,
     pub diagnostic_bytes: usize,
+    pub deny_common_env: bool,
     pub deny_env: Vec<String>,
+    pub containment: crate::containment::Mode,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -179,7 +181,9 @@ impl Default for ExecutionConfig {
         Self {
             timeout_secs: 300,
             diagnostic_bytes: 65_536,
+            deny_common_env: false,
             deny_env: Vec::new(),
+            containment: crate::containment::Mode::Off,
         }
     }
 }
@@ -415,6 +419,16 @@ impl Config {
             (
                 "execution.timeout_secs",
                 self.execution.timeout_secs.to_string(),
+                self.source("execution"),
+            ),
+            (
+                "execution.deny_common_env",
+                self.execution.deny_common_env.to_string(),
+                self.source("execution"),
+            ),
+            (
+                "execution.containment",
+                self.execution.containment.as_str().into(),
                 self.source("execution"),
             ),
             (

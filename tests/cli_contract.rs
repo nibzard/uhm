@@ -6,7 +6,7 @@ fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_uhm")
 }
 
-fn configured(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
+fn configured_command(home: &Path, yaml: &str, arguments: &[&str]) -> Command {
     let config_dir = home.join("config/uhm");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(config_dir.join("config.yaml"), yaml).unwrap();
@@ -17,15 +17,19 @@ fn configured(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
         r#"{"endpoints":["https://api.openai.com/v1/responses"],"revision":5}"#,
     )
     .unwrap();
-    Command::new(binary())
+    let mut command = Command::new(binary());
+    command
         .args(arguments)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_DATA_HOME", home.join("data"))
         .env("XDG_CACHE_HOME", home.join("cache"))
-        .env("TERM", "dumb")
-        .output()
-        .unwrap()
+        .env("TERM", "dumb");
+    command
+}
+
+fn configured(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
+    configured_command(home, yaml, arguments).output().unwrap()
 }
 
 fn configured_fresh(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
@@ -192,6 +196,60 @@ fn local_parent_shell_alias_diagnostic_names_the_local_source() {
         assert!(stderr.contains("local alias contains parent-shell source"));
         assert!(!stderr.contains("model returned"));
     }
+}
+
+#[test]
+fn doctor_environment_lists_names_never_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = Command::new(binary())
+        .args(["--json", "doctor", "environment"])
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env("AWS_SECRET_ACCESS_KEY", "must-never-appear")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let body = String::from_utf8(output.stdout).unwrap();
+    assert!(body.contains("AWS_SECRET_ACCESS_KEY"));
+    assert!(!body.contains("must-never-appear"));
+}
+
+#[test]
+fn requested_missing_containment_fails_before_shell_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("must-not-exist");
+    let yaml = format!(
+        "execution:\n  containment: bubblewrap\naliases:\n  contained: 'touch {}'\n",
+        marker.display()
+    );
+    let output = configured_command(temp.path(), &yaml, &["--force", "contained"])
+        .env("PATH", temp.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(11));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("bwrap` is not available"));
+    assert!(!marker.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bubblewrap_containment_executes_inside_the_working_directory() {
+    let probe = Command::new("bwrap")
+        .args(["--ro-bind", "/", "/", "--", "/bin/true"])
+        .output();
+    if !probe.is_ok_and(|output| output.status.success()) {
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let output = configured(
+        temp.path(),
+        "execution:\n  containment: bubblewrap\naliases:\n  contained: 'printf contained'\n",
+        &["contained"],
+    );
+    assert!(output.status.success(), "{:?}", output.stderr);
+    assert_eq!(output.stdout, b"contained");
 }
 
 #[test]

@@ -22,25 +22,25 @@ Fast path:
 curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
 ```
 
-The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.3.2` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
+The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.3.3` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
 
-If you want the manual path instead, download the archive for your machine from the [v0.3.2 release](https://github.com/nibzard/uhm/releases/tag/v0.3.2):
+If you want the manual path instead, download the archive for your machine from the [v0.3.3 release](https://github.com/nibzard/uhm/releases/tag/v0.3.3):
 
 | System | Archive |
 |---|---|
-| Linux x86-64 | `uhm-v0.3.2-x86_64-unknown-linux-musl.tar.gz` |
-| Linux arm64 | `uhm-v0.3.2-aarch64-unknown-linux-musl.tar.gz` |
-| macOS Intel | `uhm-v0.3.2-x86_64-apple-darwin.tar.gz` |
-| macOS Apple silicon | `uhm-v0.3.2-aarch64-apple-darwin.tar.gz` |
+| Linux x86-64 | `uhm-v0.3.3-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `uhm-v0.3.3-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `uhm-v0.3.3-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `uhm-v0.3.3-aarch64-apple-darwin.tar.gz` |
 
 Verify the download before installing it:
 
 ```sh
-grep 'uhm-v0.3.2-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
-grep 'uhm-v0.3.2-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
-tar --no-same-owner -xzf uhm-v0.3.2-<target>.tar.gz
+grep 'uhm-v0.3.3-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
+grep 'uhm-v0.3.3-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
+tar --no-same-owner -xzf uhm-v0.3.3-<target>.tar.gz
 mkdir -p "$HOME/.local/bin"
-install -m 755 uhm-v0.3.2-<target>/uhm "$HOME/.local/bin/uhm"
+install -m 755 uhm-v0.3.3-<target>/uhm "$HOME/.local/bin/uhm"
 uhm --version
 ```
 
@@ -49,7 +49,7 @@ The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, 
 Rust users can build the same binary from source:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.2 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.3.3 uhm-cli
 ```
 
 The crates.io package is prepared but publication is deferred until ownership is ready.
@@ -110,6 +110,8 @@ uhm run --review remove old build artifacts
 ```
 
 Ordinary actions run immediately. `--review` pauses every proposal. `--dry-run` prints exact command bytes and runs nothing. In a non-interactive shell, a proposal that may mutate existing state or file metadata pauses with status 11 because it cannot ask for confirmation; inspect it with `--dry-run`, then rerun with `--force` to authorize the mutation. Metadata-changing utilities such as `touch`, `chmod`, and `chown` are gated conservatively because local classification cannot reliably prove that every target is new. `--force` still shows any warning.
+
+For sensitive environments, `uhm doctor environment` identifies recognized inherited credential names without printing values. `execution.deny_common_env` provides an opt-in common-secret preset, and Linux hosts may explicitly request `execution.containment: bubblewrap` for no-network, read-only-root child execution. See [configuration](docs/configuration.md) for limitations.
 
 If one essential detail is missing, `uhm` can ask one question and revise the proposal. A failed command can get one bounded repair attempt in an interactive terminal. There is no open-ended chat loop.
 
@@ -212,7 +214,7 @@ uhm restore <run-id|last> --force
 uhm recovery on|off|status|prune|pin|unpin|resume
 uhm history [list|show|search|replay|export|prune|clear|status]
 uhm config [show|check]
-uhm doctor [all] [network]
+uhm doctor [all] [network|environment]
 ```
 
 After the first intent word, every argument is opaque user text. A dictated prompt containing `-y`, `--help`, or `--system` cannot change authority. Put `--` before an intent that starts with a hyphen.

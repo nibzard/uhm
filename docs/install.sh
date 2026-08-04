@@ -9,7 +9,6 @@ install_dir="${UHM_INSTALL_DIR:-${HOME}/.local/bin}"
 default_version=""
 requested_version="${UHM_VERSION:-}"
 requested_target="${UHM_TARGET:-}"
-tmp_root="${TMPDIR:-/tmp}"
 
 say() {
   printf '%s\n' "$*"
@@ -95,6 +94,27 @@ resolve_target() {
   printf '%s-%s\n' "$arch" "$os"
 }
 
+resolve_tmp_root() {
+  for candidate in "${TMPDIR:-}" "${XDG_RUNTIME_DIR:-}" /tmp; do
+    if [ -n "$candidate" ] && [ -d "$candidate" ] && [ -w "$candidate" ] && [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  cache_root="${XDG_CACHE_HOME:-${HOME:-}/.cache}"
+  if [ -n "$cache_root" ]; then
+    fallback="${cache_root%/}/uhm/tmp"
+    if mkdir -p "$fallback" 2>/dev/null && chmod 0700 "$fallback" 2>/dev/null \
+      && [ -w "$fallback" ] && [ -x "$fallback" ]; then
+      printf '%s\n' "$fallback"
+      return
+    fi
+  fi
+
+  fail "no writable temporary directory; create /tmp or set TMPDIR to an existing writable directory"
+}
+
 verify_sha256() {
   manifest="$1"
   archive="$2"
@@ -147,6 +167,7 @@ version="$(resolve_version)"
 target="$(resolve_target)"
 archive="uhm-${version}-${target}.tar.gz"
 release_base="https://github.com/${repo_slug}/releases/download/${version}"
+tmp_root="$(resolve_tmp_root)"
 tmp_dir="$(mktemp -d "${tmp_root%/}/uhm-install.XXXXXX")"
 
 cleanup() {

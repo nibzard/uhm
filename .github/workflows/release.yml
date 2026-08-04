@@ -120,6 +120,13 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/uhm-v${{ needs.validate.outputs.version }}.spdx.json
+          upload-artifact: false
       - name: Verify release asset set
         shell: bash
         run: |
@@ -137,6 +144,11 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/SHA256SUMS
+      - name: Attest release SBOM
+        uses: actions/attest-sbom@v3
+        with:
+          subject-path: dist/*.tar.gz
+          sbom-path: dist/uhm-v${{ needs.validate.outputs.version }}.spdx.json
       - name: Create, validate, and publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -145,5 +157,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" --draft --verify-tag \
             --title "${GITHUB_REF_NAME}" --notes-file "docs/releases/v${{ needs.validate.outputs.version }}.md"
           gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-          test "$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets | length')" -eq 7
+          test "$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets | length')" -eq 8
           gh release edit "${GITHUB_REF_NAME}" --draft=false --latest

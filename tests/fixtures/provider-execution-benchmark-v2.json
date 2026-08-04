@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "prompt_version": 9,
+  "prompt_version": 12,
   "action_schema_version": 4,
   "worker_contract_version": 2,
   "reference_bundle": "provider-execution-reference-actions-v4.json",
@@ -3079,8 +3079,8 @@
         "stdout": {
           "matcher": "count_map",
           "value": {
-            "pear": 2,
-            "apple": 1
+            "apple": 1,
+            "pear": 2
           }
         },
         "stderr": {
@@ -3194,9 +3194,9 @@
         "stdout": {
           "matcher": "count_map",
           "value": {
+            "apple": 1,
             "banana": 1,
-            "pear": 2,
-            "apple": 1
+            "pear": 2
           }
         },
         "stderr": {
@@ -3310,9 +3310,9 @@
         "stdout": {
           "matcher": "count_map",
           "value": {
+            "apple": 2,
             "banana": 1,
-            "pear": 2,
-            "apple": 2
+            "pear": 2
           }
         },
         "stderr": {
@@ -3426,9 +3426,9 @@
         "stdout": {
           "matcher": "count_map",
           "value": {
+            "apple": 2,
             "banana": 1,
-            "pear": 3,
-            "apple": 2
+            "pear": 3
           }
         },
         "stderr": {

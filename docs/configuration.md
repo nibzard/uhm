@@ -63,10 +63,14 @@ history:
 execution:
   timeout_secs: 300
   diagnostic_bytes: 65536   # tail per redirected stream
+  deny_common_env: false    # remove the documented common-secret preset
   deny_env: []              # additional names removed from the child env
+  containment: off          # off | bubblewrap
 ```
 
-`OPENAI_API_KEY`, `CEREBRAS_API_KEY`, and uhm's private control variables are removed automatically. Add any other credential names (for example cloud-provider tokens) to `deny_env`; arbitrary inherited secrets cannot be identified reliably. These are operational guardrails, not a sandbox.
+`OPENAI_API_KEY`, `CEREBRAS_API_KEY`, and uhm's private control variables are removed automatically. Set `deny_common_env: true` to remove a conservative preset covering common AWS, Azure, Google, GitHub, GitLab, database, package-registry, Vault, Kubernetes, Docker, and SSH-agent capability names. Add project-specific names to `deny_env`. Run `uhm doctor environment` to list recognized names that would reach shell children; values are never printed. The preset is opt-in because removing credentials would break commands intentionally targeting those services. Generated Python already starts from an empty environment.
+
+`containment: bubblewrap` is an explicit Linux-only mode. It requires `bwrap`, disables the child's network namespace, makes the host filesystem read-only, and permits writes in the invocation working directory and private program workspace. If requested but unavailable, execution fails before the proposed command starts. This is useful defense in depth, not a confidentiality sandbox: readable host files remain readable, the working directory remains writable, and kernel or Bubblewrap vulnerabilities are outside uhm's control.
 
 ## `selection` — fixed choice or reviewed evidence
 

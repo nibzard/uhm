@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Once;
 use std::time::{Duration, Instant};
@@ -25,7 +25,9 @@ pub struct Request<'a> {
     pub stdin: Option<&'a [u8]>,
     pub timeout: Duration,
     pub diagnostic_bytes: usize,
+    pub deny_common_env: bool,
     pub deny_env: &'a [String],
+    pub containment: crate::containment::Mode,
 }
 
 pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
@@ -42,8 +44,15 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
     };
     let out_tty = std::io::stdout().is_terminal();
     let err_tty = std::io::stderr().is_terminal();
-    let mut cmd = Command::new(req.shell);
-    cmd.arg(flag).arg(req.command);
+    let cwd = std::env::current_dir().map_err(|e| format!("resolve working directory: {e}"))?;
+    let arguments = vec![flag.into(), req.command.into()];
+    let mut cmd = crate::containment::command(
+        req.containment,
+        std::path::Path::new(req.shell),
+        &arguments,
+        &cwd,
+        &[],
+    )?;
     if req.stdin.is_some() {
         cmd.stdin(Stdio::piped());
     } else {
@@ -59,17 +68,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
     } else {
         Stdio::piped()
     });
-    cmd.env_remove("OPENAI_API_KEY");
-    cmd.env_remove("CEREBRAS_API_KEY");
-    for (k, _) in std::env::vars_os() {
-        let key = k.to_string_lossy();
-        if key.starts_with("UHM_PRIVATE_") || key.starts_with("UHM_CONTROL_") {
-            cmd.env_remove(&k);
-        }
-    }
-    for name in req.deny_env {
-        cmd.env_remove(name);
-    }
+    crate::environment::apply(&mut cmd, req.deny_common_env, req.deny_env);
     let separate_group = !out_tty && !err_tty;
     #[cfg(unix)]
     if separate_group {
@@ -224,7 +223,9 @@ mod tests {
             stdin: Some(&[0, 1, 2, 3]),
             timeout: Duration::from_secs(2),
             diagnostic_bytes: 32,
+            deny_common_env: false,
             deny_env: &[],
+            containment: crate::containment::Mode::Off,
         })
         .unwrap();
         assert_eq!(r.code, 0);
@@ -239,12 +240,34 @@ mod tests {
             stdin: None,
             timeout: Duration::from_secs(2),
             diagnostic_bytes: 32,
+            deny_common_env: false,
             deny_env: &[],
+            containment: crate::containment::Mode::Off,
         })
         .unwrap();
         assert_eq!(r.code, 0);
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("CEREBRAS_API_KEY");
+    }
+
+    #[test]
+    fn common_secret_preset_removes_named_capabilities() {
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", "sentinel");
+        std::env::set_var("SSH_AUTH_SOCK", "/tmp/sentinel-agent");
+        let result = execute(Request {
+            shell: "/bin/sh",
+            command: "test -z \"$AWS_SECRET_ACCESS_KEY\" && test -z \"$SSH_AUTH_SOCK\"",
+            stdin: None,
+            timeout: Duration::from_secs(2),
+            diagnostic_bytes: 32,
+            deny_common_env: true,
+            deny_env: &[],
+            containment: crate::containment::Mode::Off,
+        })
+        .unwrap();
+        assert_eq!(result.code, 0);
+        std::env::remove_var("AWS_SECRET_ACCESS_KEY");
+        std::env::remove_var("SSH_AUTH_SOCK");
     }
 
     #[test]
@@ -255,7 +278,9 @@ mod tests {
             stdin: None,
             timeout: Duration::from_millis(30),
             diagnostic_bytes: 32,
+            deny_common_env: false,
             deny_env: &[],
+            containment: crate::containment::Mode::Off,
         })
         .unwrap();
         assert!(result.timed_out);

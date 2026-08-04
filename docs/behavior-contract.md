@@ -75,4 +75,6 @@ The only standalone program runtime is the literal `python3`. Source is a valida
 
 The harness is not a sandbox. Generated Python retains the operating-system access of the user, including access to readable secret files. Wall time and combined stdout/stderr are hard harness limits. CPU, address-space, open-file, and child-process controls depend on host primitives and are operational guardrails. Workspace size is measured, not a filesystem quota. Timeout, signal, and overflow terminate the program process group on a best-effort basis.
 
+On Linux, `execution.containment: bubblewrap` opts shell and Python children into a separate Bubblewrap namespace with no network, a read-only host root, and writable invocation/workspace roots. The mode fails before execution when Bubblewrap is unavailable. It restricts writes and connectivity but does not hide readable host files, so it is not presented as a confidentiality boundary.
+
 All-read programs publish stdout only after successful bounded execution. A `write_only` or `read_write` declaration derives artifact behavior and writes through a private sibling staging path; after success, each regular file is checked, fsynced, and renamed independently. Failure commits no declared staging path. This does not prevent unmanaged effects or make multiple outputs transactional.

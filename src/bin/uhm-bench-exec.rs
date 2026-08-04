@@ -131,7 +131,9 @@ fn run() -> Result<(), String> {
                 stdin,
                 timeout: Duration::from_millis(envelope.limits.wall_ms),
                 diagnostic_bytes: diagnostic,
+                deny_common_env: false,
                 deny_env: &[],
+                containment: uhm_cli::containment::Mode::Off,
             })?)
         }
         ProposedAction::Program { program } => {
@@ -162,6 +164,7 @@ fn run() -> Result<(), String> {
                 stdin: envelope.stdin.as_deref().map(str::as_bytes),
                 cwd,
                 config: &config,
+                containment: uhm_cli::containment::Mode::Off,
                 retain_workspace: false,
                 recovery: None,
             })?;
@@ -197,7 +200,9 @@ fn run() -> Result<(), String> {
                 stdin: None,
                 timeout: Duration::from_millis(envelope.limits.wall_ms),
                 diagnostic_bytes: diagnostic,
+                deny_common_env: false,
                 deny_env: &[],
+                containment: uhm_cli::containment::Mode::Off,
             })?);
             if result.exit_code == 0 {
                 let bytes = std::fs::read(&state_path).map_err(|e| e.to_string())?;

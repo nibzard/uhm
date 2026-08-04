@@ -82,6 +82,8 @@ pub fn gather(
         shell_check(),
         python_check(config.program.enabled),
         clipboard_check(),
+        environment_check(config),
+        containment_check(config),
     ];
     let providers = if all_providers {
         vec![
@@ -160,10 +162,12 @@ fn python_check(enabled: bool) -> Check {
 /// emits `unsupported` on an unsupported platform, so this subsumes the old
 /// `report.supported` test.
 pub fn healthy(report: &Report) -> bool {
-    report
-        .checks
-        .iter()
-        .all(|check| matches!(check.status, "ok" | "off" | "skipped" | "optional"))
+    report.checks.iter().all(|check| {
+        matches!(
+            check.status,
+            "ok" | "off" | "skipped" | "optional" | "warning"
+        )
+    })
 }
 
 pub fn render(report: &Report) {
@@ -171,12 +175,59 @@ pub fn render(report: &Report) {
         let state = match check.status {
             "ok" => ansi::success("OK"),
             "off" | "skipped" => ansi::info(check.status),
+            "warning" => ansi::warning("warning"),
             _ => ansi::critical(check.status),
         };
         println!("{:<16} {:<9} {}", check.name, state, check.detail);
         if let Some(next) = &check.next {
             println!("{:<27} {}", "", next);
         }
+    }
+}
+
+pub fn environment(config: &Config) -> Report {
+    Report {
+        supported: true,
+        checks: vec![environment_check(config), containment_check(config)],
+    }
+}
+
+fn environment_check(config: &Config) -> Check {
+    let exposed = crate::environment::exposed_common_names(
+        config.execution.deny_common_env,
+        &config.execution.deny_env,
+    );
+    Check {
+        name: "child environment",
+        status: if exposed.is_empty() { "ok" } else { "warning" },
+        detail: if exposed.is_empty() {
+            "no detected common credential names would reach shell children".into()
+        } else {
+            format!("inherited credential names: {} (values hidden)", exposed.join(", "))
+        },
+        next: (!exposed.is_empty()).then(|| {
+            "set execution.deny_common_env: true, add exact names to execution.deny_env, or invoke uhm with a minimized environment".into()
+        }),
+    }
+}
+
+fn containment_check(config: &Config) -> Check {
+    let mode = config.execution.containment;
+    let available = crate::containment::executable().is_some();
+    Check {
+        name: "containment",
+        status: match mode {
+            crate::containment::Mode::Off => "off",
+            crate::containment::Mode::Bubblewrap if cfg!(target_os = "linux") && available => "ok",
+            crate::containment::Mode::Bubblewrap => "missing",
+        },
+        detail: match mode {
+            crate::containment::Mode::Off => "disabled; child processes use the caller's OS permissions".into(),
+            crate::containment::Mode::Bubblewrap if cfg!(target_os = "linux") && available => "Bubblewrap requested; network and writes outside the working directory are isolated".into(),
+            crate::containment::Mode::Bubblewrap => "Bubblewrap requested but unavailable on this host".into(),
+        },
+        next: (mode == crate::containment::Mode::Bubblewrap && (!cfg!(target_os = "linux") || !available))
+            .then(|| "install `bwrap` on Linux or set execution.containment: off".into()),
     }
 }
 

@@ -793,6 +793,7 @@ pub fn handle(
                     stdin: stdin.is_piped().then(|| stdin.bytes()),
                     cwd: &cwd,
                     config: &config.program,
+                    containment: config.execution.containment,
                     retain_workspace: args.retain_program,
                     recovery: recovery_classification.all_eligible().then_some(
                         program::RecoveryRequest {
@@ -1317,7 +1318,9 @@ pub fn handle(
                     stdin: child_stdin,
                     timeout: Duration::from_secs(config.execution.timeout_secs),
                     diagnostic_bytes: config.execution.diagnostic_bytes,
+                    deny_common_env: config.execution.deny_common_env,
                     deny_env: &config.execution.deny_env,
+                    containment: config.execution.containment,
                 }) {
                     Ok(v) => v,
                     Err(e) => {

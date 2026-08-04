@@ -8,11 +8,13 @@ mod capabilities;
 mod clock;
 mod command;
 mod config;
+mod containment;
 mod context;
 #[allow(dead_code)]
 mod contract;
 mod dirs;
 mod doctor;
+mod environment;
 mod first_run;
 mod history;
 mod http;
@@ -1251,12 +1253,17 @@ fn management(
             }
         }
         "doctor" => {
+            let environment_only = args.operands.as_slice() == ["environment"];
             let network = args
                 .prompt
                 .split_whitespace()
                 .any(|value| value == "network");
             let all_providers = args.prompt.split_whitespace().any(|value| value == "all");
-            let report = doctor::gather(config, network, all_providers, telemetry_policy);
+            let report = if environment_only {
+                doctor::environment(config)
+            } else {
+                doctor::gather(config, network, all_providers, telemetry_policy)
+            };
             let code = if doctor::healthy(&report) {
                 0
             } else {
@@ -1329,5 +1336,5 @@ fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     code
 }
 fn print_help() {
-    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]\n  uhm recover <run-id|last> [guidance]\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]\n  uhm recover <run-id|last> [guidance]\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network|environment]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
 }

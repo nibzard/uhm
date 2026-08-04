@@ -178,6 +178,7 @@ pub struct Request<'a> {
     pub stdin: Option<&'a [u8]>,
     pub cwd: &'a Path,
     pub config: &'a ProgramConfig,
+    pub containment: crate::containment::Mode,
     pub retain_workspace: bool,
     pub recovery: Option<RecoveryRequest<'a>>,
 }
@@ -467,14 +468,15 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
     };
     let recovery_prepared = recovery.is_some();
 
-    let mut cmd = Command::new(python);
-    cmd.args(fixed_arguments(
-        &launcher_path,
-        &source_path,
-        &contract_path,
-    ));
-    cmd.current_dir(workspace.path())
-        .stdin(Stdio::null())
+    let arguments = fixed_arguments(&launcher_path, &source_path, &contract_path);
+    let mut cmd = crate::containment::command(
+        req.containment,
+        python,
+        &arguments,
+        workspace.path(),
+        &[req.cwd],
+    )?;
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env_clear()
@@ -950,6 +952,7 @@ mod tests {
             stdin: Some(input),
             cwd: &cwd,
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -981,6 +984,7 @@ mod tests {
             stdin: None,
             cwd: &cwd,
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1026,6 +1030,7 @@ mod tests {
             stdin: None,
             cwd: &cwd,
             config: &config,
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1055,6 +1060,7 @@ mod tests {
             stdin: None,
             cwd: &cwd,
             config: &config,
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1118,6 +1124,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1136,6 +1143,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1186,6 +1194,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: Some(RecoveryRequest {
                 data_dir: &data,
@@ -1218,6 +1227,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: Some(RecoveryRequest {
                 data_dir: &data,
@@ -1261,6 +1271,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1282,6 +1293,7 @@ mod tests {
             stdin: None,
             cwd: &cwd,
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1416,6 +1428,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: true,
             recovery: None,
         })
@@ -1450,6 +1463,7 @@ mod tests {
             stdin: Some(b"LOCAL-ONLY-SENTINEL"),
             cwd: &cwd,
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         }).unwrap();
@@ -1475,6 +1489,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None
         })
@@ -1486,6 +1501,7 @@ mod tests {
             stdin: None,
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1517,6 +1533,7 @@ mod tests {
             stdin: Some(b"hello"),
             cwd: root.path(),
             config: &ProgramConfig::default(),
+            containment: crate::containment::Mode::Off,
             retain_workspace: false,
             recovery: None,
         })
@@ -1561,6 +1578,7 @@ mod tests {
                 stdin: None,
                 cwd: root.path(),
                 config: &ProgramConfig::default(),
+                containment: crate::containment::Mode::Off,
                 retain_workspace: false,
                 recovery: None,
             })

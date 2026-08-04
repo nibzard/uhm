@@ -1,0 +1,60 @@
+name: Credential-backed provider smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Candidate as provider:model
+        required: true
+        default: openai:gpt-5.6-terra
+      judge:
+        description: Judge as provider:model
+        required: true
+        default: openai:gpt-5.6-sol
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install runner dependencies
+        run: python -m pip install --disable-pip-version-check jsonschema
+      - name: Require configured provider credentials
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: |
+          case "${{ inputs.candidate }}:${{ inputs.judge }}" in
+            *openai:*) test -n "$OPENAI_API_KEY" ;;
+          esac
+          case "${{ inputs.candidate }}:${{ inputs.judge }}" in
+            *cerebras:*) test -n "$CEREBRAS_API_KEY" ;;
+          esac
+      - name: Run credential-backed smoke corpus
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+        run: |
+          python3 scripts/provider-bakeoff.py \
+            --candidate "${{ inputs.candidate }}" \
+            --judge "${{ inputs.judge }}" \
+            --profile smoke \
+            --program-profile first-shot \
+            --output target/provider-live-smoke.jsonl
+      - name: Upload content-free summary
+        uses: actions/upload-artifact@v7
+        with:
+          name: provider-live-smoke-summary
+          path: |
+            target/provider-live-smoke.jsonl.summary.json
+            target/provider-live-smoke.jsonl.html
+          if-no-files-found: error
+          retention-days: 14

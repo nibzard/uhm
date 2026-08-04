@@ -34,7 +34,9 @@
 # execution:
 #   timeout_secs: 300
 #   diagnostic_bytes: 65536      # tail per redirected stream
+#   deny_common_env: false       # opt-in preset for common credential/capability names
 #   deny_env: []                 # additional names removed from child env
+#   containment: off             # off | bubblewrap (Linux, explicit and fail-closed)
 
 # telemetry:
 #   enabled: true                # content-free aggregate outcomes; see `uhm telemetry preview`
