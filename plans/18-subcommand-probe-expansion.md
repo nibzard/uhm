@@ -99,6 +99,20 @@ Add an expansion flag to `Budget` with the same discipline as `replacement`: spe
 
 The plan's own evidence tables are n≤6 per condition and say so. Before the completion criteria are checked off, run the fixed intent set — the motivating intent plus at least one more naming a different uncataloged tool — at 10+ fresh proposals per condition, and record: invented subcommands, invented flags, dropped targets, chained unrelated tools, clarifications, probe requests, and correct complete compositions. The repo's existing benchmark machinery is not required; a checked-in script and a results table in this file are enough. The gate is that correct complete compositions become the majority outcome for the motivating intent and no regression appears in the fixture intents that name no tool.
 
+### §5 results — run 2026-08-04
+
+`scripts/measure-plan-18.sh 12`: 36 live `--dry-run --fresh` proposals against the default provider, isolated HOME and tool-surface store, `steel` consented once and its subcommands cleared before every sample so each proposal faced the same top-level-only surface. `telemetry.enabled: false`; the intent text was sent to the provider as part of each proposal. Raw per-sample output is checked in at `scripts/measure-plan-18-results.json`.
+
+| Condition | Intent | n | Probe fired | Outcome (against confirmed `steel` grammar) |
+| --- | --- | ---: | ---: | --- |
+| steel-browser | open a steel browser session and navigate to hacker news | 12 | 12 | 12 correct complete: `steel browser start … && steel browser navigate <url>`. `start`, `navigate`, and `--session` are all real (`steel browser --help` advertises `start`/`navigate`; both verbs are absent from `steel --help`), so the depth was genuinely missing and the probe supplied it every time |
+| steel-sessions | show my active steel sessions | 12 | 0 | 12 produced `steel browser sessions` (±`--json`). The run's classifier printed `dropped_target`, assuming `steel sessions list` was the only valid target; `steel browser --help` advertises `sessions` as "List active browser sessions", so these are correct complete compositions reached from prior knowledge, with no missing fact to probe |
+| no-tool | count the number of lines in /etc/hostname | 12 | 0 | 12 correct (`wc -l …`); zero spurious probes |
+
+Gate check: the motivating intent is a correct complete single-tool composition in 12/12, with zero invented subcommands and zero dropped targets; the no-tool fixture shows no regression (12/12 correct, zero probes). The probe fired deterministically where the model reached for depth (browser) and stayed dormant where the model already held a working verb (sessions) or named no tool — the intended selectivity.
+
+Honest limitation: the probe is model-initiated, so it can only fire when the model recognizes that a machine-readable fact is missing. This run exercised the recognizes-and-probes case, the already-knows-the-verb case, and the no-tool case, and the model was correct in all 36. It did not exercise a model that is confidently wrong about a verb it lacks — the case where probing ought to fire but the model does not reach for it. The host cannot close that case without executing the proposal to learn it failed, which is out of scope here and unchanged from Plan 16. What the browser row measures is the guarantee this plan adds: when the model does ask, the depth is supplied, validated, persisted, and amortized.
+
 ## 6. Tests
 
 Offline, red first:

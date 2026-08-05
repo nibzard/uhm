@@ -27,6 +27,13 @@ struct Budget {
     executions: u8,
     replacement: Option<Replacement>,
     replacement_after_executions: Option<u8>,
+    /// Plan 18: the slot-neutral probe expansion is spendable once, independent
+    /// of `replacement`. Spending it does not touch `model_calls`, so an
+    /// expanded job can still revise, edit, or repair afterwards.
+    expansion_spent: bool,
+    /// Coarse outcome of the expansion, threaded to the terminal receipt. `None`
+    /// means no expansion ran and reads back as `"none"`.
+    expansion_outcome: Option<&'static str>,
 }
 
 impl Budget {
@@ -35,6 +42,18 @@ impl Budget {
     }
     fn can_replace(&self) -> bool {
         self.replacement.is_none() && self.model_calls < 2
+    }
+    fn can_expand(&self) -> bool {
+        !self.expansion_spent
+    }
+    fn spend_expansion(&mut self) {
+        self.expansion_spent = true;
+    }
+    fn expansion_outcome(&self) -> &str {
+        self.expansion_outcome.unwrap_or("none")
+    }
+    fn set_expansion_outcome(&mut self, outcome: &'static str) {
+        self.expansion_outcome = Some(outcome);
     }
     fn replace_with_model(&mut self, kind: Replacement) -> bool {
         if !self.can_replace() {
@@ -143,6 +162,9 @@ pub fn handle(
     } else {
         context::gather(mode, &shell_name, config.context_timeout_ms)
     };
+    // Plan 18: the names actually shown in this request's surface. A later
+    // probe may only name one of these, so an unconsented binary is unreachable.
+    let mut named_tool_names: Vec<String> = Vec::new();
     if !local_alias && mode != context::Mode::Minimal {
         // Probing runs a local program, so consent is required before the first
         // probe of a binary and is then remembered. Without a terminal there is
@@ -161,6 +183,7 @@ pub fn handle(
                     ))
             },
         );
+        named_tool_names = observed.iter().map(|item| item.name.clone()).collect();
         context::add_tool_surface(&mut snapshot, &observed);
     }
     if let Some(session) = integration {
@@ -269,6 +292,11 @@ pub fn handle(
         ) {
             history::warn(&e);
         }
+        // Plan 18: a probe is a routing step, not an executable action, so it is
+        // never subject to an evidence profile. The dedicated arm resolves it.
+        if matches!(action, ProposedAction::ProbeSubcommand { .. }) {
+            profile_allowed = true;
+        }
         if !profile_allowed {
             interaction.decision("invalid");
             if budget.can_replace() && tty_available() && !args.json {
@@ -363,6 +391,7 @@ pub fn handle(
                     None,
                     started.elapsed(),
                     budget.second_used(),
+                    budget.expansion_outcome(),
                     &[],
                     &[],
                 );
@@ -504,6 +533,7 @@ pub fn handle(
                         None,
                         started.elapsed(),
                         budget.second_used(),
+                        budget.expansion_outcome(),
                         &effects,
                         &[],
                     );
@@ -559,6 +589,7 @@ pub fn handle(
                     None,
                     started.elapsed(),
                     budget.second_used(),
+                    budget.expansion_outcome(),
                     &effects,
                     &[],
                 );
@@ -912,6 +943,7 @@ pub fn handle(
                             result.signal,
                             started.elapsed(),
                             budget.second_used(),
+                            budget.expansion_outcome(),
                             &proposal.effects,
                             &detected,
                         );
@@ -1103,6 +1135,7 @@ pub fn handle(
                     result.signal,
                     started.elapsed(),
                     budget.second_used(),
+                    budget.expansion_outcome(),
                     &proposal.effects,
                     &detected,
                 );
@@ -1472,6 +1505,7 @@ pub fn handle(
                             result.signal,
                             started.elapsed(),
                             budget.second_used(),
+                            budget.expansion_outcome(),
                             &effects,
                             &detected,
                         );
@@ -1629,6 +1663,7 @@ pub fn handle(
                     result.signal,
                     started.elapsed(),
                     budget.second_used(),
+                    budget.expansion_outcome(),
                     &metadata.effects,
                     &detected,
                 );
@@ -1675,6 +1710,105 @@ pub fn handle(
                     eprintln!("\n{}", ansi::success(finished));
                 }
                 return result.code;
+            }
+            ProposedAction::ProbeSubcommand { tool, subcommand } => {
+                // Plan 18: a probe is a host-answered routing step, not an
+                // executable action. It returns to the loop for exactly one
+                // follow-up call with a deepened surface and consumes neither a
+                // model-call replacement slot nor an execution. It may run once:
+                // a second probe has no tool to call (the follow-up surface omits
+                // it) and an ineligible probe terminates immediately.
+                let eligible = budget.can_expand()
+                    && named_tool_names.iter().any(|name| name == &tool)
+                    && !matches!(route, "ask" | "explain");
+                if !eligible {
+                    budget.set_expansion_outcome("invalid_probe");
+                    interaction.expansion("invalid_probe");
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "invalid_probe",
+                        "the requested subcommand probe was not allowed on the shown tool surface",
+                    );
+                }
+                let probe = tool_surface::probe_subcommand(
+                    &config.paths.data_dir,
+                    &context::path_entries(),
+                    &tool,
+                    &subcommand,
+                    Instant::now() + Duration::from_millis(config.context_timeout_ms),
+                    &mut |line| {
+                        if !args.json {
+                            eprintln!("{}", line);
+                        }
+                    },
+                );
+                if matches!(probe, tool_surface::ProbeResult::Invalid) {
+                    budget.set_expansion_outcome("invalid_probe");
+                    interaction.expansion("invalid_probe");
+                    interaction.decision("unavailable");
+                    return app_error(
+                        args,
+                        outcome::NOT_EXECUTED,
+                        "invalid_probe",
+                        "the requested subcommand probe was not allowed on the shown tool surface",
+                    );
+                }
+                // Probed or Empty: the slot is spent and the model gets exactly
+                // one follow-up call. On Probed the store now holds the deeper
+                // help and the rebuilt surface carries it; on Empty the surface is
+                // unchanged and the follow-up tells the model so it can fall back.
+                let outcome_label = match probe {
+                    tool_surface::ProbeResult::Probed => {
+                        budget.spend_expansion();
+                        let deepened = tool_surface::surface(
+                            request,
+                            &config.paths.data_dir,
+                            &context::path_entries(),
+                            Instant::now() + Duration::from_millis(config.context_timeout_ms),
+                            &mut |_| false,
+                        );
+                        context::add_tool_surface(&mut snapshot, &deepened);
+                        budget.set_expansion_outcome("probed");
+                        "probed"
+                    }
+                    tool_surface::ProbeResult::Empty => {
+                        budget.spend_expansion();
+                        budget.set_expansion_outcome("probe_empty");
+                        "probe_empty"
+                    }
+                    tool_surface::ProbeResult::Invalid => {
+                        unreachable!("invalid probe returns before reaching the follow-up call")
+                    }
+                };
+                interaction.expansion(outcome_label);
+                action = match propose(
+                    args,
+                    config,
+                    api_config,
+                    route,
+                    request,
+                    &snapshot,
+                    stdin.model_value_for(args.local_input, args.input_format.as_deref()),
+                    Some(json!({
+                        "kind": "probe_subcommand",
+                        "tool": tool,
+                        "subcommand": subcommand,
+                        "outcome": outcome_label,
+                    })),
+                    &shell_name,
+                    &run_id,
+                    mode,
+                    related_run_id,
+                ) {
+                    Ok((value, _, _, allowed)) => {
+                        profile_allowed = allowed;
+                        value
+                    }
+                    Err(error) => return model_error(args, &error),
+                };
+                continue;
             }
         }
     }
@@ -2089,6 +2223,7 @@ fn receipt(
     signal: Option<i32>,
     duration: Duration,
     second: bool,
+    expansion: &str,
     declared: &[Effect],
     detected: &[Effect],
 ) {
@@ -2135,6 +2270,7 @@ fn receipt(
         .into(),
         cache_state: "unknown".into(),
         second_turn_used: second,
+        expansion_outcome: expansion.into(),
         user_feedback: "unknown".into(),
     };
     if let Err(e) = history::append_receipt(&config.paths.data_dir, &config.history, &entry) {
@@ -2521,6 +2657,32 @@ mod tests {
             assert!(!budget.replace_with_edit());
             assert_eq!(budget.model_calls, 2);
         }
+    }
+
+    #[test]
+    fn probe_expansion_is_slot_neutral_and_spendable_once() {
+        let mut budget = Budget::default();
+        budget.initial_model(1);
+        // An expansion is available exactly once and consumes neither the
+        // replacement slot nor a model call, so revise/edit/repair stay offered.
+        assert!(budget.can_expand());
+        assert!(budget.can_replace());
+        assert_eq!(budget.model_calls, 1);
+        budget.spend_expansion();
+        assert!(!budget.can_expand());
+        assert!(
+            budget.can_replace(),
+            "expansion must not consume the replacement slot"
+        );
+        assert_eq!(
+            budget.model_calls, 1,
+            "expansion must not consume a model call"
+        );
+        assert!(budget.replace_with_model(Replacement::Revision));
+        budget.set_expansion_outcome("probed");
+        assert_eq!(budget.expansion_outcome(), "probed");
+        // A job with no expansion reads back as "none".
+        assert_eq!(Budget::default().expansion_outcome(), "none");
     }
 
     #[test]

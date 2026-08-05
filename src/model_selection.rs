@@ -150,6 +150,9 @@ pub fn action_type(action: &crate::action::ProposedAction) -> &'static str {
         crate::action::ProposedAction::Shell { .. } => "shell",
         crate::action::ProposedAction::Program { .. } => "program",
         crate::action::ProposedAction::ParentShell { .. } => "parent_shell",
+        // A routing step, not an executable action; never subject to an
+        // evidence profile (the command loop bypasses the profile check for it).
+        crate::action::ProposedAction::ProbeSubcommand { .. } => "probe_subcommand",
     }
 }
 

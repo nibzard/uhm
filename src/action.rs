@@ -242,6 +242,15 @@ pub enum ProposedAction {
     Clarification {
         question: String,
     },
+    /// Plan 18: a host-answered request to read one already-shown tool's
+    /// subcommand help and re-propose. Non-executable: it is decoded like
+    /// `Clarification` but has no executor arm, so it can never reach a shell
+    /// or program. The model names one subcommand token; the host builds the
+    /// probe argv and validates the token against the tool's retained help.
+    ProbeSubcommand {
+        tool: String,
+        subcommand: String,
+    },
 }
 
 impl ProposedAction {
@@ -330,6 +339,13 @@ impl ProposedAction {
         match &mut self {
             Self::Answer { text: value } => text(value, "answer", MAX_TEXT)?,
             Self::Clarification { question } => text(question, "clarification", MAX_ITEM)?,
+            Self::ProbeSubcommand { tool, subcommand } => {
+                text(tool, "probe tool", 255)?;
+                // The subcommand is bounded like an intent token; the strict
+                // token-character and "appears in the tool's help" rules are
+                // enforced by the host probe, which is the only consumer.
+                text(subcommand, "probe subcommand", 32)?;
+            }
             Self::Shell {
                 command,
                 metadata: value,

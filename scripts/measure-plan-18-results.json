@@ -1,0 +1,431 @@
+{
+  "steel-browser": {
+    "intent": "open a steel browser session and navigate to hacker news",
+    "subcommand": "browser",
+    "samples": 12,
+    "probe_fired": 12,
+    "tally": {
+      "correct_complete": 12
+    },
+    "raw": [
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start && steel browser navigate https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start && steel browser navigate https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start && steel browser navigate https://news.ycombinator.com",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start && steel browser navigate https://news.ycombinator.com\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start && steel browser navigate https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start && steel browser navigate https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start && steel browser navigate https://news.ycombinator.com",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start && steel browser navigate https://news.ycombinator.com\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start && steel browser navigate https://news.ycombinator.com",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start && steel browser navigate https://news.ycombinator.com\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start --session hacker-news && steel browser --session hacker-news navigate https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start --session hacker-news && steel browser --session hacker-news navigate https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start && steel browser navigate https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start && steel browser navigate https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/",
+        "message": null,
+        "probe_fired": true,
+        "probe_target": "browser",
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser start --session hacker-news && steel browser navigate --session hacker-news https://news.ycombinator.com/\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_complete"
+      }
+    ]
+  },
+  "steel-sessions": {
+    "intent": "show my active steel sessions",
+    "subcommand": "sessions",
+    "samples": 12,
+    "probe_fired": 0,
+    "tally": {
+      "dropped_target": 12
+    },
+    "raw": [
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions --json",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions --json\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions --json",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions --json\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions --json",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions --json\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions --json",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions --json\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions --json",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions --json\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "steel browser sessions --json",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"steel browser sessions --json\"}\n",
+        "raw_stderr": "",
+        "classification": "dropped_target"
+      }
+    ]
+  },
+  "no-tool": {
+    "intent": "count the number of lines in /etc/hostname",
+    "subcommand": null,
+    "samples": 12,
+    "probe_fired": 0,
+    "tally": {
+      "correct_no_tool": 12
+    },
+    "raw": [
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l < /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l < /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      },
+      {
+        "exit": 0,
+        "outcome": "dry_run",
+        "command": "wc -l /etc/hostname",
+        "message": null,
+        "probe_fired": false,
+        "probe_target": null,
+        "raw_stdout": "{\"namespace\":\"uhm\",\"outcome\":\"dry_run\",\"exit_code\":0,\"executed\":false,\"command\":\"wc -l /etc/hostname\"}\n",
+        "raw_stderr": "",
+        "classification": "correct_no_tool"
+      }
+    ]
+  }
+}

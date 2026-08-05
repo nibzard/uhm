@@ -22,6 +22,12 @@ struct ClarificationArgs {
 }
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ProbeSubcommandArgs {
+    tool: String,
+    subcommand: String,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ShellArgs {
     command: String,
     summary: String,
@@ -69,6 +75,13 @@ pub fn decode_and_validate(tool: &str, arguments: Value) -> Result<ProposedActio
             let args: ClarificationArgs = decode(arguments, tool)?;
             ProposedAction::Clarification {
                 question: args.question,
+            }
+        }
+        "probe_subcommand" => {
+            let args: ProbeSubcommandArgs = decode(arguments, tool)?;
+            ProposedAction::ProbeSubcommand {
+                tool: args.tool,
+                subcommand: args.subcommand,
             }
         }
         "run_shell" => {

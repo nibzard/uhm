@@ -253,6 +253,11 @@ pub struct Receipt {
     pub latency_bucket: String,
     pub cache_state: String,
     pub second_turn_used: bool,
+    /// Plan 18: coarse outcome of the slot-neutral probe expansion, if one ran.
+    /// `none` for ordinary jobs; `probed`/`probe_empty`/`invalid_probe` record
+    /// that an expansion occurred. Enum-only: no tool name or help bytes.
+    #[serde(default = "no_expansion")]
+    pub expansion_outcome: String,
     #[serde(default = "unknown_feedback")]
     pub user_feedback: String,
 }
@@ -270,11 +275,16 @@ pub struct CoarseReceipt {
     pub signal: Option<i32>,
     pub latency_bucket: String,
     pub cache_state: String,
+    /// Mirrors `Receipt::expansion_outcome` for the content-free telemetry feed.
+    pub expansion_outcome: String,
     pub user_feedback: String,
 }
 
 fn unknown_feedback() -> String {
     "unknown".into()
+}
+fn no_expansion() -> String {
+    "none".into()
 }
 fn no_runtime() -> String {
     "none".into()
@@ -574,6 +584,7 @@ pub fn record_proposal(
         ProposedAction::ParentShell { .. } => "parent_shell",
         ProposedAction::Program { .. } => "program",
         ProposedAction::Clarification { .. } => "clarification",
+        ProposedAction::ProbeSubcommand { .. } => "probe_subcommand",
     };
     let _guard = lock(data)?;
     let next = read_unlocked(&journal_path(data))
@@ -773,7 +784,7 @@ pub fn append_receipt(data: &Path, cfg: &HistoryConfig, receipt: &Receipt) -> Re
         "runtime":receipt.runtime,"declared_effects":receipt.declared_effects,"detected_effects":receipt.detected_effects,
         "decision":receipt.decision,"execution_attempted":receipt.execution_attempted,"exit_category":receipt.exit_category,
         "signal":receipt.signal,"latency_bucket":receipt.latency_bucket,"cache_state":receipt.cache_state,
-        "second_turn_used":receipt.second_turn_used,"user_feedback":receipt.user_feedback
+        "second_turn_used":receipt.second_turn_used,"expansion_outcome":receipt.expansion_outcome,"user_feedback":receipt.user_feedback
     });
     let kind = if receipt.execution_attempted {
         EventKind::ExecutionFinished
@@ -1482,6 +1493,7 @@ pub(crate) const EXPORT_DATA_KEYS: &[&str] = &[
     "latency_bucket",
     "cache_state",
     "second_turn_used",
+    "expansion_outcome",
     "user_feedback",
     "result",
     "state",
@@ -1689,6 +1701,13 @@ fn coarse_from_event(event: &Event, feedback: &str) -> CoarseReceipt {
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .into(),
+        expansion_outcome: event
+            .data
+            .get("expansion_outcome")
+            .and_then(Value::as_str)
+            .filter(|value| matches!(*value, "none" | "probed" | "probe_empty" | "invalid_probe"))
+            .unwrap_or("none")
+            .into(),
         user_feedback: feedback.into(),
     }
 }
@@ -1714,7 +1733,7 @@ fn migrate_locked(data: &Path) -> Result<(), String> {
             &receipt.mode,
             &receipt.context_mode,
             EventKind::MigratedReceipt,
-            json!({"runtime":receipt.runtime,"declared_effects":receipt.declared_effects,"detected_effects":receipt.detected_effects,"decision":receipt.decision,"execution_attempted":receipt.execution_attempted,"exit_category":receipt.exit_category,"signal":receipt.signal,"latency_bucket":receipt.latency_bucket,"cache_state":receipt.cache_state,"second_turn_used":receipt.second_turn_used,"user_feedback":receipt.user_feedback}),
+            json!({"runtime":receipt.runtime,"declared_effects":receipt.declared_effects,"detected_effects":receipt.detected_effects,"decision":receipt.decision,"execution_attempted":receipt.execution_attempted,"exit_category":receipt.exit_category,"signal":receipt.signal,"latency_bucket":receipt.latency_bucket,"cache_state":receipt.cache_state,"second_turn_used":receipt.second_turn_used,"expansion_outcome":receipt.expansion_outcome,"user_feedback":receipt.user_feedback}),
             None,
         );
         event.timestamp = receipt.timestamp;
@@ -1766,6 +1785,7 @@ mod tests {
             latency_bucket: "lt_1s".into(),
             cache_state: "miss".into(),
             second_turn_used: false,
+            expansion_outcome: "none".into(),
             user_feedback: "unknown".into(),
         }
     }

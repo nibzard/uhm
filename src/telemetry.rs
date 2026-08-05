@@ -64,6 +64,9 @@ const FEEDBACK: &[&str] = &["unknown", "good", "bad"];
 const LATENCIES: &[&str] = &["lt_1s", "1s_2s", "2s_5s", "gte_5s"];
 const CACHES: &[&str] = &["unknown", "miss", "hit", "disabled"];
 const PARENT_ACTIONS: &[&str] = &["not_applicable", "unknown", "applied", "failed"];
+/// Plan 18: coarse outcome of the slot-neutral probe expansion. Enum-only —
+/// `none` is an ordinary one-call job; the rest record that an expansion ran.
+const EXPANSION: &[&str] = &["none", "probed", "probe_empty", "invalid_probe"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -84,6 +87,10 @@ pub struct Event {
     pub latency: String,
     pub cache: String,
     pub parent_action: String,
+    /// Plan 18: coarse probe-expansion outcome. Defaults to `none` so older
+    /// queued events (serialized before this field existed) still validate.
+    #[serde(default = "default_expansion")]
+    pub expansion_outcome: String,
     pub interactive: bool,
     pub notice_revision: u8,
 }
@@ -119,6 +126,11 @@ impl Event {
             ("latency", self.latency.as_str(), LATENCIES),
             ("cache", self.cache.as_str(), CACHES),
             ("parent_action", self.parent_action.as_str(), PARENT_ACTIONS),
+            (
+                "expansion_outcome",
+                self.expansion_outcome.as_str(),
+                EXPANSION,
+            ),
         ] {
             if !allowed.contains(&value) {
                 return Err(format!("unknown telemetry {} enum", label));
@@ -162,6 +174,7 @@ impl Interaction {
                 latency: "lt_1s".into(),
                 cache: "unknown".into(),
                 parent_action: "not_applicable".into(),
+                expansion_outcome: "none".into(),
                 interactive,
                 notice_revision: crate::first_run::NOTICE_REVISION,
             }),
@@ -205,6 +218,14 @@ impl Interaction {
     pub fn execution(&mut self, value: &str) {
         if let Some(event) = &mut self.event {
             event.execution_outcome = enum_or(value, EXECUTIONS);
+        }
+    }
+    /// Record the coarse outcome of the Plan 18 probe expansion. Called once,
+    /// after the host resolves a probe; unknown values collapse to `none` so the
+    /// funnel can never carry an out-of-band string.
+    pub fn expansion(&mut self, outcome: &str) {
+        if let Some(event) = &mut self.event {
+            event.expansion_outcome = enum_or(outcome, EXPANSION);
         }
     }
     pub fn suppress(&mut self) {
@@ -406,6 +427,7 @@ fn feedback_event(receipt: &history::CoarseReceipt) -> Event {
         latency: receipt_latency(&receipt.latency_bucket).into(),
         cache: enum_or(&receipt.cache_state, CACHES),
         parent_action: "not_applicable".into(),
+        expansion_outcome: enum_or(&receipt.expansion_outcome, EXPANSION),
         interactive: false,
         notice_revision: crate::first_run::NOTICE_REVISION,
     }
@@ -669,6 +691,9 @@ fn release() -> String {
         .collect::<Vec<_>>()
         .join(".")
 }
+fn default_expansion() -> String {
+    "none".into()
+}
 fn enum_or(value: &str, allowed: &[&str]) -> String {
     if allowed.contains(&value) {
         value.into()
@@ -830,11 +855,13 @@ mod tests {
             signal: None,
             latency_bucket: "lt_1s".into(),
             cache_state: "miss".into(),
+            expansion_outcome: "probed".into(),
             user_feedback: "good".into(),
         };
         let event = feedback_event(&receipt);
         assert_eq!(event.route, "program");
         assert_eq!(event.effects, "network_read");
+        assert_eq!(event.expansion_outcome, "probed");
         event.validate().unwrap();
     }
 
@@ -957,6 +984,20 @@ mod tests {
         event.route = "/private/path".into();
         assert!(event.validate().is_err());
         assert!(serde_json::from_value::<Event>(serde_json::json!({"v":1,"unknown":"x"})).is_err());
+    }
+
+    #[test]
+    fn older_events_without_expansion_outcome_default_to_none() {
+        let mut event = preview("auto", false);
+        let mut value = serde_json::to_value(&event).unwrap();
+        // An event queued before Plan 18 lacks the field entirely.
+        value.as_object_mut().unwrap().remove("expansion_outcome");
+        let restored: Event = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.expansion_outcome, "none");
+        restored.validate().unwrap();
+        // An out-of-band expansion value is rejected at validation time.
+        event.expansion_outcome = "leaked-tool-name".into();
+        assert!(event.validate().is_err());
     }
 
     #[test]

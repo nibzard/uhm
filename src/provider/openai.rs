@@ -202,7 +202,7 @@ fn validate_returned_tools(response: &Value) -> Result<(), String> {
     let tools = response["tools"]
         .as_array()
         .ok_or("response omitted resolved strict tool metadata")?;
-    if !matches!(tools.len(), 2 | 5) {
+    if !matches!(tools.len(), 2 | 5 | 6) {
         return Err("response did not resolve a canonical proposal tool set".into());
     }
     let mut names = Vec::new();
@@ -220,7 +220,18 @@ fn validate_returned_tools(response: &Value) -> Result<(), String> {
         "require_parent_shell",
         "request_clarification",
     ];
-    if names != prose && names != complete {
+    // Plan 18: the first call of an executable job also offers probe_subcommand,
+    // so the resolved set has six entries in that case. It is omitted from the
+    // follow-up call after a probe, so nesting never reaches this check.
+    let complete_with_probe = [
+        "return_answer",
+        "run_program",
+        "run_shell",
+        "require_parent_shell",
+        "request_clarification",
+        "probe_subcommand",
+    ];
+    if names != prose && names != complete && names != complete_with_probe {
         return Err("response resolved a noncanonical proposal tool set".into());
     }
     Ok(())
