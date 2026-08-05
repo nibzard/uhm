@@ -39,7 +39,26 @@ DEFAULT_OUTPUT = ROOT / "target/provider-bakeoff.jsonl"
 DEFAULT_WORKER_IMAGE = "uhm-bench-worker:v2"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/responses"
 CEREBRAS_ENDPOINT = "https://api.cerebras.ai/v1/chat/completions"
-PROVIDERS = {"openai", "cerebras"}
+DEEPSEEK_ENDPOINT = "https://api.deepseek.com/v1/responses"
+PROVIDERS = {"openai", "cerebras", "deepseek"}
+PROVIDER_ENDPOINTS = {
+    "openai": OPENAI_ENDPOINT,
+    "cerebras": CEREBRAS_ENDPOINT,
+    "deepseek": DEEPSEEK_ENDPOINT,
+}
+PROVIDER_CREDENTIALS = {
+    "openai": "OPENAI_API_KEY",
+    "cerebras": "CEREBRAS_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+}
+PROVIDER_API_FAMILIES = {
+    "openai": "openai_responses_v1",
+    "cerebras": "cerebras_chat_completions_v1",
+    "deepseek": "deepseek_responses_v1",
+}
+# DeepSeek shares the OpenAI Responses wire shape. Cerebras is the lone
+# Chat Completions outlier, so branching keys off Cerebras rather than OpenAI.
+RESPONSES_PROVIDERS = {"openai", "deepseek"}
 SCHEMAS = ROOT / "benchmark/schemas"
 CONTRACT_HELPER = ROOT / "target/debug/uhm-bench-contract"
 PROVIDER_HELPER = ROOT / "target/debug/uhm-provider-call"
@@ -273,13 +292,13 @@ def model_spec(value: str) -> tuple[str, str]:
     provider, model = value.split(":", 1)
     if provider not in PROVIDERS or not model.strip():
         raise argparse.ArgumentTypeError(
-            "provider must be openai or cerebras and model must be non-empty"
+            f"provider must be one of {sorted(PROVIDERS)} and model must be non-empty"
         )
     return provider, model
 
 
 def api_key(provider: str) -> str:
-    variable = "OPENAI_API_KEY" if provider == "openai" else "CEREBRAS_API_KEY"
+    variable = PROVIDER_CREDENTIALS[provider]
     key = os.environ.get(variable, "").strip()
     if not key:
         raise ValueError(f"{variable} is required for provider {provider}")
@@ -378,13 +397,16 @@ def request_body(
     max_tokens: int,
     reasoning_effort: str,
 ) -> dict[str, Any]:
-    if provider == "openai":
+    if provider in RESPONSES_PROVIDERS:
+        # DeepSeek runs in thinking mode, which rejects a forced tool choice, so
+        # it sends "auto"; production behavior is what the bakeoff measures.
+        tool_choice = "auto" if provider == "deepseek" else "required"
         return {
             "model": model,
             "instructions": instructions,
             "input": input_text,
             "tools": tools,
-            "tool_choice": "required",
+            "tool_choice": tool_choice,
             "parallel_tool_calls": False,
             "store": False,
             "max_output_tokens": max_tokens,
@@ -407,7 +429,7 @@ def request_body(
 
 
 def parse_tool_call(provider: str, payload: dict[str, Any]) -> tuple[str, Any]:
-    if provider == "openai":
+    if provider in RESPONSES_PROVIDERS:
         if payload.get("status") != "completed":
             raise ValueError(f"OpenAI response status was {payload.get('status')!r}")
         calls = [
@@ -608,7 +630,7 @@ def platform_python_version() -> str:
 
 def usage(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     data = payload.get("usage") or {}
-    if provider == "openai":
+    if provider in RESPONSES_PROVIDERS:
         return {
             "input_tokens": data.get("input_tokens"),
             "output_tokens": data.get("output_tokens"),
@@ -640,7 +662,7 @@ def call_model(
         max_tokens,
         reasoning_effort,
     )
-    endpoint = OPENAI_ENDPOINT if provider == "openai" else CEREBRAS_ENDPOINT
+    endpoint = PROVIDER_ENDPOINTS[provider]
     headers = ["X-Cerebras-Version-Patch: 2"] if provider == "cerebras" else []
     payload, timing = curl_json(endpoint, api_key(provider), body, timeout, headers)
     if provider == "cerebras":
@@ -651,7 +673,7 @@ def call_model(
     name, arguments = parse_tool_call(provider, payload)
     timing["usage"] = usage(provider, payload)
     timing["provider_provenance"] = {
-        "api_family": "openai_responses_v1" if provider == "openai" else "cerebras_chat_completions_v1",
+        "api_family": PROVIDER_API_FAMILIES[provider],
         "resolved_model": payload.get("model"),
         "resolved_fingerprint": payload.get("system_fingerprint"),
         "request_id": re.sub(r"[^A-Za-z0-9_.:-]", "", str(payload.get("id", "")))[:200] or None,
@@ -1356,7 +1378,7 @@ def run_fingerprint(args: argparse.Namespace, corpus_hash: str, manifest: dict[s
         "schemas_sha256": schema_bundle_hash(),
         "worker_identity": (manifest or {}).get("identity_sha256"),
         "candidates": args.candidate, "judges": args.judge,
-        "endpoints": {"openai": OPENAI_ENDPOINT, "cerebras": CEREBRAS_ENDPOINT},
+        "endpoints": dict(PROVIDER_ENDPOINTS),
         "candidate_reasoning": args.candidate_reasoning, "judge_reasoning": args.judge_reasoning,
         "candidate_max_tokens": args.candidate_max_tokens, "judge_max_tokens": args.judge_max_tokens,
         "judge_prompt_sha256": hashlib.sha256(JUDGE_INSTRUCTIONS.encode()).hexdigest(),
@@ -1423,6 +1445,9 @@ def run_self_test() -> None:
         ],
     }
     assert parse_tool_call("openai", openai_fixture)[0] == "run_shell"
+    # DeepSeek speaks the same Responses shape as OpenAI and routes through the
+    # same parse branch; the identical fixture must parse identically.
+    assert parse_tool_call("deepseek", openai_fixture)[0] == "run_shell"
     cerebras_fixture = {
         "choices": [
             {

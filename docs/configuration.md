@@ -20,13 +20,13 @@ For every key, the winner is the highest step on this list:
 3. **`UHM_PROVIDER` and `UHM_MODEL`** — override provider/model independently
 4. **`--provider` and `--model` / `-m`** — override one invocation
 
-`OPENAI_MODEL` remains a compatibility alias only when the selected provider is OpenAI and `UHM_MODEL` is absent. A model name never selects or infers a provider.
+`OPENAI_MODEL` and `DEEPSEEK_MODEL` remain compatibility aliases only when the matching provider is selected and `UHM_MODEL` is absent. A model name never selects or infers a provider.
 
 ## Top-level keys
 
 | Key | Default | Notes |
 |---|---|---|
-| `provider` | `openai` | `openai\|cerebras`; fixed built-in endpoints only |
+| `provider` | `openai` | `openai\|cerebras\|deepseek`; fixed built-in endpoints only |
 | `model` | `gpt-5.6-terra` | bare provider-specific ID; does not change provider |
 | `selection` | fixed, no alternate/fallback | see below |
 | `max_completion_tokens` | `8192` | response token budget |
@@ -69,7 +69,7 @@ execution:
   containment: off          # off | bubblewrap
 ```
 
-`OPENAI_API_KEY`, `CEREBRAS_API_KEY`, and uhm's private control variables are removed automatically. Set `deny_common_env: true` to remove a conservative preset covering common AWS, Azure, Google, GitHub, GitLab, database, package-registry, Vault, Kubernetes, Docker, and SSH-agent capability names. Add project-specific names to `deny_env`. Run `uhm doctor environment` to list recognized names that would reach shell children; values are never printed. The preset is opt-in because removing credentials would break commands intentionally targeting those services. Generated Python already starts from an empty environment.
+`OPENAI_API_KEY`, `CEREBRAS_API_KEY`, `DEEPSEEK_API_KEY`, and uhm's private control variables are removed automatically. Set `deny_common_env: true` to remove a conservative preset covering common AWS, Azure, Google, GitHub, GitLab, database, package-registry, Vault, Kubernetes, Docker, and SSH-agent capability names. Add project-specific names to `deny_env`. Run `uhm doctor environment` to list recognized names that would reach shell children; values are never printed. The preset is opt-in because removing credentials would break commands intentionally targeting those services. Generated Python already starts from an empty environment.
 
 `containment: bubblewrap` is an explicit Linux-only mode. It requires `bwrap`, disables the child's network namespace, makes the host filesystem read-only, and permits writes in the invocation working directory and private program workspace. If requested but unavailable, execution fails before the proposed command starts. This is useful defense in depth, not a confidentiality sandbox: readable host files remain readable, the working directory remains writable, and kernel or Bubblewrap vulnerabilities are outside uhm's control.
 
@@ -155,7 +155,7 @@ Aliases are short triggers expanded **locally** — no API call, no API key. The
 
 The selected provider's key is resolved in this order:
 
-1. Its environment variable: `OPENAI_API_KEY` or `CEREBRAS_API_KEY`.
+1. Its environment variable: `OPENAI_API_KEY`, `CEREBRAS_API_KEY`, or `DEEPSEEK_API_KEY`.
 2. The matching assignment in a private `0600` secrets file, whose path `uhm doctor` prints.
 
 Provider keys are never passed to generated programs and are removed from ordinary child-command environments. Other inherited credentials require explicit `execution.deny_env` entries.

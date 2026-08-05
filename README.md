@@ -64,7 +64,7 @@ uhm doctor
 uhm list the three biggest files
 ```
 
-`uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and `chmod 600 <path>` to keep the key out of your shell environment. `uhm doctor network` checks the selected provider. Cerebras is available as an explicit alternative; set `CEREBRAS_API_KEY` and choose it with `--provider cerebras --model <id>` or persistent configuration.
+`uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and `chmod 600 <path>` to keep the key out of your shell environment. `uhm doctor network` checks the selected provider. Cerebras and DeepSeek are available as explicit alternatives; set `CEREBRAS_API_KEY` or `DEEPSEEK_API_KEY` and choose with `--provider cerebras|deepseek --model <id>` or persistent configuration.
 
 Managed and corporate networks are supported through the standard upper- or lower-case `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, and `NO_PROXY` variables. `uhm` loads native certificate roots, honors `SSL_CERT_FILE`/`SSL_CERT_DIR`, and can append a private root with `UHM_CA_BUNDLE`. Certificate verification always remains enabled; see [troubleshooting](docs/troubleshooting.md#proxy-and-tls-certificate-failures).
 
@@ -137,7 +137,7 @@ Full breakdown in [docs/comparison.md](docs/comparison.md).
 
 The selected provider receives your intent, explicitly piped UTF-8 input unless `--local-input` is used, and the selected context. `standard` context is the default: bounded OS and architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. All modes also disclose the resolved Python 3 path/version and whether `-I -S` works so the model can choose an available route. It does not automatically include file contents, Git remotes or diffs, environment values, API keys, history, or cached results.
 
-Use `uhm context show` to inspect the exact shape. Use `--context minimal` or `context_mode: minimal` to send only the intent and explicitly piped input. OpenAI requests use the Responses API with `store: false`; explicit Cerebras requests use its fixed Chat Completions endpoint. Provider-side retention is controlled by the selected provider. See the [privacy contract](PRIVACY.md) before opting into either service.
+Use `uhm context show` to inspect the exact shape. Use `--context minimal` or `context_mode: minimal` to send only the intent and explicitly piped input. OpenAI and DeepSeek requests use the Responses API with `store: false`; explicit Cerebras requests use its fixed Chat Completions endpoint. Provider-side retention is controlled by the selected provider. See the [privacy contract](PRIVACY.md) before opting into any service.
 
 Content-free telemetry is on by default. A summary contains only fixed categories such as platform, shell, route, decision, effect, proposal outcome, process outcome, parent-action acknowledgement, feedback, coarse latency, and cache state. It has no prompt, command, output, path, error text, exact timestamp, or stable ID. Cloudflare processes the HTTPS connection; the Worker does not persist connection metadata in application telemetry or logs. See [PRIVACY.md](PRIVACY.md) for the exact schema and retention.
 

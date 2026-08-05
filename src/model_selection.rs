@@ -161,6 +161,7 @@ pub fn provider_status(provider: ProviderId, mode: SelectionMode) -> &'static st
         (_, SelectionMode::Evidence) => "evidence-qualified",
         (ProviderId::Openai, SelectionMode::Fixed) => "fixed-default-or-explicit",
         (ProviderId::Cerebras, SelectionMode::Fixed) => "experimental-unqualified",
+        (ProviderId::Deepseek, SelectionMode::Fixed) => "experimental-unqualified",
     }
 }
 

@@ -69,7 +69,7 @@ def check_cli_reference(help_text: str) -> None:
     missing = [flag for flag in long_flags if flag not in reference]
     if missing:
         fail(f"docs/cli-reference.md omits help flags: {', '.join(missing)}")
-    for usage in ("uhm doctor [all] [network|environment]", "--provider <openai|cerebras>"):
+    for usage in ("uhm doctor [all] [network|environment]", "--provider <openai|cerebras|deepseek>"):
         if usage not in help_text:
             fail(f"CLI help is missing expected v0.3 surface {usage!r}")
     if "uhm doctor [all] [network|environment]" not in read("README.md"):

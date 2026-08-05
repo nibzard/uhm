@@ -159,7 +159,7 @@ class BenchmarkTests(unittest.TestCase):
                                    "provider_provenance": {
                                        "resolved_fingerprint": f"{provider}-revision",
                                        "resolved_model": model,
-                                       "api_family": "openai_responses_v1" if provider == "openai" else "cerebras_chat_completions_v1"}},
+                                       "api_family": {"openai": "openai_responses_v1", "cerebras": "cerebras_chat_completions_v1", "deepseek": "deepseek_responses_v1"}[provider]}},
                     })
         calibration = []
         for provider, model in candidates:

@@ -2,7 +2,7 @@
 
 # Troubleshooting
 
-Start with `uhm doctor`. It checks the selected provider, local configuration, terminal capability, private secrets path, and Python runtime. Add `network` for an explicit reachability/authentication check, or `all` to inspect both built-in adapters:
+Start with `uhm doctor`. It checks the selected provider, local configuration, terminal capability, private secrets path, and Python runtime. Add `network` for an explicit reachability/authentication check, or `all` to inspect all built-in adapters:
 
 ```sh
 uhm doctor

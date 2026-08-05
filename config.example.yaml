@@ -1,7 +1,7 @@
 # uhm configuration — copy to the path shown by `uhm config show`
 # Every key is optional; uncomment to override a default.
 
-# provider: openai               # openai | cerebras; never inferred from model
+# provider: openai               # openai | cerebras | deepseek; never inferred from model
 # model: gpt-5.6-terra
 # selection:
 #   mode: fixed                  # fixed | evidence

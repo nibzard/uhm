@@ -1,6 +1,7 @@
 //! Provider-neutral model invocation and decoded tool-call boundary.
 
 pub mod cerebras;
+pub mod deepseek;
 pub mod openai;
 
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,7 @@ pub const ADAPTER_CONTRACT_VERSION: u32 = 1;
 pub enum ProviderId {
     Openai,
     Cerebras,
+    Deepseek,
 }
 
 impl ProviderId {
@@ -21,7 +23,8 @@ impl ProviderId {
         match value {
             "openai" => Ok(Self::Openai),
             "cerebras" => Ok(Self::Cerebras),
-            _ => Err("provider must be openai or cerebras".into()),
+            "deepseek" => Ok(Self::Deepseek),
+            _ => Err("provider must be openai, cerebras, or deepseek".into()),
         }
     }
 
@@ -29,6 +32,7 @@ impl ProviderId {
         match self {
             Self::Openai => "openai",
             Self::Cerebras => "cerebras",
+            Self::Deepseek => "deepseek",
         }
     }
 
@@ -36,6 +40,7 @@ impl ProviderId {
         match self {
             Self::Openai => &openai::OpenAiAdapter,
             Self::Cerebras => &cerebras::CerebrasAdapter,
+            Self::Deepseek => &deepseek::DeepSeekAdapter,
         }
     }
 }

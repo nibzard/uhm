@@ -31,6 +31,7 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           case "${{ inputs.candidate }}:${{ inputs.judge }}" in
             *openai:*) test -n "$OPENAI_API_KEY" ;;
@@ -38,10 +39,14 @@ jobs:
           case "${{ inputs.candidate }}:${{ inputs.judge }}" in
             *cerebras:*) test -n "$CEREBRAS_API_KEY" ;;
           esac
+          case "${{ inputs.candidate }}:${{ inputs.judge }}" in
+            *deepseek:*) test -n "$DEEPSEEK_API_KEY" ;;
+          esac
       - name: Run credential-backed smoke corpus
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           python3 scripts/provider-bakeoff.py \
             --candidate "${{ inputs.candidate }}" \

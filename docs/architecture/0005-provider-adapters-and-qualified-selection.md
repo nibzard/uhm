@@ -12,7 +12,7 @@ ADR 0002 intentionally coupled the bounded result loop to one OpenAI Responses t
 
 ## Decision
 
-OpenAI Responses and Cerebras Chat Completions are fixed built-in adapters behind one provider interface. Each adapter owns only its wire request and response parsing. Every returned action passes through the same canonical local decoder, schema, semantic validation, runtime preflight, and bounded result loop before it can be accepted.
+OpenAI Responses, Cerebras Chat Completions, and DeepSeek Responses are fixed built-in adapters behind one provider interface. Each adapter owns only its wire request and response parsing. Every returned action passes through the same canonical local decoder, schema, semantic validation, runtime preflight, and bounded result loop before it can be accepted.
 
 Provider and model are selected independently. Fixed mode permits an explicit provider/model pair and an optional alternate for a typed allowlist of pre-proposal failures. Fallback is sequential and shares the global two-call ceiling. Authentication failure, missing credentials, and policy rejection never trigger fallback. Arbitrary compatible endpoints are not supported.
 
@@ -22,4 +22,4 @@ Evidence mode trusts only reviewed entries in the checked-in qualification manif
 
 Provider wire differences cannot relax the product action contract. Adding a provider requires a new fixed adapter, privacy disclosure, canonical conformance coverage, and qualification evidence rather than a configurable base URL. Explicit fixed use can precede qualification, but the CLI reports that status and never presents it as evidence-selected.
 
-The two adapters have different provider-side retention behavior. Documentation names the selected endpoint set before outbound work and defers provider-side retention claims to each provider's current terms.
+The three adapters have different provider-side retention behavior. Documentation names the selected endpoint set before outbound work and defers provider-side retention claims to each provider's current terms.

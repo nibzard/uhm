@@ -2,16 +2,19 @@
 
 # Provider and model reference
 
-`uhm` supports two fixed built-in provider adapters. Arbitrary base URLs and provider inference from model names are rejected.
+`uhm` supports three fixed built-in provider adapters. Arbitrary base URLs and provider inference from model names are rejected.
 
 | Provider | ID | Endpoint | API family | Credential | Streaming | Reasoning effort | Strict bounds on wire |
 |---|---|---|---|---|---:|---:|---:|
 | OpenAI | `openai` | `https://api.openai.com/v1/responses` | Responses | `OPENAI_API_KEY` | yes | yes | yes |
 | Cerebras | `cerebras` | `https://api.cerebras.ai/v1/chat/completions` | Chat Completions | `CEREBRAS_API_KEY` | no | no | adapted locally |
+| DeepSeek | `deepseek` | `https://api.deepseek.com/v1/responses` | Responses | `DEEPSEEK_API_KEY` | yes | yes | yes |
 
-Both adapters require exactly one strict tool call and reject plain prose, refusals, incomplete responses, unknown tools, and multiple choices or calls. Every accepted wire result passes through the same canonical local action decoder and semantic validator.
+All three adapters require exactly one strict tool call and reject plain prose, refusals, incomplete responses, unknown tools, and multiple choices or calls. Every accepted wire result passes through the same canonical local action decoder and semantic validator.
 
 For Cerebras, the wire adapter removes unsupported `maxLength`, `maxItems`, and `pattern` keywords from tool schemas. The complete canonical bounds are still enforced locally before an action is accepted.
+
+DeepSeek speaks the same Responses format as OpenAI and echoes the resolved strict tool set, so no schema adaptation is needed. `deepseek-v4-flash` runs in thinking mode, which rejects a forced tool choice, so the adapter sends `tool_choice: "auto"`; the one-call requirement is still enforced locally when the response is parsed.
 
 ## Resolution
 
@@ -22,7 +25,7 @@ Provider and model resolve independently in this order:
 3. `UHM_PROVIDER` and `UHM_MODEL`;
 4. `--provider` and `--model` / `-m`.
 
-`OPENAI_MODEL` is a compatibility alias only when OpenAI is selected and `UHM_MODEL` is absent.
+`OPENAI_MODEL` and `DEEPSEEK_MODEL` are compatibility aliases only when the matching provider is selected and `UHM_MODEL` is absent.
 
 ## Selection modes
 
@@ -48,6 +51,6 @@ uhm doctor all
 uhm doctor all network
 ```
 
-`network` checks the selected provider. `all` reports both adapters; `all network` includes reachability and authentication for both. Doctor and live provider calls use the same proxy resolver, native/custom trust configuration, TLS client, and error classifier. A doctor request uses the provider's models route to avoid a billable generation.
+`network` checks the selected provider. `all` reports all three adapters; `all network` includes reachability and authentication for each. Doctor and live provider calls use the same proxy resolver, native/custom trust configuration, TLS client, and error classifier. A doctor request uses the provider's models route to avoid a billable generation.
 
 Transport failures are reported by stage: trust configuration, proxy configuration, proxy/CONNECT, DNS, TCP, TLS certificate, TLS handshake, or HTTP. Live JSON errors use distinct `trust`, `proxy`, `dns`, `tls`, and `network` error kinds; none are eligible fallback triggers by default.

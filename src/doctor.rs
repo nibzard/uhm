@@ -91,6 +91,7 @@ pub fn gather(
         vec![
             crate::provider::ProviderId::Openai,
             crate::provider::ProviderId::Cerebras,
+            crate::provider::ProviderId::Deepseek,
         ]
     } else {
         vec![config.provider]
@@ -440,6 +441,7 @@ fn network_check(provider: crate::provider::ProviderId) -> Check {
     let models_endpoint = match provider {
         crate::provider::ProviderId::Openai => "https://api.openai.com/v1/models",
         crate::provider::ProviderId::Cerebras => "https://api.cerebras.ai/v1/models",
+        crate::provider::ProviderId::Deepseek => "https://api.deepseek.com/v1/models",
     };
     let agent = match crate::http::agent_for(
         models_endpoint,

@@ -241,11 +241,13 @@ pub fn qualification_context() -> serde_json::Value {
         "policy_hash":policy_hash(),
         "endpoints":{
             "openai":crate::provider::openai::ENDPOINT,
-            "cerebras":crate::provider::cerebras::ENDPOINT
+            "cerebras":crate::provider::cerebras::ENDPOINT,
+            "deepseek":crate::provider::deepseek::ENDPOINT
         },
         "api_families":{
             "openai":crate::provider::openai::API_FAMILY,
-            "cerebras":crate::provider::cerebras::API_FAMILY
+            "cerebras":crate::provider::cerebras::API_FAMILY,
+            "deepseek":crate::provider::deepseek::API_FAMILY
         }
     })
 }

@@ -28,7 +28,7 @@ These may appear before or after a subcommand, up to the first intent word.
 |---|---|---|
 | `-h, --help` | — | Print help |
 | `-V, --version` | — | Print version |
-| `--provider` | `openai\|cerebras` | Provider for this invocation; never inferred from the model |
+| `--provider` | `openai\|cerebras\|deepseek` | Provider for this invocation; never inferred from the model |
 | `-m, --model` | `<id>` | Model id for this invocation (highest precedence) |
 | `--shell` | `auto\|sh\|bash\|zsh\|fish\|pwsh\|powershell` | Target shell |
 | `--context` | `minimal\|standard\|full` | Outbound context mode |
@@ -148,7 +148,7 @@ Emit the optional wrapper that can apply one accepted typed parent-shell action 
 uhm doctor [all] [network|environment]
 ```
 
-Local configuration and terminal checks. `network` checks reachability and authentication for the selected provider. `all` inspects both built-in adapters; `all network` also checks both configured credentials and endpoints. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.
+Local configuration and terminal checks. `network` checks reachability and authentication for the selected provider. `all` inspects all built-in adapters; `all network` also checks every configured credential and endpoint. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.
 
 ### help and version
 
@@ -165,9 +165,11 @@ Equivalent to `uhm --help` and `uhm --version`.
 |---|---|
 | `OPENAI_API_KEY` | API key (also readable from a `0600` secrets file) |
 | `CEREBRAS_API_KEY` | Cerebras API key (same private secrets-file support) |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (same private secrets-file support) |
 | `UHM_PROVIDER` | Override provider without inferring it from the model |
 | `UHM_MODEL` | Override model for the selected provider |
 | `OPENAI_MODEL` | Compatibility model alias only for OpenAI when `UHM_MODEL` is absent |
+| `DEEPSEEK_MODEL` | Compatibility model alias only for DeepSeek when `UHM_MODEL` is absent |
 | `UHM_TELEMETRY` | `off` disables telemetry |
 | `DO_NOT_TRACK` | `1` disables telemetry |
 | `UHM_PLAIN` | `1` selects cooked ASCII-safe output |

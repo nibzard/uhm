@@ -545,7 +545,13 @@ fn apply_provider_environment(config: &mut Config) -> Result<(), String> {
 fn apply_model_environment(config: &mut Config) -> Result<(), String> {
     let uhm_model = nonempty_env("UHM_MODEL")?;
     let openai_model = nonempty_env("OPENAI_MODEL")?;
-    apply_model_environment_values(config, uhm_model.as_deref(), openai_model.as_deref());
+    let deepseek_model = nonempty_env("DEEPSEEK_MODEL")?;
+    apply_model_environment_values(
+        config,
+        uhm_model.as_deref(),
+        openai_model.as_deref(),
+        deepseek_model.as_deref(),
+    );
     Ok(())
 }
 
@@ -553,15 +559,23 @@ fn apply_model_environment_values(
     config: &mut Config,
     uhm_model: Option<&str>,
     openai_model: Option<&str>,
+    deepseek_model: Option<&str>,
 ) {
     if let Some(value) = uhm_model {
         config.model = value.into();
         config.sources.insert("model", "UHM_MODEL");
-    } else if config.provider == ProviderId::Openai {
-        if let Some(value) = openai_model {
-            config.model = value.into();
-            config.sources.insert("model", "OPENAI_MODEL");
-        }
+        return;
+    }
+    // Per-provider legacy aliases are scoped: an OPENAI_MODEL value never crosses
+    // to DeepSeek (and vice versa), and Cerebras has no such alias.
+    let provider_alias = match config.provider {
+        ProviderId::Openai => openai_model.map(|value| (value, "OPENAI_MODEL")),
+        ProviderId::Deepseek => deepseek_model.map(|value| (value, "DEEPSEEK_MODEL")),
+        ProviderId::Cerebras => None,
+    };
+    if let Some((value, source)) = provider_alias {
+        config.model = value.into();
+        config.sources.insert("model", source);
     }
 }
 
@@ -797,15 +811,26 @@ mod tests {
     #[test]
     fn provider_scopes_legacy_alias_and_uhm_model_wins() {
         let mut openai = Config::defaults(paths());
-        apply_model_environment_values(&mut openai, None, Some("legacy"));
+        apply_model_environment_values(&mut openai, None, Some("legacy"), Some("must-not-cross"));
         assert_eq!(openai.model, "legacy");
         assert_eq!(openai.source("model"), "OPENAI_MODEL");
 
+        let mut deepseek = Config::defaults(paths());
+        deepseek.provider = ProviderId::Deepseek;
+        apply_model_environment_values(&mut deepseek, None, Some("must-not-cross"), Some("flash"));
+        assert_eq!(deepseek.model, "flash");
+        assert_eq!(deepseek.source("model"), "DEEPSEEK_MODEL");
+
         let mut cerebras = Config::defaults(paths());
         cerebras.provider = ProviderId::Cerebras;
-        apply_model_environment_values(&mut cerebras, None, Some("must-not-cross"));
+        apply_model_environment_values(&mut cerebras, None, Some("must-not-cross"), Some("flash"));
         assert_eq!(cerebras.model, "gpt-5.6-terra");
-        apply_model_environment_values(&mut cerebras, Some("explicit-env"), Some("legacy"));
+        apply_model_environment_values(
+            &mut cerebras,
+            Some("explicit-env"),
+            Some("legacy"),
+            Some("flash"),
+        );
         assert_eq!(cerebras.model, "explicit-env");
         assert_eq!(cerebras.source("model"), "UHM_MODEL");
     }
