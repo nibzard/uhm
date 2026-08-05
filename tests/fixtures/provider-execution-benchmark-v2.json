@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "prompt_version": 12,
+  "prompt_version": 13,
   "action_schema_version": 4,
   "worker_contract_version": 2,
   "reference_bundle": "provider-execution-reference-actions-v4.json",

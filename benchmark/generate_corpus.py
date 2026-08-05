@@ -281,7 +281,7 @@ for index,t in enumerate(tasks):
     t["reference_actions"]=[reference] if not executable else [reference,alternate]
     t["negative_actions"]=[t.pop("negative_action")]
     t["oracle_disposition"]="Generated reference and targeted negative were verified offline; judge disagreements require a separate recorded audit disposition."
-document={"version":2,"prompt_version":12,"action_schema_version":4,"worker_contract_version":2,"reference_bundle":"provider-execution-reference-actions-v4.json","task_count":120,"family_count":len({t['family_id'] for t in tasks}),"route_counts":counts,"tasks":tasks}
+document={"version":2,"prompt_version":13,"action_schema_version":4,"worker_contract_version":2,"reference_bundle":"provider-execution-reference-actions-v4.json","task_count":120,"family_count":len({t['family_id'] for t in tasks}),"route_counts":counts,"tasks":tasks}
 OUT.parent.mkdir(parents=True,exist_ok=True)
 OUT.write_text(json.dumps(document,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
 REFERENCE_OUT.write_text(json.dumps({"version":4,"action_schema_version":4,"program_contract":"uhm_helper_v1","tasks":[{"id":t["id"],"reference_actions":t["reference_actions"],"negative_actions":t["negative_actions"]} for t in tasks]},indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
