@@ -526,6 +526,7 @@ pub fn load(
         config.sources.insert("provider", "--provider");
     }
     apply_model_environment(&mut config)?;
+    apply_provider_default_model(&mut config);
     if let Some(model) = model_override {
         config.model = model.to_string();
         config.sources.insert("model", "--model");
@@ -576,6 +577,18 @@ fn apply_model_environment_values(
     if let Some((value, source)) = provider_alias {
         config.model = value.into();
         config.sources.insert("model", source);
+    }
+}
+
+/// Apply the target provider's own default model when nothing else chose one.
+/// `Config::defaults` seeds the OpenAI model for every provider; without this
+/// step `--provider deepseek` (or `cerebras`) with no `--model`, config file
+/// model, or `UHM_MODEL`/provider alias would send that OpenAI default to a
+/// service that does not serve it. A non-`"default"` model source means an
+/// operator already chose a model, so it is left untouched.
+fn apply_provider_default_model(config: &mut Config) {
+    if config.sources.get("model").copied() == Some("default") {
+        config.model = config.provider.default_model().into();
     }
 }
 
@@ -833,5 +846,45 @@ mod tests {
         );
         assert_eq!(cerebras.model, "explicit-env");
         assert_eq!(cerebras.source("model"), "UHM_MODEL");
+    }
+
+    #[test]
+    fn provider_default_model_applies_when_no_model_is_chosen() {
+        // Without an explicit model, each provider gets its own default rather
+        // than the OpenAI default that Config::defaults seeds.
+        let mut deepseek = Config::defaults(paths());
+        deepseek.provider = ProviderId::Deepseek;
+        apply_provider_default_model(&mut deepseek);
+        assert_eq!(deepseek.model, "deepseek-v4-flash");
+        assert_eq!(deepseek.source("model"), "default");
+
+        let mut cerebras = Config::defaults(paths());
+        cerebras.provider = ProviderId::Cerebras;
+        apply_provider_default_model(&mut cerebras);
+        assert_eq!(cerebras.model, "gpt-oss-120b");
+
+        // The default provider keeps its existing default model.
+        let mut openai = Config::defaults(paths());
+        apply_provider_default_model(&mut openai);
+        assert_eq!(openai.model, "gpt-5.6-terra");
+    }
+
+    #[test]
+    fn provider_default_model_does_not_override_an_explicit_choice() {
+        // Any non-"default" model source means an operator chose a model, so the
+        // provider default never clobbers it.
+        let mut from_env = Config::defaults(paths());
+        from_env.provider = ProviderId::Deepseek;
+        from_env.model = "explicit".into();
+        from_env.sources.insert("model", "DEEPSEEK_MODEL");
+        apply_provider_default_model(&mut from_env);
+        assert_eq!(from_env.model, "explicit");
+
+        let mut from_file = Config::defaults(paths());
+        from_file.provider = ProviderId::Deepseek;
+        from_file.model = "from-file".into();
+        from_file.sources.insert("model", "config.yaml");
+        apply_provider_default_model(&mut from_file);
+        assert_eq!(from_file.model, "from-file");
     }
 }

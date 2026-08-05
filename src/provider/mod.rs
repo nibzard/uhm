@@ -43,6 +43,18 @@ impl ProviderId {
             Self::Deepseek => &deepseek::DeepSeekAdapter,
         }
     }
+
+    /// Bare model id sent when no model is chosen by config, environment alias,
+    /// or `--model`. Provider-specific so `--provider <id>` alone selects a model
+    /// the target service actually serves instead of carrying over the OpenAI
+    /// default that `Config::defaults` seeds.
+    pub const fn default_model(self) -> &'static str {
+        match self {
+            Self::Openai => "gpt-5.6-terra",
+            Self::Cerebras => "gpt-oss-120b",
+            Self::Deepseek => "deepseek-v4-flash",
+        }
+    }
 }
 
 impl fmt::Display for ProviderId {

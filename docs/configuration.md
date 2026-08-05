@@ -27,7 +27,7 @@ For every key, the winner is the highest step on this list:
 | Key | Default | Notes |
 |---|---|---|
 | `provider` | `openai` | `openai\|cerebras\|deepseek`; fixed built-in endpoints only |
-| `model` | `gpt-5.6-terra` | bare provider-specific ID; does not change provider |
+| `model` | provider default (OpenAI: `gpt-5.6-terra`, Cerebras: `gpt-oss-120b`, DeepSeek: `deepseek-v4-flash`) | bare provider-specific ID; does not change provider; when unset, the selected provider's default is used |
 | `selection` | fixed, no alternate/fallback | see below |
 | `max_completion_tokens` | `8192` | response token budget |
 | `reasoning_effort` | `low` | `none\|minimal\|low\|medium\|high\|xhigh` |
