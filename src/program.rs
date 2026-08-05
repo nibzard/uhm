@@ -1004,10 +1004,11 @@ mod tests {
         std::env::set_var("UHM_PROGRAM_TEST_SECRET", "sentinel");
         std::env::set_var("OPENAI_API_KEY", "provider-sentinel");
         std::env::set_var("CEREBRAS_API_KEY", "cerebras-provider-sentinel");
+        std::env::set_var("DEEPSEEK_API_KEY", "deepseek-provider-sentinel");
         let cwd = std::env::current_dir().unwrap();
         let result = execute(Request {
             proposal: &proposal(
-                "import os\nprint(os.environ.get('UHM_PROGRAM_TEST_SECRET', 'stripped'))\nprint(os.environ.get('OPENAI_API_KEY', 'stripped'))\nprint(os.environ.get('CEREBRAS_API_KEY', 'stripped'))",
+                "import os\nprint(os.environ.get('UHM_PROGRAM_TEST_SECRET', 'stripped'))\nprint(os.environ.get('OPENAI_API_KEY', 'stripped'))\nprint(os.environ.get('CEREBRAS_API_KEY', 'stripped'))\nprint(os.environ.get('DEEPSEEK_API_KEY', 'stripped'))",
             ),
             python: &inventory,
             stdin: None,
@@ -1021,8 +1022,9 @@ mod tests {
         std::env::remove_var("UHM_PROGRAM_TEST_SECRET");
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("CEREBRAS_API_KEY");
+        std::env::remove_var("DEEPSEEK_API_KEY");
         assert_eq!(result.code, 0);
-        assert_eq!(result.stdout, b"stripped\nstripped\nstripped\n");
+        assert_eq!(result.stdout, b"stripped\nstripped\nstripped\nstripped\n");
     }
 
     /// Version managers such as pyenv and asdf put a shell script on `PATH`

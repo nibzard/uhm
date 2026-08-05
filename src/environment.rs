@@ -29,6 +29,7 @@ pub const COMMON_SECRET_NAMES: &[&str] = &[
 pub fn apply(command: &mut Command, deny_common: bool, additional: &[String]) {
     command.env_remove("OPENAI_API_KEY");
     command.env_remove("CEREBRAS_API_KEY");
+    command.env_remove("DEEPSEEK_API_KEY");
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy();
         if name.starts_with("UHM_PRIVATE_") || name.starts_with("UHM_CONTROL_") {

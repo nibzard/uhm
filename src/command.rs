@@ -1815,7 +1815,7 @@ pub fn handle(
 }
 
 fn referenced_provider_credential(command: &str) -> Option<&'static str> {
-    ["OPENAI_API_KEY", "CEREBRAS_API_KEY"]
+    ["OPENAI_API_KEY", "CEREBRAS_API_KEY", "DEEPSEEK_API_KEY"]
         .into_iter()
         .find(|variable| command.contains(variable))
 }
@@ -2634,6 +2634,10 @@ mod tests {
         assert_eq!(
             referenced_provider_credential("print -r -- \"$OPENAI_API_KEY\""),
             Some("OPENAI_API_KEY")
+        );
+        assert_eq!(
+            referenced_provider_credential("print -r -- \"$DEEPSEEK_API_KEY\""),
+            Some("DEEPSEEK_API_KEY")
         );
         assert_eq!(referenced_provider_credential("printf ordinary"), None);
     }

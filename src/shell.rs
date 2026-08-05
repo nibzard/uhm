@@ -234,9 +234,10 @@ mod tests {
     fn removes_all_provider_secrets() {
         std::env::set_var("OPENAI_API_KEY", "sentinel");
         std::env::set_var("CEREBRAS_API_KEY", "cerebras-sentinel");
+        std::env::set_var("DEEPSEEK_API_KEY", "deepseek-sentinel");
         let r = execute(Request {
             shell: "/bin/sh",
-            command: "test -z \"$OPENAI_API_KEY\" && test -z \"$CEREBRAS_API_KEY\"",
+            command: "test -z \"$OPENAI_API_KEY\" && test -z \"$CEREBRAS_API_KEY\" && test -z \"$DEEPSEEK_API_KEY\"",
             stdin: None,
             timeout: Duration::from_secs(2),
             diagnostic_bytes: 32,
@@ -248,6 +249,7 @@ mod tests {
         assert_eq!(r.code, 0);
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("CEREBRAS_API_KEY");
+        std::env::remove_var("DEEPSEEK_API_KEY");
     }
 
     #[test]
