@@ -1,0 +1,50 @@
+name: Dependencies
+
+# Decoupled supply-chain scan. Intentionally NOT referenced by ci.yml or
+# release.yml: release.yml re-runs ci.yml as its quality gate, so anything in
+# ci.yml gates the release. Keeping cargo-deny here means a live advisory-db
+# fetch or a flagged advisory (e.g. the ignored RUSTSEC-2025-0134) can never
+# block a release. Promote this to a deliberate release gate — NOT a ci.yml
+# gate — once rustls-pemfile is migrated and the advisory feed is trusted.
+
+on:
+  push:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - deny.toml
+      - .github/workflows/deps.yml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - deny.toml
+      - .github/workflows/deps.yml
+  schedule:
+    # Weekly, off the :00/:30 marks.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo deny check
+    runs-on: ubuntu-latest
+    # Non-gating for the first cycle: surface advisories/license/ban/source
+    # findings without failing PRs or releases. Drop once findings are triaged.
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install cargo-deny
+        # taiki-e/install-action@v2.85.9
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Check advisories, licenses, bans, and sources
+        run: cargo deny check
