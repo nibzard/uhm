@@ -13,7 +13,10 @@ A request contains:
 - your natural-language intent;
 - explicitly piped UTF-8 input, when present;
 - the selected bounded context object;
-- fixed instructions and strict tool schemas needed to return a typed action.
+- fixed instructions and strict tool schemas needed to return a typed action;
+- one previous shell-history entry, only under the opt-in described below.
+
+`shell_context.last_history_entry` is off by default. When you enable it and install the shell wrapper, the wrapper captures the single command line preceding the request and `uhm` prints that exact line, names the receiving provider, and requires affirmative terminal approval before sending it. A shell history line can contain credentials you typed earlier, so review the printed line rather than approving by habit. It is never captured without the wrapper, never sent without per-request approval, and never sent when a terminal is unavailable.
 
 With `--local-input`, the piped body is omitted and replaced by presence, byte count, UTF-8 status, and an optional user-declared format label. The generated local program can read the private spooled bytes. The flag requires piped input.
 
@@ -53,12 +56,13 @@ An interaction summary has exactly these fields:
   "latency": "1s_2s",
   "cache": "miss",
   "parent_action": "not_applicable",
+  "expansion_outcome": "none",
   "interactive": true,
-  "notice_revision": 4
+  "notice_revision": 5
 }
 ```
 
-Every string after `release` is selected from a short server-maintained enum. `parent_action` is only `not_applicable`, `unknown`, `applied`, or `failed`; an integrated action remains `unknown` until the wrapper acknowledges it. `release` is major/minor only. `interactive` is a boolean. `uhm telemetry preview` prints the candidate schema without sending it.
+Every string after `release` is selected from a short server-maintained enum. `parent_action` is only `not_applicable`, `unknown`, `applied`, or `failed`; an integrated action remains `unknown` until the wrapper acknowledges it. `expansion_outcome` is only `none`, `probed`, `probe_empty`, or `invalid_probe`, and reports whether a consented tool-help probe produced usable text — never which tool. `release` is major/minor only. `interactive` is a boolean. `uhm telemetry preview` prints the candidate schema without sending it.
 
 The Worker rejects unknown keys, unknown enum values, unsupported versions, non-JSON requests, and bodies of 2 KiB or more. It writes accepted categories to Workers Analytics Engine. Raw Analytics Engine data is retained for three months. No raw event is copied to a durable identity store.
 
