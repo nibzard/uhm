@@ -63,7 +63,7 @@ name = "uhm"
 path = "src/main.rs"
 
 [dependencies]
-blake3 = "=1.5.5"
+blake3 = "=1.8.5"
 libc = "0.2"
 signal-hook = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
