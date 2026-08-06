@@ -135,7 +135,8 @@ fn classify_segment(seg: &str) -> (Tier, Vec<String>) {
     let mut reasons = Vec::new();
     let lower = seg.to_lowercase();
     let words: Vec<&str> = seg.split_whitespace().collect();
-    let cmd_word = normalized_command(first_command_word(&words));
+    let normalized = normalized_command(first_command_word(&words));
+    let cmd_word = normalized.as_str();
     let mut tier = Tier::None;
 
     if cmd_word == "mkdir" {
@@ -353,8 +354,14 @@ fn classify_segment(seg: &str) -> (Tier, Vec<String>) {
 }
 
 /// Skip env assignments (FOO=bar) and prefixes (sudo/nohup/time/exec/env/xargs).
+///
+/// Once a wrapper has been seen, its own options are skipped too: `xargs -0 rm`
+/// runs `rm`, so stopping at `-0` would skip every `rm` rule. Skipping extra
+/// tokens only ever looks further for the real command word, so an unfamiliar
+/// wrapper option cannot hide a command behind it.
 fn first_command_word<'a>(words: &[&'a str]) -> &'a str {
     let mut i = 0;
+    let mut saw_wrapper = false;
     while i < words.len() {
         let w = words[i];
         if w.contains('=') && !w.starts_with('-') {
@@ -363,8 +370,29 @@ fn first_command_word<'a>(words: &[&'a str]) -> &'a str {
         }
         if matches!(
             w,
-            "sudo" | "doas" | "nohup" | "time" | "exec" | "env" | "xargs" | "command"
+            "sudo"
+                | "doas"
+                | "nohup"
+                | "time"
+                | "exec"
+                | "env"
+                | "xargs"
+                | "command"
+                | "timeout"
+                | "nice"
+                | "ionice"
+                | "setsid"
+                | "stdbuf"
+                | "watch"
+                | "busybox"
         ) {
+            saw_wrapper = true;
+            i += 1;
+            continue;
+        }
+        // A wrapper's flags and its numeric operands (`timeout 5`, `nice -n 10`)
+        // precede the command it runs.
+        if saw_wrapper && (w.starts_with('-') || w.starts_with(|c: char| c.is_ascii_digit())) {
             i += 1;
             continue;
         }
@@ -373,11 +401,16 @@ fn first_command_word<'a>(words: &[&'a str]) -> &'a str {
     ""
 }
 
-fn normalized_command(word: &str) -> &str {
-    word.trim_start_matches('\\')
+/// Reduce a command word to the binary it names. Quoting a command word does
+/// not change what runs, so `"rm"`, `'rm'`, `\rm`, and `/bin/rm` are all `rm`.
+fn normalized_command(word: &str) -> String {
+    let unquoted: String = word.chars().filter(|c| *c != '\'' && *c != '"').collect();
+    unquoted
+        .trim_start_matches('\\')
         .rsplit('/')
         .next()
-        .unwrap_or(word)
+        .unwrap_or(&unquoted)
+        .to_owned()
 }
 
 /// Output redirects are destructive for gating purposes because `>` truncates
@@ -506,7 +539,10 @@ fn split_segments(cmd: &str) -> Vec<String> {
                 dq = !dq;
                 cur.push(c);
             }
-            '\\' => {
+            // A backslash is literal inside single quotes, matching POSIX
+            // shells. Treating it as an escape there swallows the closing
+            // quote and merges every later segment into this one.
+            '\\' if !sq => {
                 cur.push(c);
                 if i + 1 < chars.len() {
                     cur.push(chars[i + 1]);
@@ -639,5 +675,56 @@ mod tests {
         assert!(classify("git push origin main")
             .effects
             .contains(&Effect::RemoteMutation));
+    }
+
+    #[test]
+    fn wrappers_with_their_own_flags_do_not_hide_the_command() {
+        // A flag belonging to the wrapper must not be mistaken for the command
+        // word, or every command-specific rule is skipped.
+        for cmd in [
+            "find . -name '*.log' | xargs -0 rm",
+            "xargs -n1 rm",
+            "xargs -I{} rm {}",
+            "env -i rm important.txt",
+            "command -p rm file.txt",
+        ] {
+            assert!(
+                classify(cmd).tier.severity() >= Tier::Destructive.severity(),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheduling_wrappers_are_transparent() {
+        for cmd in [
+            "timeout 5 rm important.txt",
+            "nice rm important.txt",
+            "setsid rm important.txt",
+            "stdbuf -o0 rm important.txt",
+        ] {
+            assert!(
+                classify(cmd).tier.severity() >= Tier::Destructive.severity(),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_command_words_are_classified() {
+        // `"rm"` and `'rm'` run rm just as `\rm` does.
+        for cmd in ["\"rm\" -rf /tmp/x", "'rm' -rf ~/work"] {
+            assert_eq!(classify(cmd).tier, Tier::Irreversible, "{cmd}");
+        }
+        assert!(classify("\"git\" push --force origin main")
+            .effects
+            .contains(&Effect::RemoteMutation));
+    }
+
+    #[test]
+    fn trailing_backslash_in_single_quotes_does_not_swallow_the_separator() {
+        // POSIX shells do not honour `\` as an escape inside single quotes, so
+        // the `;` still separates segments and `rm` must still be classified.
+        assert_eq!(classify("echo 'a\\' ; rm file.txt").tier, Tier::Destructive);
     }
 }
