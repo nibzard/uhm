@@ -52,7 +52,13 @@ pub fn truncate_help(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.trim_end().to_owned();
     }
-    let clipped = &text[..limit];
+    // The caller's limit is a byte budget, not a char boundary, and help output
+    // routinely contains multi-byte characters.
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let clipped = &text[..end];
     match clipped.rfind('\n') {
         Some(index) => clipped[..index].trim_end().to_owned(),
         None => clipped.trim_end().to_owned(),
@@ -525,6 +531,37 @@ mod tests {
         let text = "x".repeat(100);
         let clipped = truncate_help(&text, 10);
         assert_eq!(clipped.len(), 10);
+    }
+
+    #[test]
+    fn help_truncation_never_splits_a_multi_byte_character() {
+        // Modern help output routinely contains arrows and box drawing, and
+        // assemble_help's remaining budget is arithmetic, not a char boundary.
+        let text = format!(
+            "{}\u{2192} run the thing\n{}",
+            "a".repeat(10),
+            "b".repeat(200)
+        );
+        for limit in 1..40 {
+            let clipped = truncate_help(&text, limit);
+            assert!(clipped.len() <= limit, "limit {limit}");
+        }
+    }
+
+    #[test]
+    fn assembled_help_survives_a_multi_byte_budget_boundary() {
+        let subs = vec![
+            SubcommandHelp {
+                subcommand: "alfa".into(),
+                help: format!("usage: tool alfa\n{}", "a".repeat(MAX_HELP_BYTES)),
+            },
+            SubcommandHelp {
+                subcommand: "bravo".into(),
+                help: format!("{}\u{2192}\u{2192}\u{2192} bravo", "b".repeat(64)),
+            },
+        ];
+        let out = assemble_help("usage: tool\n", &subs, "run alfa then bravo");
+        assert!(!out.is_empty());
     }
 
     #[test]
