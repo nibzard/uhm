@@ -269,10 +269,10 @@ impl ProposedAction {
             if value.len() > max {
                 return Err(format!("{} exceeds {} bytes", label, max));
             }
-            if value
-                .chars()
-                .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
-            {
+            if value.chars().any(|c| {
+                (c.is_control() && !matches!(c, '\n' | '\t'))
+                    || crate::render::ansi::is_format_control(c)
+            }) {
                 return Err(format!("{} contains unsafe control bytes", label));
             }
             Ok(())
@@ -412,6 +412,38 @@ mod tests {
             stdin_mode: StdinMode::None,
         };
         assert!(action.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_direction_and_invisible_formatting_characters() {
+        // A bidi override can make the review card render a destructive operand
+        // as a harmless one while the executed bytes are unchanged.
+        for raw in [
+            "rm -rf ~/\u{202e}txt.gnp",
+            "rm -rf ~/work\u{2066}",
+            "rm\u{200b} -rf /tmp/x",
+            "rm -rf /tmp/\u{feff}x",
+        ] {
+            let action = ProposedAction::Shell {
+                command: raw.into(),
+                metadata: ProposalMetadata {
+                    summary: "remove".into(),
+                    ..ProposalMetadata::default()
+                },
+                stdin_mode: StdinMode::None,
+            };
+            assert!(action.validate().is_err(), "{raw:?}");
+        }
+        // Ordinary non-ASCII operands stay usable.
+        let action = ProposedAction::Shell {
+            command: "grep caf\u{e9} notes.txt".into(),
+            metadata: ProposalMetadata {
+                summary: "search for caf\u{e9}".into(),
+                ..ProposalMetadata::default()
+            },
+            stdin_mode: StdinMode::None,
+        };
+        assert!(action.validate().is_ok());
     }
 
     #[test]

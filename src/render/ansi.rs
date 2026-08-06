@@ -58,6 +58,27 @@ pub fn color_enabled() -> bool {
     std::io::stderr().is_terminal()
 }
 
+/// Unicode format characters (category `Cf`) and the direction overrides in
+/// particular. `char::is_control` covers only category `Cc`, so these otherwise
+/// reach the terminal verbatim: a right-to-left override reverses how an
+/// operand renders without changing the bytes that run.
+pub fn is_format_control(c: char) -> bool {
+    matches!(c,
+        '\u{00ad}'
+        | '\u{061c}'
+        | '\u{180e}'
+        | '\u{200b}'..='\u{200f}'
+        | '\u{202a}'..='\u{202e}'
+        | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{206f}'
+        | '\u{feff}'
+        | '\u{fff9}'..='\u{fffb}'
+        | '\u{110bd}'
+        | '\u{110cd}'
+        | '\u{1d173}'..='\u{1d17a}'
+        | '\u{e0000}'..='\u{e007f}')
+}
+
 /// Render untrusted model/server text without allowing it to emit terminal
 /// control sequences or visually rewrite a confirmation prompt.
 pub fn sanitize_untrusted(s: &str) -> String {
@@ -67,7 +88,7 @@ pub fn sanitize_untrusted(s: &str) -> String {
             '\n' => out.push('\n'),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
-            c if c.is_control() => {
+            c if c.is_control() || is_format_control(c) => {
                 use std::fmt::Write as _;
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
             }
@@ -155,5 +176,26 @@ mod tests {
             "ok\\u{1b}]52;c;bad\\u{7}\\rno"
         );
         assert_eq!(sanitize_untrusted_inline("first\nsecond"), "first\\nsecond");
+    }
+
+    #[test]
+    fn direction_and_invisible_formatting_are_escaped() {
+        // `char::is_control` is category Cc only, so these reach the review card
+        // unless they are handled explicitly. A bidi override can reverse the
+        // rendered operand of a command the user is about to approve.
+        for (raw, escaped) in [
+            ("a\u{202e}b", "a\\u{202e}b"),
+            ("a\u{2066}b", "a\\u{2066}b"),
+            ("a\u{200b}b", "a\\u{200b}b"),
+            ("a\u{00ad}b", "a\\u{ad}b"),
+            ("a\u{feff}b", "a\\u{feff}b"),
+        ] {
+            assert_eq!(sanitize_untrusted(raw), escaped, "{raw:?}");
+        }
+        // Ordinary non-ASCII text is untouched.
+        assert_eq!(
+            sanitize_untrusted("caf\u{e9} \u{2192} ok"),
+            "caf\u{e9} \u{2192} ok"
+        );
     }
 }
