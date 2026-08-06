@@ -862,8 +862,7 @@ fn fabricate_recovery_manifest(
     home: &Path,
     run: &str,
     state: &str,
-    created_at: u64,
-    updated_at: u64,
+    selection_sequence: u64,
     with_snapshot: bool,
 ) {
     use std::os::unix::fs::PermissionsExt as _;
@@ -881,14 +880,21 @@ fn fabricate_recovery_manifest(
     } else {
         serde_json::Value::Null
     };
+    let captured_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let manifest = serde_json::json!({
         "schema_version": 1,
         "run_id": run,
-        "created_at": created_at,
-        "updated_at": updated_at,
+        "created_at": captured_at,
+        "updated_at": captured_at,
         "state": state,
         "pinned": false,
         "forced_restore": false,
+        "selection_sequence": selection_sequence,
+        "expires_at": captured_at + 14 * 86_400,
+        "retirement_acknowledged": false,
         "preparation_lease_until": 0,
         "items": [{
             "id": "output-000",
@@ -956,8 +962,8 @@ fn undo_last_skips_a_newer_restored_manifest_and_names_the_choice() {
     assert!(configured(temp.path(), "", &["recovery", "on"])
         .status
         .success());
-    fabricate_recovery_manifest(temp.path(), "run-restorable1", "available", 100, 100, false);
-    fabricate_recovery_manifest(temp.path(), "run-shadowing99", "restored", 90, 200, false);
+    fabricate_recovery_manifest(temp.path(), "run-restorable1", "available", 100, false);
+    fabricate_recovery_manifest(temp.path(), "run-shadowing99", "restored", 200, false);
     let output = configured(temp.path(), "", &["undo", "last"]);
     assert_eq!(output.status.code(), Some(11));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -972,7 +978,7 @@ fn non_interactive_undo_names_the_verified_and_forced_paths() {
     assert!(configured(temp.path(), "", &["recovery", "on"])
         .status
         .success());
-    fabricate_recovery_manifest(temp.path(), "run-restorable1", "available", 100, 100, false);
+    fabricate_recovery_manifest(temp.path(), "run-restorable1", "available", 100, false);
     let output = configured(temp.path(), "", &["undo", "last"]);
     assert_eq!(output.status.code(), Some(11));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1004,7 +1010,7 @@ fn prune_reports_retained_in_cap_snapshots_and_all_removes_them() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    fabricate_recovery_manifest(temp.path(), "run-retained01", "available", now, now, true);
+    fabricate_recovery_manifest(temp.path(), "run-retained01", "available", now, true);
     let plain = configured(temp.path(), "", &["recovery", "prune"]);
     assert!(plain.status.success());
     let rendered = String::from_utf8_lossy(&plain.stdout);
@@ -1025,10 +1031,60 @@ fn prune_reports_retained_in_cap_snapshots_and_all_removes_them() {
     assert_eq!(value["snapshots"], 1, "dry run must remove nothing");
     let all = configured(temp.path(), "", &["recovery", "prune", "--all"]);
     assert!(all.status.success());
-    assert!(String::from_utf8_lossy(&all.stdout).contains("pruned 1 snapshots"));
+    let rendered = String::from_utf8_lossy(&all.stdout);
+    assert!(rendered.contains("pruned 1 snapshots"), "{rendered}");
+    assert!(rendered.contains("1 manifests finalized"), "{rendered}");
+    assert!(!temp
+        .path()
+        .join("data/uhm/runs/run-retained01/recovery.json")
+        .exists());
     let status = configured(temp.path(), "", &["--json", "recovery", "status"]);
     let value: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(value["snapshots"], 0);
+    assert_eq!(value["manifests"], 0);
+}
+
+#[test]
+fn history_disabled_prune_leaves_expiry_pending_without_acknowledgment() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = "run-no-history01";
+    fabricate_recovery_manifest(temp.path(), run, "available", 1, true);
+    let yaml = "history:\n  enabled: false\n";
+
+    let first = configured(temp.path(), yaml, &["recovery", "prune", "--all"]);
+    assert!(first.status.success());
+    let stderr = String::from_utf8_lossy(&first.stderr);
+    assert!(stderr.contains("remains pending"), "{stderr}");
+    assert!(
+        stderr.contains("no durable RecoveryExpired event"),
+        "{stderr}"
+    );
+
+    let manifest_path = temp
+        .path()
+        .join("data/uhm/runs")
+        .join(run)
+        .join("recovery.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["state"], "expired");
+    assert_eq!(manifest["retirement_acknowledged"], false);
+    assert!(!temp
+        .path()
+        .join("data/uhm/runs")
+        .join(run)
+        .join("snapshots/output-000.preimage")
+        .exists());
+    assert!(!temp.path().join("data/uhm/history.v1.jsonl").exists());
+
+    // A later explicit management pass is still not authority to finalize
+    // while event recording remains a configured no-op.
+    let retry = configured(temp.path(), yaml, &["recovery", "prune", "--all"]);
+    assert!(retry.status.success());
+    assert!(String::from_utf8_lossy(&retry.stderr).contains("remains pending"));
+    let pending: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(pending["retirement_acknowledged"], false);
 }
 
 #[test]

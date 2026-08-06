@@ -15,6 +15,7 @@ pub mod contract;
 mod dirs;
 mod doctor;
 mod environment;
+mod execution_signal;
 mod first_run;
 mod history;
 mod http;

@@ -52,6 +52,6 @@
     - [History](local-history.md)
     - [Recovery](recovery.md)
     - [Model selection](model-selection.md)
-  - [Releases](releases/v0.6.2.md)
+  - [Releases](releases/v0.6.3.md)
   - [Demo ↗](https://nibzard.github.io/uhm/demo/)
   - [Source ↗](https://github.com/nibzard/uhm)

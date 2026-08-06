@@ -81,14 +81,14 @@ uhm restore <run-id|last> --force
 ### recovery — snapshot management
 
 ```
-uhm recovery on|off [--prune]|status [<run-id|last>]|prune [--dry-run]|pin|unpin <run-id|last>|resume <run-id>
+uhm recovery on|off [--prune]|status [<run-id|last>]|prune [--dry-run] [--all]|pin|unpin <run-id|last>|resume <run-id>
 ```
 
 - **`on`** — enable recovery snapshot capture (separately consented; writes the marker).
 - **`off [--prune]`** — stop new capture. With `--prune`, validated owned snapshots are removed now; otherwise they remain until expiry.
 - **`status [<run-id|last>]`** — report enabled state, manifest/snapshot counts, bytes, pinned count, and limits.
-- **`prune [--dry-run]`** — remove validated owned snapshots (pinned retained); `--dry-run` previews.
-- **`pin|unpin <run-id|last>`** — pin or unpin a run's snapshots so prune and expiry skip them.
+- **`prune [--dry-run] [--all]`** — enforce expiry and byte limits; `--dry-run` previews and `--all` also removes current inactive, unpinned evidence.
+- **`pin|unpin <run-id|last>`** — pin evidence before its deadline so ordinary prune and expiry skip it; unpinning does not reset the deadline.
 - **`resume <run-id>`** — resume a partial managed commit after an interruption (requires a terminal to review).
 
 ### history — local decision journal

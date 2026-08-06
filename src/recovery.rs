@@ -69,7 +69,7 @@ pub enum ItemState {
     Corrupt,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryItem {
     pub id: String,
@@ -90,7 +90,7 @@ pub struct RecoveryItem {
     pub state: ItemState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryManifest {
     pub schema_version: u32,
@@ -100,6 +100,25 @@ pub struct RecoveryManifest {
     pub state: RecoveryState,
     pub pinned: bool,
     pub forced_restore: bool,
+    /// Immutable ordering key allocated under the recovery lock. Legacy
+    /// manifests use zero and fall back to `created_at` with tie rejection.
+    #[serde(default)]
+    pub selection_sequence: u64,
+    /// Logical evidence deadline. Pinning suppresses enforcement but does not
+    /// move this deadline. Legacy manifests derive it from `created_at`.
+    #[serde(default)]
+    pub expires_at: u64,
+    /// Terminal cleanup is durably authorized. Management prune sets this only
+    /// after `RecoveryExpired`; automatic retention needs no event, and a
+    /// completed restore uses its already-durable completion event.
+    #[serde(default)]
+    pub retirement_acknowledged: bool,
+    /// A management prune started this retirement and therefore requires one
+    /// durable `RecoveryExpired` event before terminal finalization. This is
+    /// persisted while pruning is partial so automatic retention cannot later
+    /// downgrade the required crash ordering.
+    #[serde(default)]
+    pub retirement_event_required: bool,
     /// Unix deadline after which a `preparing` capture can no longer belong to
     /// a live bounded program execution. Zero on legacy manifests is expired.
     #[serde(default)]
@@ -180,6 +199,10 @@ pub struct Coordinator {
     run_dir: PathBuf,
     manifest: RecoveryManifest,
     prepared: Vec<PreparedItem>,
+    // A live coordinator owns the recovery inventory until commit or Drop.
+    // The wall-clock lease is only stale-process recovery; it must never let a
+    // concurrent prune retire evidence that an in-process coordinator owns.
+    ownership_guard: Option<File>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +261,8 @@ pub struct PruneReport {
     /// Manifests with removable snapshots that a plain prune kept because they
     /// are inside the age and total-byte caps; `--all` removes them.
     pub retained_within_limits: usize,
+    /// Terminal recovery manifests finalized during this pass.
+    pub manifests_removed: usize,
     pub expired_runs: Vec<String>,
 }
 
@@ -546,9 +571,29 @@ pub fn prepare_with_lease(
     // Enforce age before admitting another capture. The subsequent locked
     // usage calculation still fails closed if another process changes usage
     // between this prune and our lock acquisition.
-    prune(data, config, false, false)?;
-    let _guard = lock(data)?;
-    let retained_before = retained_snapshot_bytes(data, config.scan_limit)?;
+    prune_impl(data, config, false, false, false)?;
+    let ownership_guard = lock(data)?;
+    let manifests = scan_manifests(data, None)?;
+    // Pending expiry tombstones are intentionally not finalized here: the
+    // management path must first durably record (or deduplicate) their
+    // RecoveryExpired event. They no longer consume active capture capacity,
+    // but their sequence remains part of the allocation high-water mark.
+    let active_manifest_count = manifests
+        .iter()
+        .filter(|manifest| {
+            manifest.state != RecoveryState::Expired && !prune_intent_started(manifest)
+        })
+        .count();
+    if active_manifest_count >= config.scan_limit {
+        return Err("recovery manifest capacity is full; run `uhm recovery prune --all` before capturing another recovery run".into());
+    }
+    let retained_before = retained_snapshot_bytes(&manifests);
+    let selection_sequence = manifests
+        .iter()
+        .map(|manifest| manifest.selection_sequence)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     let run_path = run_dir(data, run);
     dirs::ensure_private_dir(&run_path)?;
     let snapshots = run_path.join(SNAPSHOTS);
@@ -565,6 +610,10 @@ pub fn prepare_with_lease(
         state: RecoveryState::Preparing,
         pinned: false,
         forced_restore: false,
+        selection_sequence,
+        expires_at: now.saturating_add(config.max_age_days.saturating_mul(86_400)),
+        retirement_acknowledged: false,
+        retirement_event_required: false,
         preparation_lease_until: now.saturating_add(lease_secs),
         items: Vec::new(),
         reason: None,
@@ -674,44 +723,96 @@ pub fn prepare_with_lease(
         manifest.updated_at = crate::history::now_secs();
         write_manifest(data, &manifest)?;
     }
+    // Snapshot capture can itself consume a material part of the caller's
+    // execution budget. Start the stale-process lease only after every
+    // preimage is durable and verified; the live lock above remains the
+    // authoritative ownership signal until this Coordinator is dropped.
+    let ready_at = crate::history::now_secs();
+    manifest.preparation_lease_until = ready_at.saturating_add(lease_secs);
+    manifest.updated_at = ready_at;
+    write_manifest(data, &manifest)?;
     Ok(Coordinator {
         data_dir: data.into(),
         run_dir: run_path,
         manifest,
         prepared,
+        ownership_guard: Some(ownership_guard),
     })
 }
 
-fn retained_snapshot_bytes(data: &Path, scan_limit: usize) -> Result<u64, String> {
+fn scan_manifests(
+    data: &Path,
+    manifest_limit: Option<usize>,
+) -> Result<Vec<RecoveryManifest>, String> {
     let entries = match std::fs::read_dir(runs_dir(data)) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(format!("scan retained recovery usage: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("scan recovery manifests: {error}")),
     };
-    let mut total = 0u64;
-    for (index, entry) in entries.enumerate() {
-        if index >= scan_limit {
-            return Err("cannot prove recovery capacity within recovery.scan_limit; prune retained runs or raise the scan bound".into());
+    let mut manifests = Vec::new();
+    let mut active_manifests = 0usize;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("scan recovery manifests: {error}"))?;
+        let entry_path = entry.path();
+        let path = entry_path.join(MANIFEST);
+        match path.symlink_metadata() {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!(
+                    "inspect recovery manifest {}: {error}",
+                    path.display()
+                ))
+            }
         }
-        let entry = entry.map_err(|error| format!("scan retained recovery usage: {error}"))?;
+        let entry_type = entry
+            .file_type()
+            .map_err(|error| format!("inspect recovery run directory: {error}"))?;
+        if !entry_type.is_dir() || entry_type.is_symlink() {
+            return Err("recovery manifest belongs to an unsafe run directory".into());
+        }
         let Some(run) = entry.file_name().to_str().map(str::to_owned) else {
-            return Err("cannot prove recovery capacity: non-UTF-8 run directory".into());
+            return Err("cannot prove recovery state: non-UTF-8 recovery run directory".into());
         };
-        let path = manifest_path(data, &run);
-        if !path.exists() {
-            continue;
-        }
         let manifest = read_manifest(data, &run)?;
-        total = total.saturating_add(
-            manifest
-                .items
-                .iter()
-                .filter(|item| item.snapshot_file.is_some() && item.state != ItemState::Expired)
-                .map(|item| item.preimage_bytes)
-                .sum::<u64>(),
-        );
+        if manifest.state != RecoveryState::Expired && !prune_intent_started(&manifest) {
+            if manifest_limit.is_some_and(|limit| active_manifests >= limit) {
+                return Err("recovery manifest count exceeds recovery.scan_limit; selection is unavailable until `uhm recovery prune --all` makes the inventory complete".into());
+            }
+            active_manifests += 1;
+        }
+        manifests.push(manifest);
     }
-    Ok(total)
+    Ok(manifests)
+}
+
+fn retained_snapshot_bytes(manifests: &[RecoveryManifest]) -> u64 {
+    manifests
+        .iter()
+        .flat_map(|manifest| &manifest.items)
+        .filter(|item| item.snapshot_file.is_some() && item.state != ItemState::Expired)
+        .map(|item| item.preimage_bytes)
+        .sum()
+}
+
+fn expiry_deadline(manifest: &RecoveryManifest, config: &RecoveryConfig) -> u64 {
+    let configured = manifest
+        .created_at
+        .saturating_add(config.max_age_days.saturating_mul(86_400));
+    if manifest.expires_at == 0 {
+        configured
+    } else {
+        manifest.expires_at.min(configured)
+    }
+}
+
+fn logically_expired(manifest: &RecoveryManifest, config: &RecoveryConfig, now: u64) -> bool {
+    !manifest.pinned
+        && matches!(
+            manifest.state,
+            RecoveryState::Available | RecoveryState::Conflicted
+        )
+        && now >= expiry_deadline(manifest, config)
 }
 
 impl Coordinator {
@@ -720,7 +821,13 @@ impl Coordinator {
     }
 
     pub fn commit(&mut self, max_total: u64) -> Result<Vec<PathBuf>, String> {
-        let _guard = lock(&self.data_dir)?;
+        // Move ownership into this call so every success and error path releases
+        // the cross-process lock only after commit has finished.
+        let _ownership_guard = self
+            .ownership_guard
+            .take()
+            .ok_or("recovery coordinator no longer owns its preparing capture")?;
+        self.revalidate_durable_capture()?;
         let mut total = 0u64;
         for (index, prepared) in self.prepared.iter().enumerate() {
             revalidate_parent(prepared)?;
@@ -800,6 +907,31 @@ impl Coordinator {
         Ok(committed)
     }
 
+    fn revalidate_durable_capture(&self) -> Result<(), String> {
+        let durable = read_manifest(&self.data_dir, &self.manifest.run_id)?;
+        if durable != self.manifest || durable.state != RecoveryState::Preparing {
+            return Err(
+                "durable recovery capture changed while its coordinator was live; commit refused"
+                    .into(),
+            );
+        }
+        for item in &durable.items {
+            if item.state != ItemState::SnapshotReady {
+                return Err(
+                    "durable recovery capture is not fully prepared; commit refused".into(),
+                );
+            }
+            if item.existed {
+                snapshot_path(&self.data_dir, &durable, item).map_err(|error| {
+                    format!("durable recovery preimage evidence is unavailable: {error}")
+                })?;
+            } else if item.snapshot_file.is_some() || item.preimage_hash.is_some() {
+                return Err("new-file recovery item has unexpected preimage evidence".into());
+            }
+        }
+        Ok(())
+    }
+
     fn fail(&mut self, state: RecoveryState, reason: &str) -> Result<(), String> {
         transition(&mut self.manifest, state)?;
         self.manifest.reason = Some(reason.into());
@@ -832,39 +964,41 @@ pub fn cleanup_incomplete_capture(data: &Path, run: &str) {
     let _ = std::fs::remove_file(directory.join(MANIFEST));
 }
 
-fn resolve_manifest_run(data: &Path, selected: &str, limit: usize) -> Result<String, String> {
+fn manifest_order(manifest: &RecoveryManifest) -> (u8, u64) {
+    if manifest.selection_sequence == 0 {
+        (0, manifest.created_at)
+    } else {
+        (1, manifest.selection_sequence)
+    }
+}
+
+fn newest_manifest(
+    mut manifests: Vec<RecoveryManifest>,
+) -> Result<Option<RecoveryManifest>, String> {
+    manifests.sort_by_key(manifest_order);
+    let newest = manifests.pop();
+    if let (Some(candidate), Some(previous)) = (&newest, manifests.last()) {
+        if manifest_order(candidate) == manifest_order(previous) {
+            return Err(format!(
+                "recovery ordering is ambiguous between runs {} and {}; specify a run ID",
+                previous.run_id, candidate.run_id
+            ));
+        }
+    }
+    Ok(newest)
+}
+
+fn resolve_manifest_run(
+    data: &Path,
+    selected: &str,
+    config: &RecoveryConfig,
+) -> Result<String, String> {
     if selected != "last" {
         validate_run_id(selected)?;
         return Ok(selected.into());
     }
-    let directory = runs_dir(data);
-    let mut newest: Option<(u64, String)> = None;
-    let entries = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err("no retained recovery manifest is available".into());
-        }
-        Err(error) => return Err(format!("scan recovery runs: {error}")),
-    };
-    for entry in entries.take(limit) {
-        let Ok(entry) = entry else { continue };
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if validate_run_id(&name).is_err() || !entry.path().join(MANIFEST).is_file() {
-            continue;
-        }
-        if let Ok(manifest) = read_manifest(data, &name) {
-            if newest
-                .as_ref()
-                .is_none_or(|(time, _)| manifest.updated_at > *time)
-            {
-                newest = Some((manifest.updated_at, name));
-            }
-        }
-    }
-    newest
-        .map(|(_, run)| run)
+    newest_manifest(scan_manifests(data, Some(config.scan_limit))?)?
+        .map(|manifest| manifest.run_id)
         .ok_or_else(|| "no retained recovery manifest is available".into())
 }
 
@@ -879,6 +1013,29 @@ fn restorable_state(state: RecoveryState) -> bool {
     )
 }
 
+/// An expired item under a non-terminal manifest is durable prune intent. It
+/// is written before unlinking the corresponding snapshot, so the whole
+/// manifest must stop participating in restore selection immediately.
+fn prune_intent_started(manifest: &RecoveryManifest) -> bool {
+    manifest.state != RecoveryState::Expired
+        && manifest
+            .items
+            .iter()
+            .any(|item| item.state == ItemState::Expired)
+}
+
+fn restorable_manifest(manifest: &RecoveryManifest) -> bool {
+    restorable_state(manifest.state) && !prune_intent_started(manifest)
+}
+
+fn selection_state(manifest: &RecoveryManifest) -> &'static str {
+    if prune_intent_started(manifest) {
+        "expiring"
+    } else {
+        manifest.state.as_str()
+    }
+}
+
 /// Resolves a run selection for undo and restore. The `last` alias picks the
 /// most recent manifest in a restorable state, so a newer restored or corrupt
 /// manifest never shadows the run the user can act on; when one was skipped,
@@ -886,64 +1043,67 @@ fn restorable_state(state: RecoveryState) -> bool {
 fn resolve_restorable_run(
     data: &Path,
     selected: &str,
-    limit: usize,
+    config: &RecoveryConfig,
 ) -> Result<(String, Option<String>), String> {
     if selected != "last" {
         validate_run_id(selected)?;
         return Ok((selected.into(), None));
     }
-    let directory = runs_dir(data);
-    let mut newest_any: Option<(u64, String, RecoveryState)> = None;
-    let mut newest_restorable: Option<(u64, String)> = None;
-    let entries = match std::fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err("no retained recovery manifest is available".into());
-        }
-        Err(error) => return Err(format!("scan recovery runs: {error}")),
-    };
-    for entry in entries.take(limit) {
-        let Ok(entry) = entry else { continue };
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if validate_run_id(&name).is_err() || !entry.path().join(MANIFEST).is_file() {
-            continue;
-        }
-        if let Ok(manifest) = read_manifest(data, &name) {
-            if newest_any
-                .as_ref()
-                .is_none_or(|(time, _, _)| manifest.updated_at > *time)
-            {
-                newest_any = Some((manifest.updated_at, name.clone(), manifest.state));
-            }
-            if restorable_state(manifest.state)
-                && newest_restorable
-                    .as_ref()
-                    .is_none_or(|(time, _)| manifest.updated_at > *time)
-            {
-                newest_restorable = Some((manifest.updated_at, name));
-            }
-        }
-    }
+    let now = crate::history::now_secs();
+    let manifests = scan_manifests(data, Some(config.scan_limit))?;
+    let newest_any = newest_manifest(manifests.clone())?;
+    let newest_restorable = newest_manifest(
+        manifests
+            .into_iter()
+            .filter(|manifest| {
+                restorable_manifest(manifest) && !logically_expired(manifest, config, now)
+            })
+            .collect(),
+    )?;
     match (newest_restorable, newest_any) {
-        (Some((_, run)), Some((_, newest_run, newest_state))) if newest_run != run => {
+        (Some(run), Some(newest)) if newest.run_id != run.run_id => {
             let note = format!(
-                "selected run {run}, the most recent restorable manifest; skipped newer run {newest_run} because its state is {}",
-                newest_state.as_str()
+                "selected run {}, the most recent restorable manifest; skipped newer run {} because its state is {}",
+                run.run_id,
+                newest.run_id,
+                if logically_expired(&newest, config, now) {
+                    "expired"
+                } else {
+                    selection_state(&newest)
+                }
             );
-            Ok((run, Some(note)))
+            Ok((run.run_id, Some(note)))
         }
-        (Some((_, run)), _) => Ok((run, None)),
-        (None, Some((_, run, state))) => Err(format!(
-            "no restorable recovery manifest is available; the most recent manifest {run} is {}",
-            state.as_str()
+        (Some(run), _) => Ok((run.run_id, None)),
+        (None, Some(newest)) => Err(format!(
+            "no restorable recovery manifest is available; the most recent manifest {} is {}",
+            newest.run_id,
+            if logically_expired(&newest, config, now) {
+                "expired"
+            } else {
+                selection_state(&newest)
+            }
         )),
         (None, None) => Err("no retained recovery manifest is available".into()),
     }
 }
 
 fn snapshot_path(
+    data: &Path,
+    manifest: &RecoveryManifest,
+    item: &RecoveryItem,
+) -> Result<PathBuf, String> {
+    let path = linked_snapshot_path(data, manifest, item)?;
+    validate_private_directory(&run_dir(data, &manifest.run_id).join(SNAPSHOTS))?;
+    validate_private_regular(&path, 1)?;
+    let observed = hash_file_path(&path, item.preimage_bytes)?;
+    if item.preimage_hash.as_deref() != Some(&observed) {
+        return Err("retained snapshot hash does not match its manifest".into());
+    }
+    Ok(path)
+}
+
+fn linked_snapshot_path(
     data: &Path,
     manifest: &RecoveryManifest,
     item: &RecoveryItem,
@@ -959,13 +1119,18 @@ fn snapshot_path(
     if path != expected {
         return Err("snapshot path does not match its manifest item".into());
     }
-    validate_private_directory(&run_dir(data, &manifest.run_id).join(SNAPSHOTS))?;
-    validate_private_regular(&path, 1)?;
-    let observed = hash_file_path(&path, item.preimage_bytes)?;
-    if item.preimage_hash.as_deref() != Some(&observed) {
-        return Err("retained snapshot hash does not match its manifest".into());
-    }
     Ok(path)
+}
+
+fn owned_snapshot_exists(path: &Path) -> Result<bool, String> {
+    match path.symlink_metadata() {
+        Ok(_) => {
+            validate_private_regular(path, 1)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("inspect recovery snapshot for pruning: {error}")),
+    }
 }
 
 fn current_hash(item: &RecoveryItem, max: u64) -> Result<Option<String>, String> {
@@ -1048,12 +1213,18 @@ pub fn preview_restore(
     config: &RecoveryConfig,
     forced: bool,
 ) -> Result<RestorePreview, String> {
-    let (run, alias_note) = resolve_restorable_run(data, selected, config.scan_limit)?;
+    let (run, alias_note) = resolve_restorable_run(data, selected, config)?;
     let manifest = read_manifest(data, &run)?;
-    if !restorable_state(manifest.state) {
+    if logically_expired(&manifest, config, crate::history::now_secs()) {
+        return Err(format!(
+            "recovery manifest is expired as of Unix time {}",
+            expiry_deadline(&manifest, config)
+        ));
+    }
+    if !restorable_manifest(&manifest) {
         return Err(format!(
             "recovery manifest is {}, not restorable",
-            manifest.state.as_str()
+            selection_state(&manifest)
         ));
     }
     let items = manifest
@@ -1137,15 +1308,21 @@ pub fn restore(
 ) -> Result<OperationReport, String> {
     validate_run_id(operation_run_id)?;
     let _guard = lock(data)?;
-    let (source, _alias_note) = resolve_restorable_run(data, selected, config.scan_limit)?;
+    let (source, _alias_note) = resolve_restorable_run(data, selected, config)?;
     let mut manifest = read_manifest(data, &source)?;
+    if logically_expired(&manifest, config, crate::history::now_secs()) {
+        return Err(format!(
+            "recovery manifest is expired as of Unix time {}",
+            expiry_deadline(&manifest, config)
+        ));
+    }
     // Force is irreversible provenance: a resumed ordinary `undo` must not
     // downgrade an operation that previously crossed the force boundary.
     let forced = forced || manifest.forced_restore;
-    if !restorable_state(manifest.state) {
+    if !restorable_manifest(&manifest) {
         return Err(format!(
             "recovery manifest is {}, not restorable",
-            manifest.state.as_str()
+            selection_state(&manifest)
         ));
     }
     if forced && !manifest.forced_restore {
@@ -1367,32 +1544,11 @@ pub fn status(
         max_file_bytes: config.max_file_bytes,
     };
     let selected_run = selected
-        .map(|value| resolve_manifest_run(data, value, config.scan_limit))
+        .map(|value| resolve_manifest_run(data, value, config))
         .transpose()?;
-    let entries = match std::fs::read_dir(runs_dir(data)) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(report),
-        Err(error) => return Err(format!("scan recovery status: {error}")),
-    };
-    for entry in entries.take(config.scan_limit) {
-        let Ok(entry) = entry else { continue };
-        let Some(run) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if validate_run_id(&run).is_err() || !entry.path().join(MANIFEST).exists() {
-            continue;
-        }
-        let manifest = match read_manifest(data, &run) {
-            Ok(value) => value,
-            Err(error) => {
-                if selected_run.as_deref() == Some(run.as_str()) {
-                    report.run_id = Some(run);
-                    report.state = "corrupt".into();
-                    report.reason = error;
-                }
-                continue;
-            }
-        };
+    let manifests = scan_manifests(data, Some(config.scan_limit))?;
+    let now = crate::history::now_secs();
+    for manifest in manifests {
         report.manifests += 1;
         if manifest.pinned {
             report.pinned += 1;
@@ -1403,35 +1559,39 @@ pub fn status(
                 report.snapshot_bytes = report.snapshot_bytes.saturating_add(item.preimage_bytes);
             }
         }
-        if selected_run.as_deref() == Some(run.as_str()) {
-            report.run_id = Some(run);
-            report.state = manifest.state.as_str().into();
-            report.reason = manifest
-                .reason
-                .unwrap_or_else(|| "recovery manifest validated".into());
+        if selected_run.as_deref() == Some(manifest.run_id.as_str()) {
+            report.run_id = Some(manifest.run_id.clone());
+            if logically_expired(&manifest, config, now) {
+                report.state = "expired".into();
+                report.reason = format!(
+                    "recovery evidence expired at Unix time {}",
+                    expiry_deadline(&manifest, config)
+                );
+            } else {
+                report.state = selection_state(&manifest).into();
+                report.reason = manifest
+                    .reason
+                    .unwrap_or_else(|| "recovery manifest validated".into());
+            }
         }
     }
     Ok(report)
 }
 
 pub fn startup_check(data: &Path, config: &RecoveryConfig) -> usize {
-    let Ok(entries) = std::fs::read_dir(runs_dir(data)) else {
+    let Ok(manifests) = scan_manifests(data, Some(config.scan_limit.min(32))) else {
         return 0;
     };
-    entries
-        .take(config.scan_limit.min(32))
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
-        .filter(|run| {
-            read_manifest(data, run).is_ok_and(|manifest| {
-                matches!(
-                    manifest.state,
-                    RecoveryState::Preparing
-                        | RecoveryState::CommitPartial
-                        | RecoveryState::UndoPreflight
-                        | RecoveryState::UndoInProgress
-                )
-            })
+    manifests
+        .into_iter()
+        .filter(|manifest| {
+            matches!(
+                manifest.state,
+                RecoveryState::Preparing
+                    | RecoveryState::CommitPartial
+                    | RecoveryState::UndoPreflight
+                    | RecoveryState::UndoInProgress
+            )
         })
         .count()
 }
@@ -1443,9 +1603,23 @@ pub fn pin(
     value: bool,
 ) -> Result<String, String> {
     let _guard = lock(data)?;
-    let run = resolve_manifest_run(data, selected, config.scan_limit)?;
+    let run = resolve_manifest_run(data, selected, config)?;
     let mut manifest = read_manifest(data, &run)?;
     if value {
+        if prune_intent_started(&manifest)
+            || !matches!(
+                manifest.state,
+                RecoveryState::Available | RecoveryState::Conflicted
+            )
+        {
+            return Err(format!(
+                "cannot pin recovery evidence in state {}",
+                selection_state(&manifest)
+            ));
+        }
+        if logically_expired(&manifest, config, crate::history::now_secs()) {
+            return Err("cannot pin recovery evidence after its expiry deadline".into());
+        }
         let usage = status(data, None, config)?.snapshot_bytes;
         if usage > config.max_total_bytes {
             return Err(
@@ -1465,7 +1639,7 @@ pub fn resume_commit(
     config: &RecoveryConfig,
 ) -> Result<String, String> {
     let _guard = lock(data)?;
-    let run = resolve_manifest_run(data, selected, config.scan_limit)?;
+    let run = resolve_manifest_run(data, selected, config)?;
     let mut manifest = read_manifest(data, &run)?;
     if manifest.state != RecoveryState::CommitPartial {
         return Err(format!(
@@ -1600,48 +1774,164 @@ pub fn resume_commit(
     Ok(run)
 }
 
-pub fn prune(
+fn finalize_expired_locked(data: &Path, manifest: &RecoveryManifest) -> Result<(), String> {
+    if manifest.state != RecoveryState::Expired {
+        return Err("only an expired recovery manifest can be finalized".into());
+    }
+    if !manifest.retirement_acknowledged {
+        return Err("expired recovery manifest is still awaiting its durable history event".into());
+    }
+    remove_expired_snapshots_locked(data, manifest)?;
+    remove_expired_manifest_locked(data, manifest)
+}
+
+fn remove_expired_snapshots_locked(data: &Path, manifest: &RecoveryManifest) -> Result<(), String> {
+    let run = run_dir(data, &manifest.run_id);
+    let snapshots = run_dir(data, &manifest.run_id).join(SNAPSHOTS);
+    match snapshots.symlink_metadata() {
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err("refusing to finalize an unsafe recovery snapshots directory".into());
+            }
+            for item in &manifest.items {
+                let Some(name) = item.snapshot_file.as_deref() else {
+                    continue;
+                };
+                let path = snapshots.join(name);
+                match validate_private_regular(&path, 1) {
+                    Ok(()) => std::fs::remove_file(&path)
+                        .map_err(|error| format!("remove expired recovery snapshot: {error}"))?,
+                    Err(_) if !path.exists() => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            if std::fs::read_dir(&snapshots)
+                .map_err(|error| error.to_string())?
+                .next()
+                .is_some()
+            {
+                return Err(
+                    "recovery snapshots directory contains unowned files after expiry".into(),
+                );
+            }
+            std::fs::remove_dir(&snapshots)
+                .map_err(|error| format!("remove expired snapshots directory: {error}"))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect expired snapshots directory: {error}")),
+    }
+    // The snapshots-directory removal must reach stable storage before the
+    // manifest unlink. Otherwise a crash could expose resurrected snapshots
+    // with no manifest proving their ownership or lifecycle state.
+    sync_parent(&run)
+}
+
+fn remove_expired_manifest_locked(data: &Path, manifest: &RecoveryManifest) -> Result<(), String> {
+    let path = manifest_path(data, &manifest.run_id);
+    validate_private_regular(&path, 1)?;
+    std::fs::remove_file(&path)
+        .map_err(|error| format!("remove expired recovery manifest: {error}"))?;
+    // Persist the terminal manifest unlink as a separate directory-ordering
+    // point after the snapshots directory is durably absent.
+    sync_parent(&run_dir(data, &manifest.run_id))
+}
+
+pub fn acknowledge_expired(data: &Path, run: &str) -> Result<(), String> {
+    let _guard = lock(data)?;
+    let mut manifest = read_manifest(data, run)?;
+    if manifest.state != RecoveryState::Expired {
+        return Err("only an expired recovery manifest can be acknowledged".into());
+    }
+    if !manifest.retirement_acknowledged {
+        manifest.retirement_acknowledged = true;
+        manifest.updated_at = crate::history::now_secs();
+        write_manifest(data, &manifest)?;
+    }
+    finalize_expired_locked(data, &manifest)
+}
+
+fn persist_restored_retirement_locked(
+    data: &Path,
+    manifest: &mut RecoveryManifest,
+) -> Result<(), String> {
+    transition(manifest, RecoveryState::Expired)?;
+    manifest.retirement_acknowledged = true;
+    manifest.retirement_event_required = false;
+    manifest.reason = Some("restore completed and retained evidence was retired".into());
+    for item in &mut manifest.items {
+        if item.snapshot_file.is_some() {
+            item.state = ItemState::Expired;
+        }
+    }
+    // The completed-restore event is already durable. Persist the terminal
+    // manifest before unlinking any snapshot so a crash can only leave an
+    // acknowledged Expired manifest for the next prune pass to finalize.
+    write_manifest(data, manifest)
+}
+
+pub fn retire_restored(data: &Path, run: &str) -> Result<(), String> {
+    let _guard = lock(data)?;
+    validate_run_id(run)?;
+    let run_path = run_dir(data, run);
+    match run_path.symlink_metadata() {
+        Ok(_) => validate_private_directory(&run_path)?,
+        // History retention may already have removed an otherwise empty run
+        // directory. With no directory, no recovery-owned child can remain.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect recovery retirement directory: {error}")),
+    }
+    let path = manifest_path(data, run);
+    let mut manifest = match path.symlink_metadata() {
+        Ok(_) => read_manifest(data, run)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let snapshots = run_path.join(SNAPSHOTS);
+            return match snapshots.symlink_metadata() {
+                // Both recovery-owned artifacts are absent. This is the
+                // durable end state of a completed retirement, so retrying the
+                // caller after the final unlink is harmless.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    sync_parent(&run_path)
+                }
+                Ok(_) => Err(
+                    "cannot prove completed recovery retirement: snapshots remain without a manifest"
+                        .into(),
+                ),
+                Err(error) => Err(format!(
+                    "inspect recovery snapshots after missing manifest: {error}"
+                )),
+            };
+        }
+        Err(error) => return Err(format!("inspect recovery retirement manifest: {error}")),
+    };
+    match manifest.state {
+        RecoveryState::Restored => persist_restored_retirement_locked(data, &mut manifest)?,
+        RecoveryState::Expired if manifest.retirement_acknowledged => {}
+        RecoveryState::Expired => {
+            return Err(
+                "expired recovery evidence is still awaiting durable retirement authority".into(),
+            )
+        }
+        _ => {
+            return Err("only a completed restore can retire its recovery evidence".into());
+        }
+    }
+    finalize_expired_locked(data, &manifest)
+}
+
+fn prune_impl(
     data: &Path,
     config: &RecoveryConfig,
     dry_run: bool,
     all: bool,
+    expiry_event_required: bool,
 ) -> Result<PruneReport, String> {
     let _guard = lock(data)?;
     let now = crate::history::now_secs();
-    let cutoff = now.saturating_sub(config.max_age_days.saturating_mul(86_400));
-    let entries = match std::fs::read_dir(runs_dir(data)) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(PruneReport {
-                dry_run,
-                manifests_scanned: 0,
-                snapshots_removed: 0,
-                bytes_removed: 0,
-                retained_pinned: 0,
-                retained_within_limits: 0,
-                expired_runs: Vec::new(),
-            })
-        }
-        Err(error) => return Err(format!("scan recovery snapshots: {error}")),
-    };
-    let mut manifests = Vec::new();
-    for entry in entries.take(config.scan_limit) {
-        let Ok(entry) = entry else { continue };
-        let Some(run) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if let Ok(manifest) = read_manifest(data, &run) {
-            manifests.push(manifest);
-        }
-    }
+    // Prune is the recovery path when the ordinary selection bound is full,
+    // so it must inspect the complete private recovery inventory.
+    let mut manifests = scan_manifests(data, None)?;
     manifests.sort_by_key(|manifest| manifest.created_at);
     let scanned = manifests.len();
-    let mut total = manifests
-        .iter()
-        .flat_map(|m| &m.items)
-        .filter(|i| i.snapshot_file.is_some() && !matches!(i.state, ItemState::Expired))
-        .map(|i| i.preimage_bytes)
-        .sum::<u64>();
     let mut report = PruneReport {
         dry_run,
         manifests_scanned: scanned,
@@ -1649,17 +1939,55 @@ pub fn prune(
         bytes_removed: 0,
         retained_pinned: 0,
         retained_within_limits: 0,
+        manifests_removed: 0,
         expired_runs: Vec::new(),
     };
-    for mut manifest in manifests {
+    let mut active = Vec::with_capacity(manifests.len());
+    for manifest in manifests {
+        if manifest.state == RecoveryState::Expired {
+            if manifest.retirement_acknowledged {
+                report.manifests_removed += 1;
+                if !dry_run {
+                    finalize_expired_locked(data, &manifest)?;
+                }
+            } else {
+                // This may be a prior process's crash window after persisting
+                // Expired but before recording RecoveryExpired. Keep returning
+                // it until management durably records and acknowledges it.
+                report.expired_runs.push(manifest.run_id.clone());
+            }
+        } else {
+            active.push(manifest);
+        }
+    }
+    let mut total = active
+        .iter()
+        .flat_map(|m| &m.items)
+        .filter(|i| i.snapshot_file.is_some() && !matches!(i.state, ItemState::Expired))
+        .map(|i| i.preimage_bytes)
+        .sum::<u64>();
+    for mut manifest in active {
         if report.snapshots_removed >= config.prune_batch {
             break;
         }
-        if manifest.pinned {
+        let pruning_started = prune_intent_started(&manifest);
+        let preparing_expired =
+            manifest.state == RecoveryState::Preparing && now > manifest.preparation_lease_until;
+        let retire_after_restore = manifest.state == RecoveryState::Restored;
+        // A crash can leave Restored durable before the caller records its
+        // completion event. Only explicit management prune can establish a
+        // replacement RecoveryExpired event for that uncertain state.
+        if retire_after_restore && !expiry_event_required {
+            continue;
+        }
+        if manifest.pinned && !retire_after_restore && !pruning_started {
             report.retained_pinned += 1;
             continue;
         }
-        if manifest.state == RecoveryState::Preparing && now <= manifest.preparation_lease_until {
+        if manifest.state == RecoveryState::Preparing
+            && now <= manifest.preparation_lease_until
+            && !pruning_started
+        {
             continue;
         }
         if matches!(
@@ -1667,10 +1995,18 @@ pub fn prune(
             RecoveryState::CommitPartial
                 | RecoveryState::UndoPreflight
                 | RecoveryState::UndoInProgress
-        ) {
+        ) && !pruning_started
+        {
             continue;
         }
-        if !all && manifest.created_at >= cutoff && total <= config.max_total_bytes {
+        let age_expired = logically_expired(&manifest, config, now);
+        if !all
+            && !pruning_started
+            && !age_expired
+            && !preparing_expired
+            && !retire_after_restore
+            && total <= config.max_total_bytes
+        {
             if manifest.items.iter().any(|item| {
                 item.snapshot_file.is_some() && !matches!(item.state, ItemState::Expired)
             }) {
@@ -1678,59 +2014,126 @@ pub fn prune(
             }
             continue;
         }
-        let candidate = all || manifest.created_at < cutoff || total > config.max_total_bytes;
+        let candidate = all
+            || pruning_started
+            || age_expired
+            || preparing_expired
+            || retire_after_restore
+            || total > config.max_total_bytes;
         if !candidate {
             continue;
         }
-        let mut changed = false;
-        for item in &mut manifest.items {
-            let Some(name) = item.snapshot_file.as_deref() else {
+
+        // An item-level Expired state is durable unlink intent. Reconcile any
+        // crash-left files carrying that intent before allocating the remaining
+        // batch to new items. The manifest-wide event requirement is sticky:
+        // automatic retention may finish a management-started batch, but can
+        // never silently finalize it without its RecoveryExpired event.
+        let event_required = manifest.retirement_event_required || expiry_event_required;
+        let mut pending = Vec::new();
+        for (index, item) in manifest.items.iter().enumerate() {
+            if item.snapshot_file.is_none() || item.state != ItemState::Expired {
                 continue;
-            };
-            if matches!(item.state, ItemState::Expired) {
-                continue;
             }
-            if report.snapshots_removed >= config.prune_batch {
-                break;
-            }
-            let path = run_dir(data, &manifest.run_id).join(SNAPSHOTS).join(name);
-            if path
-                != run_dir(data, &manifest.run_id)
-                    .join(SNAPSHOTS)
-                    .join(format!("{}.preimage", item.id))
-            {
-                return Err("refusing to prune an unlinked snapshot path".into());
-            }
-            report.snapshots_removed += 1;
-            report.bytes_removed = report.bytes_removed.saturating_add(item.preimage_bytes);
-            total = total.saturating_sub(item.preimage_bytes);
-            if !dry_run {
-                match validate_private_regular(&path, 1) {
-                    Ok(()) => std::fs::remove_file(&path)
-                        .map_err(|error| format!("remove recovery snapshot: {error}"))?,
-                    Err(_) if manifest.state == RecoveryState::Preparing && !path.exists() => {}
-                    Err(error) => return Err(error),
-                }
-                item.state = ItemState::Expired;
-                changed = true;
+            let path = linked_snapshot_path(data, &manifest, item)?;
+            if owned_snapshot_exists(&path)? {
+                pending.push((index, path));
             }
         }
-        let expires_without_snapshot = manifest
+        let available_batch = config.prune_batch.saturating_sub(report.snapshots_removed);
+        let pending_count = pending.len().min(available_batch);
+        let mut remaining_batch = available_batch.saturating_sub(pending_count);
+        let mut planned = Vec::new();
+        for (index, item) in manifest.items.iter().enumerate() {
+            if remaining_batch == 0 {
+                break;
+            }
+            if item.snapshot_file.is_none() || item.state == ItemState::Expired {
+                continue;
+            }
+            let path = linked_snapshot_path(data, &manifest, item)?;
+            let present = owned_snapshot_exists(&path)?;
+            planned.push((index, path, present));
+            remaining_batch -= 1;
+        }
+
+        for (index, _) in pending.iter().take(pending_count) {
+            report.snapshots_removed += 1;
+            report.bytes_removed = report
+                .bytes_removed
+                .saturating_add(manifest.items[*index].preimage_bytes);
+        }
+        for (index, _, _) in &planned {
+            report.snapshots_removed += 1;
+            report.bytes_removed = report
+                .bytes_removed
+                .saturating_add(manifest.items[*index].preimage_bytes);
+            total = total.saturating_sub(manifest.items[*index].preimage_bytes);
+        }
+
+        if !dry_run && (!planned.is_empty() || manifest.retirement_event_required != event_required)
+        {
+            for (index, _, _) in &planned {
+                manifest.items[*index].state = ItemState::Expired;
+            }
+            manifest.retirement_event_required = event_required;
+            manifest.reason = Some("recovery pruning is incomplete and will resume".into());
+            // This is the non-restorable intent point. No linked snapshot is
+            // unlinked until the item states and event provenance are durable.
+            write_manifest(data, &manifest)?;
+        }
+        if !dry_run {
+            for (_, path) in pending.iter().take(pending_count) {
+                std::fs::remove_file(path)
+                    .map_err(|error| format!("remove pending recovery snapshot: {error}"))?;
+            }
+            for (_, path, present) in &planned {
+                if *present {
+                    std::fs::remove_file(path)
+                        .map_err(|error| format!("remove recovery snapshot: {error}"))?;
+                }
+            }
+        }
+
+        let outstanding = manifest
             .items
             .iter()
-            .all(|item| item.snapshot_file.is_none());
-        if changed || expires_without_snapshot {
+            .filter(|item| {
+                item.snapshot_file.is_some() && !matches!(item.state, ItemState::Expired)
+            })
+            .count();
+        let fully_expired = if dry_run {
+            outstanding == planned.len() && pending.len() == pending_count
+        } else {
+            outstanding == 0 && pending.len() == pending_count
+        };
+        if fully_expired {
             report.expired_runs.push(manifest.run_id.clone());
             if !dry_run {
                 if !matches!(manifest.state, RecoveryState::Expired) {
                     transition(&mut manifest, RecoveryState::Expired)?;
                 }
+                manifest.retirement_event_required = event_required;
+                manifest.retirement_acknowledged = !event_required;
                 manifest.reason = Some("retained snapshots expired or were pruned".into());
                 write_manifest(data, &manifest)?;
+                if !event_required {
+                    finalize_expired_locked(data, &manifest)?;
+                    report.manifests_removed += 1;
+                }
             }
         }
     }
     Ok(report)
+}
+
+pub fn prune(
+    data: &Path,
+    config: &RecoveryConfig,
+    dry_run: bool,
+    all: bool,
+) -> Result<PruneReport, String> {
+    prune_impl(data, config, dry_run, all, true)
 }
 
 fn transition(manifest: &mut RecoveryManifest, next: RecoveryState) -> Result<(), String> {
@@ -2211,6 +2614,86 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn live_coordinator_ownership_blocks_stale_prune_until_commit_finishes() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let (destination, staging) = paths(root.path(), "owned.txt");
+        std::fs::write(&destination, b"before").unwrap();
+        let mut coordinator = prepare_with_lease(
+            &data,
+            "owned-run-0001",
+            &config,
+            &[(destination.clone(), staging.clone())],
+            0,
+        )
+        .unwrap();
+        coordinator.manifest.preparation_lease_until = 0;
+        write_manifest(&data, &coordinator.manifest).unwrap();
+        std::fs::write(&staging, b"after").unwrap();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let prune_data = data.clone();
+        let prune_config = config.clone();
+        let waiter = std::thread::spawn(move || {
+            entered_tx.send(()).unwrap();
+            let result = prune(&prune_data, &prune_config, false, true);
+            done_tx.send(result).unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(150)).is_err(),
+            "stale pruning acquired the inventory while a coordinator still owned it"
+        );
+
+        coordinator.commit(config.max_total_bytes).unwrap();
+        let report = done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("prune never resumed after commit released ownership")
+            .unwrap();
+        waiter.join().unwrap();
+        assert_eq!(report.snapshots_removed, 1);
+        assert_eq!(std::fs::read(destination).unwrap(), b"after");
+    }
+
+    #[test]
+    fn commit_refuses_when_durable_preimage_evidence_disappears() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "evidence-run-01";
+        let (destination, staging) = paths(root.path(), "evidence.txt");
+        std::fs::write(&destination, b"before").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[(destination.clone(), staging.clone())],
+        )
+        .unwrap();
+        std::fs::write(&staging, b"after").unwrap();
+        std::fs::remove_file(
+            run_dir(&data, run)
+                .join(SNAPSHOTS)
+                .join("output-000.preimage"),
+        )
+        .unwrap();
+
+        let error = coordinator.commit(config.max_total_bytes).unwrap_err();
+        assert!(
+            error.contains("preimage evidence is unavailable"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&destination).unwrap(), b"before");
+        drop(coordinator);
+        cleanup_incomplete_capture(&data, run);
+    }
+
     fn paths(root: &Path, name: &str) -> (PathBuf, PathBuf) {
         (root.join(name), root.join(format!(".uhm-stage-{name}")))
     }
@@ -2232,6 +2715,38 @@ mod tests {
         std::fs::write(&staging, b"after").unwrap();
         coordinator.commit(config.max_total_bytes).unwrap();
         (root, data, config, run)
+    }
+
+    fn commit_named(
+        root: &Path,
+        data: &Path,
+        config: &RecoveryConfig,
+        run: &str,
+        name: &str,
+    ) -> PathBuf {
+        let (destination, staging) = paths(root, name);
+        std::fs::write(&destination, b"before").unwrap();
+        let mut coordinator =
+            prepare(data, run, config, &[(destination.clone(), staging.clone())]).unwrap();
+        std::fs::write(&staging, b"after").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        destination
+    }
+
+    fn record_expiry_event(data: &Path, run: &str) {
+        crate::history::record_recovery_event(
+            data,
+            &crate::config::HistoryConfig::default(),
+            run,
+            "recovery",
+            "minimal",
+            crate::history::EventKind::RecoveryExpired,
+            "expired",
+            Some("retained recovery evidence expired or was explicitly pruned"),
+            0,
+            None,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2517,13 +3032,13 @@ mod tests {
     }
 
     #[test]
-    fn pruning_respects_pins_and_leaves_expiry_tombstones() {
+    fn pruning_respects_pins_and_uses_an_expiry_transition() {
         let (_root, data, mut config, run) = committed_replacement();
         config.max_age_days = 1;
+        pin(&data, &run, &config, true).unwrap();
         let mut aged = read_manifest(&data, &run).unwrap();
         aged.created_at = crate::history::now_secs().saturating_sub(2 * 86_400);
         write_manifest(&data, &aged).unwrap();
-        pin(&data, &run, &config, true).unwrap();
         let retained = prune(&data, &config, false, false).unwrap();
         assert_eq!(retained.snapshots_removed, 0);
         pin(&data, &run, &config, false).unwrap();
@@ -2598,6 +3113,10 @@ mod tests {
             state: RecoveryState::Preparing,
             pinned: false,
             forced_restore: false,
+            selection_sequence: 1,
+            expires_at: 100,
+            retirement_acknowledged: false,
+            retirement_event_required: false,
             preparation_lease_until: 0,
             items: vec![],
             reason: None,
@@ -2681,6 +3200,437 @@ mod tests {
         assert_eq!(
             read_manifest(&data, &run).unwrap().state,
             RecoveryState::Available
+        );
+    }
+
+    #[test]
+    fn prune_batch_does_not_expire_a_partly_retained_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig {
+            prune_batch: 1,
+            ..RecoveryConfig::default()
+        };
+        let first = paths(root.path(), "first.txt");
+        let second = paths(root.path(), "second.txt");
+        std::fs::write(&first.0, b"before-first").unwrap();
+        std::fs::write(&second.0, b"before-second").unwrap();
+        let run = "batch-run-0001";
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (first.0.clone(), first.1.clone()),
+                (second.0.clone(), second.1.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first.1, b"after-first").unwrap();
+        std::fs::write(&second.1, b"after-second").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+
+        let first_pass = prune(&data, &config, false, true).unwrap();
+        assert_eq!(first_pass.snapshots_removed, 1);
+        assert!(first_pass.expired_runs.is_empty());
+        let partial = read_manifest(&data, run).unwrap();
+        assert_eq!(partial.state, RecoveryState::Available);
+        assert_eq!(
+            partial
+                .items
+                .iter()
+                .filter(|item| item.state == ItemState::Expired)
+                .count(),
+            1
+        );
+        let error = preview_restore(&data, "last", &config, false).unwrap_err();
+        assert!(error.contains("expiring"), "{error}");
+
+        // An automatic retention pass may resume the durable intent, but the
+        // management-started event requirement must remain sticky.
+        let second_pass = prune_impl(&data, &config, false, false, false).unwrap();
+        assert_eq!(second_pass.snapshots_removed, 1);
+        assert_eq!(second_pass.expired_runs, [run]);
+        let terminal = read_manifest(&data, run).unwrap();
+        assert_eq!(terminal.state, RecoveryState::Expired);
+        assert!(terminal.retirement_event_required);
+        assert!(!terminal.retirement_acknowledged);
+    }
+
+    #[test]
+    fn last_skips_newer_partially_pruned_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig {
+            prune_batch: 1,
+            ..RecoveryConfig::default()
+        };
+        let older = "partial-older01";
+        commit_named(root.path(), &data, &config, older, "older.txt");
+        pin(&data, older, &config, true).unwrap();
+
+        let newer = "partial-newer02";
+        let first = paths(root.path(), "newer-first.txt");
+        let second = paths(root.path(), "newer-second.txt");
+        std::fs::write(&first.0, b"before-first").unwrap();
+        std::fs::write(&second.0, b"before-second").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            newer,
+            &config,
+            &[
+                (first.0.clone(), first.1.clone()),
+                (second.0.clone(), second.1.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first.1, b"after-first").unwrap();
+        std::fs::write(&second.1, b"after-second").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+
+        let partial = prune(&data, &config, false, true).unwrap();
+        assert_eq!(partial.snapshots_removed, 1);
+        assert!(prune_intent_started(&read_manifest(&data, newer).unwrap()));
+
+        let preview = preview_restore(&data, "last", &config, false).unwrap();
+        assert_eq!(preview.run_id, older);
+        let note = preview.alias_note.unwrap();
+        assert!(note.contains(newer), "{note}");
+        assert!(note.contains("expiring"), "{note}");
+        let explicit = preview_restore(&data, newer, &config, false).unwrap_err();
+        assert!(explicit.contains("expiring"), "{explicit}");
+    }
+
+    #[test]
+    fn incomplete_inventory_never_resolves_last() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        for (run, name) in [
+            ("scan-run-0001", "one.txt"),
+            ("scan-run-0002", "two.txt"),
+            ("scan-run-0003", "three.txt"),
+        ] {
+            commit_named(root.path(), &data, &config, run, name);
+        }
+        let bounded = RecoveryConfig {
+            scan_limit: 2,
+            ..config
+        };
+        let error = preview_restore(&data, "last", &bounded, false).unwrap_err();
+        assert!(error.contains("exceeds recovery.scan_limit"), "{error}");
+        assert_eq!(
+            std::fs::read(root.path().join("one.txt")).unwrap(),
+            b"after"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("two.txt")).unwrap(),
+            b"after"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("three.txt")).unwrap(),
+            b"after"
+        );
+    }
+
+    #[test]
+    fn prune_all_can_unwedge_an_inventory_past_the_selection_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        for (run, name) in [
+            ("prune-run-001", "one.txt"),
+            ("prune-run-002", "two.txt"),
+            ("prune-run-003", "three.txt"),
+        ] {
+            commit_named(root.path(), &data, &config, run, name);
+        }
+        let bounded = RecoveryConfig {
+            scan_limit: 2,
+            ..config
+        };
+        let expired = prune(&data, &bounded, false, true).unwrap();
+        assert_eq!(expired.expired_runs.len(), 3);
+        let pending = prune(&data, &bounded, false, true).unwrap();
+        assert_eq!(pending.expired_runs.len(), 3);
+        assert_eq!(pending.manifests_removed, 0);
+        for run in &pending.expired_runs {
+            record_expiry_event(&data, run);
+            acknowledge_expired(&data, run).unwrap();
+        }
+        commit_named(root.path(), &data, &bounded, "prune-run-004", "four.txt");
+        assert_eq!(
+            preview_restore(&data, "last", &bounded, false)
+                .unwrap()
+                .run_id,
+            "prune-run-004"
+        );
+    }
+
+    #[test]
+    fn history_only_directories_do_not_consume_recovery_capacity() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        for index in 0..8 {
+            let directory = runs_dir(&data).join(format!("history-{index:08}"));
+            dirs::ensure_private_dir(&directory).unwrap();
+            std::fs::write(directory.join("proposal.json"), b"history").unwrap();
+        }
+        let config = RecoveryConfig {
+            scan_limit: 1,
+            ..RecoveryConfig::default()
+        };
+        commit_named(root.path(), &data, &config, "history-run-01", "managed.txt");
+        assert_eq!(
+            preview_restore(&data, "last", &config, false)
+                .unwrap()
+                .run_id,
+            "history-run-01"
+        );
+    }
+
+    #[test]
+    fn pinning_an_old_run_does_not_change_last_ordering() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        commit_named(root.path(), &data, &config, "ordered-run-01", "first.txt");
+        commit_named(root.path(), &data, &config, "ordered-run-02", "second.txt");
+        pin(&data, "ordered-run-01", &config, true).unwrap();
+        assert_eq!(
+            preview_restore(&data, "last", &config, false)
+                .unwrap()
+                .run_id,
+            "ordered-run-02"
+        );
+    }
+
+    #[test]
+    fn management_expiry_retries_across_event_and_ack_crash_windows() {
+        let (_root, data, config, run) = committed_replacement();
+        let first = prune(&data, &config, false, true).unwrap();
+        assert_eq!(first.expired_runs, [run.as_str()]);
+        let pending = read_manifest(&data, &run).unwrap();
+        assert_eq!(pending.state, RecoveryState::Expired);
+        assert!(!pending.retirement_acknowledged);
+
+        // Crash before the history event: the next management pass must report
+        // the same pending run rather than finalize it silently.
+        let before_event_retry = prune(&data, &config, false, true).unwrap();
+        assert_eq!(before_event_retry.expired_runs, [run.as_str()]);
+        assert_eq!(before_event_retry.manifests_removed, 0);
+        assert!(manifest_path(&data, &run).exists());
+
+        // Crash after the event but before recovery acknowledgment: the run is
+        // still reported, and recording the event again is idempotent.
+        record_expiry_event(&data, &run);
+        let after_event_retry = prune(&data, &config, false, true).unwrap();
+        assert_eq!(after_event_retry.expired_runs, [run.as_str()]);
+        record_expiry_event(&data, &run);
+        let expiry_events = crate::history::events_for(&data, &run)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == crate::history::EventKind::RecoveryExpired)
+            .count();
+        assert_eq!(expiry_events, 1);
+
+        acknowledge_expired(&data, &run).unwrap();
+        assert!(!manifest_path(&data, &run).exists());
+    }
+
+    #[test]
+    fn acknowledged_expiry_is_finalized_after_an_ack_crash_window() {
+        let (_root, data, config, run) = committed_replacement();
+        prune(&data, &config, false, true).unwrap();
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        manifest.retirement_acknowledged = true;
+        write_manifest(&data, &manifest).unwrap();
+
+        let resumed = prune(&data, &config, false, true).unwrap();
+        assert_eq!(resumed.manifests_removed, 1);
+        assert!(resumed.expired_runs.is_empty());
+        assert!(!manifest_path(&data, &run).exists());
+    }
+
+    #[test]
+    fn prepare_preserves_pending_management_expiry_and_sequence_high_water() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig {
+            scan_limit: 1,
+            ..RecoveryConfig::default()
+        };
+        commit_named(root.path(), &data, &config, "pending-run-01", "first.txt");
+        let old_sequence = read_manifest(&data, "pending-run-01")
+            .unwrap()
+            .selection_sequence;
+        prune(&data, &config, false, true).unwrap();
+
+        commit_named(root.path(), &data, &config, "pending-run-02", "second.txt");
+        let pending = read_manifest(&data, "pending-run-01").unwrap();
+        assert_eq!(pending.state, RecoveryState::Expired);
+        assert!(!pending.retirement_acknowledged);
+        assert!(
+            read_manifest(&data, "pending-run-02")
+                .unwrap()
+                .selection_sequence
+                > old_sequence
+        );
+    }
+
+    #[test]
+    fn prepare_automatic_prune_finalizes_without_an_expiry_event() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig {
+            scan_limit: 1,
+            ..RecoveryConfig::default()
+        };
+        commit_named(root.path(), &data, &config, "automatic-run-01", "first.txt");
+        let mut expired = read_manifest(&data, "automatic-run-01").unwrap();
+        expired.expires_at = crate::history::now_secs();
+        write_manifest(&data, &expired).unwrap();
+
+        commit_named(
+            root.path(),
+            &data,
+            &config,
+            "automatic-run-02",
+            "second.txt",
+        );
+        assert!(!manifest_path(&data, "automatic-run-01").exists());
+        assert!(crate::history::events_for(&data, "automatic-run-01").is_err());
+    }
+
+    #[test]
+    fn prepare_does_not_retire_a_restored_run_without_event_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig {
+            scan_limit: 2,
+            ..RecoveryConfig::default()
+        };
+        commit_named(root.path(), &data, &config, "restored-run-01", "first.txt");
+        restore(
+            &data,
+            "restored-run-01",
+            "restore-operation-01",
+            &config,
+            false,
+        )
+        .unwrap();
+
+        commit_named(root.path(), &data, &config, "restored-run-02", "second.txt");
+        let preserved = read_manifest(&data, "restored-run-01").unwrap();
+        assert_eq!(preserved.state, RecoveryState::Restored);
+        assert!(!preserved.retirement_acknowledged);
+    }
+
+    #[test]
+    fn prune_retries_a_snapshot_unlinked_before_manifest_persistence() {
+        let (_root, data, config, run) = committed_replacement();
+        let snapshot = run_dir(&data, &run)
+            .join(SNAPSHOTS)
+            .join("output-000.preimage");
+        std::fs::remove_file(snapshot).unwrap();
+
+        let report = prune(&data, &config, false, true).unwrap();
+        assert_eq!(report.expired_runs, [run.as_str()]);
+        assert_eq!(
+            read_manifest(&data, &run).unwrap().state,
+            RecoveryState::Expired
+        );
+    }
+
+    #[test]
+    fn logical_expiry_blocks_explicit_and_last_restore_before_gc() {
+        let (_root, data, config, run) = committed_replacement();
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        manifest.expires_at = crate::history::now_secs();
+        write_manifest(&data, &manifest).unwrap();
+
+        let explicit = preview_restore(&data, &run, &config, false).unwrap_err();
+        assert!(explicit.contains("expired"), "{explicit}");
+        let last = preview_restore(&data, "last", &config, false).unwrap_err();
+        assert!(last.contains("expired"), "{last}");
+        let report = status(&data, Some(&run), &config).unwrap();
+        assert_eq!(report.state, "expired");
+    }
+
+    #[test]
+    fn restored_retirement_persists_expired_before_unlink_and_retries_idempotently() {
+        let (_root, data, config, run) = committed_replacement();
+        restore(&data, &run, "retire-order-01", &config, false).unwrap();
+        let snapshot = run_dir(&data, &run)
+            .join(SNAPSHOTS)
+            .join("output-000.preimage");
+        assert!(snapshot.exists());
+
+        let guard = lock(&data).unwrap();
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        persist_restored_retirement_locked(&data, &mut manifest).unwrap();
+        assert!(snapshot.exists(), "terminal state must precede unlink");
+        drop(guard);
+
+        let persisted = read_manifest(&data, &run).unwrap();
+        assert_eq!(persisted.state, RecoveryState::Expired);
+        assert!(persisted.retirement_acknowledged);
+
+        // Retry after a crash between terminal-manifest persistence and
+        // unlinking. A further retry after the final unlink is also a no-op.
+        retire_restored(&data, &run).unwrap();
+        assert!(!manifest_path(&data, &run).exists());
+        assert!(!run_dir(&data, &run).join(SNAPSHOTS).exists());
+        retire_restored(&data, &run).unwrap();
+    }
+
+    #[test]
+    fn finalization_removes_and_syncs_snapshots_before_manifest_unlink() {
+        let (_root, data, config, run) = committed_replacement();
+        restore(&data, &run, "retire-order-02", &config, false).unwrap();
+        let _guard = lock(&data).unwrap();
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        persist_restored_retirement_locked(&data, &mut manifest).unwrap();
+
+        remove_expired_snapshots_locked(&data, &manifest).unwrap();
+        assert!(!run_dir(&data, &run).join(SNAPSHOTS).exists());
+        assert!(
+            manifest_path(&data, &run).exists(),
+            "manifest must remain until snapshot-directory removal is synced"
+        );
+
+        remove_expired_manifest_locked(&data, &manifest).unwrap();
+        assert!(!manifest_path(&data, &run).exists());
+    }
+
+    #[test]
+    fn restored_retirement_does_not_finalize_an_unacknowledged_expiry() {
+        let (_root, data, config, run) = committed_replacement();
+        prune(&data, &config, false, true).unwrap();
+
+        let error = retire_restored(&data, &run).unwrap_err();
+        assert!(
+            error.contains("awaiting durable retirement authority"),
+            "{error}"
+        );
+        let pending = read_manifest(&data, &run).unwrap();
+        assert_eq!(pending.state, RecoveryState::Expired);
+        assert!(!pending.retirement_acknowledged);
+    }
+
+    #[test]
+    fn completed_restore_retires_only_recovery_owned_files() {
+        let (root, data, config, run) = committed_replacement();
+        let history_artifact = run_dir(&data, &run).join("proposal.json");
+        std::fs::write(&history_artifact, b"history-owned").unwrap();
+        restore(&data, &run, "retire-undo-01", &config, false).unwrap();
+        retire_restored(&data, &run).unwrap();
+        assert!(!manifest_path(&data, &run).exists());
+        assert!(!run_dir(&data, &run).join(SNAPSHOTS).exists());
+        assert_eq!(std::fs::read(history_artifact).unwrap(), b"history-owned");
+        assert_eq!(
+            std::fs::read(root.path().join("document.txt")).unwrap(),
+            b"before"
         );
     }
 

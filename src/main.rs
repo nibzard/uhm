@@ -15,6 +15,7 @@ mod contract;
 mod dirs;
 mod doctor;
 mod environment;
+mod execution_signal;
 mod first_run;
 mod history;
 mod http;
@@ -604,6 +605,30 @@ fn integration_management(
     }
 }
 
+fn record_and_finalize_recovery_expiry(config: &config::Config, run: &str) -> Result<(), String> {
+    // `record_recovery_event` intentionally treats disabled history as a
+    // successful no-op for ordinary callers. Expiry acknowledgment cannot:
+    // finalization is authorized only after the event is durably present.
+    if !config.history.enabled {
+        return Err(
+            "local history is disabled, so no durable RecoveryExpired event was recorded".into(),
+        );
+    }
+    history::record_recovery_event(
+        &config.paths.data_dir,
+        &config.history,
+        run,
+        "recovery",
+        "minimal",
+        history::EventKind::RecoveryExpired,
+        "expired",
+        Some("retained recovery evidence expired or was explicitly pruned"),
+        0,
+        None,
+    )?;
+    recovery::acknowledge_expired(&config.paths.data_dir, run)
+}
+
 fn management(
     args: &args::Args,
     config: &config::Config,
@@ -779,18 +804,27 @@ fn management(
                     } else {
                         history::EventKind::UndoFinished
                     };
-                    let _ = history::record_recovery_event(
-                        &config.paths.data_dir,
-                        &config.history,
-                        &operation_run,
-                        route,
-                        "minimal",
-                        kind,
-                        &report.outcome,
-                        None,
-                        report.restored + report.removed,
-                        Some(&preview.run_id),
-                    );
+                    let completion_recorded = config.history.enabled
+                        && history::record_recovery_event(
+                            &config.paths.data_dir,
+                            &config.history,
+                            &operation_run,
+                            route,
+                            "minimal",
+                            kind,
+                            &report.outcome,
+                            None,
+                            report.restored + report.removed,
+                            Some(&preview.run_id),
+                        )
+                        .is_ok();
+                    if completion_recorded {
+                        if let Err(error) =
+                            recovery::retire_restored(&config.paths.data_dir, &preview.run_id)
+                        {
+                            eprintln!("uhm: recovery evidence cleanup: {error}");
+                        }
+                    }
                     if args.json {
                         println!(
                             "{}",
@@ -834,11 +868,14 @@ fn management(
                     Ok(()) => {
                         if words.contains(&"--prune") {
                             match recovery::prune(&config.paths.data_dir, &config.recovery, false, true) {
-                                Ok(report) => {
+                                Ok(mut report) => {
                                     for run in &report.expired_runs {
-                                        let _ = history::record_recovery_event(&config.paths.data_dir, &config.history, run, "recovery", "minimal", history::EventKind::RecoveryExpired, "expired", Some("retained snapshots were explicitly pruned"), 0, None);
+                                        match record_and_finalize_recovery_expiry(config, run) {
+                                            Ok(()) => report.manifests_removed += 1,
+                                            Err(error) => eprintln!("uhm: recovery expiry for {run} remains pending: {error}"),
+                                        }
                                     }
-                                    println!("recovery off; pruned {} snapshots ({} bytes)", report.snapshots_removed, report.bytes_removed)
+                                    println!("recovery off; pruned {} snapshots ({} bytes); finalized {} manifests", report.snapshots_removed, report.bytes_removed, report.manifests_removed)
                                 },
                                 Err(error) => return app_error(args, outcome::CONFIG, "recovery_prune_error", &error),
                             }
@@ -857,14 +894,17 @@ fn management(
                     let dry = args.dry_run || words.contains(&"--dry-run");
                     let all = words.contains(&"--all");
                     match recovery::prune(&config.paths.data_dir, &config.recovery, dry, all) {
-                        Ok(report) => {
+                        Ok(mut report) => {
                             if !dry {
                                 for run in &report.expired_runs {
-                                    let _ = history::record_recovery_event(&config.paths.data_dir, &config.history, run, "recovery", "minimal", history::EventKind::RecoveryExpired, "expired", Some("retained snapshots were explicitly pruned"), 0, None);
+                                    match record_and_finalize_recovery_expiry(config, run) {
+                                        Ok(()) => report.manifests_removed += 1,
+                                        Err(error) => eprintln!("uhm: recovery expiry for {run} remains pending: {error}"),
+                                    }
                                 }
                             }
                             if args.json { println!("{}", serde_json::to_string(&report).unwrap()); } else {
-                                println!("{} {} snapshots ({} bytes); {} pinned retained", if dry { "would prune" } else { "pruned" }, report.snapshots_removed, report.bytes_removed, report.retained_pinned);
+                                println!("{} {} snapshots ({} bytes); {} manifests {}; {} pinned retained", if dry { "would prune" } else { "pruned" }, report.snapshots_removed, report.bytes_removed, report.manifests_removed, if dry { "would be finalized" } else { "finalized" }, report.retained_pinned);
                                 if report.retained_within_limits > 0 {
                                     println!("{} manifest(s) skipped: within the {}-day age and {}-byte total caps (use `uhm recovery prune --all` to remove retained snapshots now)", report.retained_within_limits, config.recovery.max_age_days, config.recovery.max_total_bytes);
                                 }

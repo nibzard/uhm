@@ -67,7 +67,7 @@ Important state has a text label and never depends on color. Layout measures dis
 
 A job makes at most two provider calls. The second slot is consumed by one explicitly configured pre-proposal transport fallback, clarification, requested revision, or user-triggered failure repair; these are mutually exclusive. Fallback is sequential and typed-error-driven, never a quality judgment, and cannot occur after an accepted proposal or execution. A repair can produce at most a second execution and never happens automatically. Each follow-up is a fresh stateless request to the accepted provider/model reconstructed from bounded inputs; no provider conversation ID or hidden reasoning is retained.
 
-Redirected child streams are teed byte-for-byte while bounded diagnostic tails are retained independently. Terminal-attached streams are inherited and have no automatic diagnostic promise. Child exit status wins, signals map to `128 + signal`, execution has a configurable timeout, and provider/private control secrets are removed from the child environment.
+Redirected child streams are teed byte-for-byte while bounded diagnostic tails are retained independently. Terminal-attached streams are inherited and have no automatic diagnostic promise. Ordinary child exit status wins. The wall deadline includes redirected-stream drainage: pending output may drain until that deadline, while a descendant that still holds a pipe open at the deadline makes the execution time out. Shell and program execution share one signal owner through child reaping and local cleanup; signals map to `128 + signal`. Provider/private control secrets are removed from the child environment.
 
 ## Program execution
 

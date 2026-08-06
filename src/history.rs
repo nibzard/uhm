@@ -433,11 +433,20 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     tmp.write_all(bytes).map_err(|e| e.to_string())?;
     tmp.as_file().sync_all().map_err(|e| e.to_string())?;
     tmp.persist(path).map_err(|e| e.error.to_string())?;
-    Ok(())
+    sync_history_directory(parent)
+}
+
+fn sync_history_directory(directory: &Path) -> Result<(), String> {
+    std::fs::File::open(directory)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("sync history directory {}: {error}", directory.display()))
 }
 
 fn append_locked(data: &Path, mut event: Event) -> Result<(), String> {
     let path = journal_path(data);
+    let journal_was_present = path
+        .try_exists()
+        .map_err(|error| format!("inspect history journal before append: {error}"))?;
     let journal = read_unlocked(&path)?;
     if journal.truncated_final_line {
         let mut bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
@@ -464,7 +473,14 @@ fn append_locked(data: &Path, mut event: Event) -> Result<(), String> {
     serde_json::to_writer(&mut file, &event).map_err(|e| e.to_string())?;
     file.write_all(b"\n").map_err(|e| e.to_string())?;
     file.sync_data()
-        .map_err(|e| format!("flush history: {}", e))
+        .map_err(|e| format!("flush history: {}", e))?;
+    if !journal_was_present {
+        // sync_data makes the new journal's contents durable, but its name is
+        // not crash-durable until the containing directory is also synced.
+        // Recovery expiry relies on this return as deletion authority.
+        sync_history_directory(data)?;
+    }
+    Ok(())
 }
 
 use std::io::Seek;
@@ -1625,6 +1641,14 @@ pub fn record_recovery_event(
             .collect::<String>()
     });
     let _guard = lock(data)?;
+    if kind == EventKind::RecoveryExpired
+        && read_unlocked(&journal_path(data))?
+            .events
+            .iter()
+            .any(|event| event.run_id == run && event.kind == EventKind::RecoveryExpired)
+    {
+        return Ok(());
+    }
     append_locked(
         data,
         base_event(
@@ -1962,7 +1986,18 @@ mod tests {
             .unwrap()
             .write_all(b"{broken")
             .unwrap();
-        assert!(read(d.path()).unwrap().truncated_final_line);
+        let interrupted = read(d.path()).unwrap();
+        assert!(interrupted.truncated_final_line);
+        let complete_events = interrupted.events.len();
+        append_receipt(
+            d.path(),
+            &cfg(HistoryDetail::Metadata),
+            &receipt("abcdefgh1234"),
+        )
+        .unwrap();
+        let repaired = read(d.path()).unwrap();
+        assert!(!repaired.truncated_final_line);
+        assert!(repaired.events.len() > complete_events);
         std::fs::write(journal_path(d.path()), b"{broken}\n").unwrap();
         assert!(read(d.path()).unwrap_err().contains("line 1"));
     }
@@ -2270,6 +2305,39 @@ mod tests {
         write_private_atomic(&run.join("recovery.json"), b"retained").unwrap();
         prune(d.path(), &config, false).unwrap();
         assert!(run.join("recovery.json").exists());
+    }
+
+    #[test]
+    fn recovery_expiry_event_is_idempotent_per_run() {
+        let d = tempfile::tempdir().unwrap();
+        let config = cfg(HistoryDetail::Metadata);
+        let journal = journal_path(d.path());
+        assert!(!journal.exists());
+        for reason in ["first expiry attempt", "retry after crash"] {
+            record_recovery_event(
+                d.path(),
+                &config,
+                "expired-run-01",
+                "recovery",
+                "minimal",
+                EventKind::RecoveryExpired,
+                "expired",
+                Some(reason),
+                0,
+                None,
+            )
+            .unwrap();
+        }
+        assert!(journal.is_file());
+        let events = events_for(d.path(), "expired-run-01").unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == EventKind::RecoveryExpired)
+                .count(),
+            1
+        );
+        assert_eq!(events[0].data["reason"], "first expiry attempt");
     }
 
     #[test]

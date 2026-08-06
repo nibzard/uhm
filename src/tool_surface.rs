@@ -106,6 +106,23 @@ impl Identity {
     }
 }
 
+/// Standard utilities whose interfaces the model already knows, beyond the
+/// common tools in `context::TOOL_CATALOG`. Naming one never triggers a help
+/// probe, so there is no consent prompt, no local execution, and no help bytes
+/// leave the device for it.
+const UBIQUITOUS_TOOLS: &[&str] = &[
+    "mv", "cp", "rm", "ls", "ln", "cat", "mkdir", "rmdir", "touch", "chmod", "chown", "pwd",
+    "echo", "printf", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "grep", "sed", "awk",
+    "find", "xargs", "which", "env", "date", "diff", "cmp", "tee", "du", "df", "ps", "kill",
+    "sleep", "dirname", "basename", "stat", "file", "less", "more",
+];
+
+/// A tool the model needs no self-description for: probing it would add
+/// nothing, so its name is skipped before resolution or consent.
+fn is_ubiquitous(name: &str) -> bool {
+    UBIQUITOUS_TOOLS.contains(&name) || crate::context::TOOL_CATALOG.contains(&name)
+}
+
 /// Flags tried in order. The first successful, non-empty response wins. Every
 /// one is a request for self-description, never an operand.
 const HELP_FLAGS: [&str; 3] = ["--help", "help", "-h"];
@@ -195,6 +212,9 @@ fn probe(identity: &Identity, deadline: std::time::Instant) -> Option<String> {
 
 /// Observed capability for the tools this intent names.
 ///
+/// Ubiquitous standard tools are skipped before resolution: they are never
+/// probed, never prompted about, and never occupy one of the `MAX_TOOLS` slots.
+///
 /// `ask` is consulted at most once per distinct binary and its answer is
 /// persisted, so an allowed tool is probed silently afterwards and a declined
 /// one is never asked about again until its bytes change. Probing runs local
@@ -212,6 +232,7 @@ pub fn surface(
 ) -> Vec<Observed> {
     let identities: Vec<Identity> = tokens(intent)
         .into_iter()
+        .filter(|name| !is_ubiquitous(name))
         .filter_map(|name| {
             crate::context::resolve_in(search, &name)
                 .and_then(|path| Identity::resolve(&name, &path))
@@ -699,6 +720,71 @@ mod tests {
             true
         });
         assert!(observed.is_empty(), "{observed:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ubiquitous_tool_is_never_asked_about_or_probed() {
+        // `mv` here is a fake that would leak if probed; the point is that a
+        // ubiquitous name is skipped before resolution, so nothing runs, nothing
+        // is asked, and nothing is persisted.
+        let (dir, _) = fake_tool("mv", "#!/bin/sh\necho 'should never be probed'\n");
+        let search = vec![dir.path().to_path_buf()];
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "mv drive to blaxel-drive",
+            data.path(),
+            &search,
+            deadline(),
+            &mut |identity| panic!("a ubiquitous tool must not prompt: {}", identity.name),
+        );
+        assert!(observed.is_empty(), "{observed:?}");
+        assert!(
+            !data.path().join(STORE_FILE).exists(),
+            "a skipped tool must leave no record"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_catalog_tool_is_never_asked_about_or_probed() {
+        let (dir, _) = fake_tool("git", "#!/bin/sh\necho 'should never be probed'\n");
+        let search = vec![dir.path().to_path_buf()];
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "git status please",
+            data.path(),
+            &search,
+            deadline(),
+            &mut |identity| panic!("a catalog tool must not prompt: {}", identity.name),
+        );
+        assert!(observed.is_empty(), "{observed:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ubiquitous_tools_do_not_consume_probe_slots() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        for name in ["mv", "grep", "sed", "alfa", "bravo", "charlie"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho 'usage: {name}'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let observed = surface(
+            "mv grep sed alfa bravo charlie",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            deadline(),
+            &mut |_| true,
+        );
+        let names: Vec<&str> = observed.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["alfa", "bravo", "charlie"],
+            "skipped names must not crowd out probeable tools"
+        );
     }
 
     #[test]

@@ -66,7 +66,10 @@ uhm recovery pin <run-id|last>
 uhm recovery unpin <run-id|last>
 uhm recovery prune --dry-run
 uhm recovery prune
+uhm recovery prune --all
 uhm recovery off --prune
 ```
+
+Pin evidence before its age deadline if you need to retain it. The deadline does not move; once an unpinned run reaches it, restore is refused even before the next physical prune. Plain prune enforces age and byte limits. Use `--all` to retire every inactive, unpinned recovery run, including runs still within those limits.
 
 Use backups or version control for directories, repositories, databases, remote systems, unsnapshotted deletions, and anything outside managed-file recovery. See the [recovery reference](../reference/recovery.md) for eligibility and states.

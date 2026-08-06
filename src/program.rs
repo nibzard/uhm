@@ -9,12 +9,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
-use std::sync::{Arc, Once};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-static CHILD_GROUP: AtomicI32 = AtomicI32::new(0);
-static SIGNALS: Once = Once::new();
 type ReaderHandle = std::thread::JoinHandle<(Vec<u8>, Vec<u8>)>;
 
 #[derive(Debug)]
@@ -388,7 +386,10 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
         return Err("microprogram exceeds configured manifest limits".into());
     }
     let python = req.python.path()?;
-    install_signal_forwarding();
+    // This guard is deliberately declared before every workspace, staging, and
+    // recovery owner below. Their Drop cleanup therefore runs before signal
+    // ownership is released on every return path.
+    let execution = crate::execution_signal::acquire()?;
     let workspace = tempfile::Builder::new()
         .prefix("uhm-program-")
         .tempdir()
@@ -519,48 +520,178 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("spawn isolated Python runtime: {e}"))?;
-    CHILD_GROUP.store(child.id() as i32, Ordering::SeqCst);
+    let target = child.id() as i32;
+    execution.activate(target);
     let total = Arc::new(AtomicUsize::new(0));
     let overflow = Arc::new(AtomicBool::new(false));
     let cancel_readers = Arc::new(AtomicBool::new(false));
-    let stdout = read_bounded(
-        child.stdout.take().expect("piped stdout"),
+    let mut stdout = None;
+    let mut stderr = None;
+    let stdout_stream = match child.stdout.take() {
+        Some(stream) => stream,
+        None => {
+            cleanup_failed_execution(
+                &mut child,
+                target,
+                &cancel_readers,
+                &mut stdout,
+                &mut stderr,
+                &execution,
+            );
+            return Err("isolated Python runtime has no stdout pipe".into());
+        }
+    };
+    match read_bounded(
+        stdout_stream,
         total.clone(),
         overflow.clone(),
         cancel_readers.clone(),
         req.config.output_max_bytes,
         req.config.diagnostic_bytes,
         true,
-    )?;
-    let stderr = read_bounded(
-        child.stderr.take().expect("piped stderr"),
+    ) {
+        Ok(handle) => stdout = Some(handle),
+        Err(error) => {
+            cleanup_failed_execution(
+                &mut child,
+                target,
+                &cancel_readers,
+                &mut stdout,
+                &mut stderr,
+                &execution,
+            );
+            return Err(error);
+        }
+    }
+    let stderr_stream = match child.stderr.take() {
+        Some(stream) => stream,
+        None => {
+            cleanup_failed_execution(
+                &mut child,
+                target,
+                &cancel_readers,
+                &mut stdout,
+                &mut stderr,
+                &execution,
+            );
+            return Err("isolated Python runtime has no stderr pipe".into());
+        }
+    };
+    match read_bounded(
+        stderr_stream,
         total,
         overflow.clone(),
         cancel_readers.clone(),
         req.config.output_max_bytes,
         req.config.diagnostic_bytes,
         false,
-    )?;
+    ) {
+        Ok(handle) => stderr = Some(handle),
+        Err(error) => {
+            cleanup_failed_execution(
+                &mut child,
+                target,
+                &cancel_readers,
+                &mut stdout,
+                &mut stderr,
+                &execution,
+            );
+            return Err(error);
+        }
+    }
     let mut timed_out = false;
     let deadline = started + Duration::from_secs(req.config.timeout_secs);
     let status = 'wait: loop {
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|e| format!("wait for program: {e}"))?
-        {
-            break status;
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                cleanup_failed_execution(
+                    &mut child,
+                    target,
+                    &cancel_readers,
+                    &mut stdout,
+                    &mut stderr,
+                    &execution,
+                );
+                return Err(format!("wait for program: {error}"));
+            }
+        }
+        if let Some(signal) = execution.received_signal() {
+            terminate(target, signal);
+            let grace = Instant::now() + Duration::from_millis(500);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => break 'wait status,
+                    Ok(None) => {}
+                    Err(error) => {
+                        cleanup_failed_execution(
+                            &mut child,
+                            target,
+                            &cancel_readers,
+                            &mut stdout,
+                            &mut stderr,
+                            &execution,
+                        );
+                        return Err(format!("wait for interrupted program: {error}"));
+                    }
+                }
+                if Instant::now() >= grace {
+                    terminate(target, libc::SIGKILL);
+                    match child.wait() {
+                        Ok(status) => break 'wait status,
+                        Err(error) => {
+                            cleanup_failed_execution(
+                                &mut child,
+                                target,
+                                &cancel_readers,
+                                &mut stdout,
+                                &mut stderr,
+                                &execution,
+                            );
+                            return Err(format!("reap interrupted program: {error}"));
+                        }
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
         if overflow.load(Ordering::SeqCst) || Instant::now() >= deadline {
             timed_out = !overflow.load(Ordering::SeqCst);
-            terminate(child.id() as i32, libc::SIGTERM);
+            terminate(target, libc::SIGTERM);
             let grace = Instant::now();
             loop {
-                if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                    break 'wait status;
+                match child.try_wait() {
+                    Ok(Some(status)) => break 'wait status,
+                    Ok(None) => {}
+                    Err(error) => {
+                        cleanup_failed_execution(
+                            &mut child,
+                            target,
+                            &cancel_readers,
+                            &mut stdout,
+                            &mut stderr,
+                            &execution,
+                        );
+                        return Err(format!("wait for timed out program: {error}"));
+                    }
                 }
                 if grace.elapsed() >= Duration::from_millis(500) {
-                    terminate(child.id() as i32, libc::SIGKILL);
-                    break 'wait child.wait().map_err(|e| e.to_string())?;
+                    terminate(target, libc::SIGKILL);
+                    match child.wait() {
+                        Ok(status) => break 'wait status,
+                        Err(error) => {
+                            cleanup_failed_execution(
+                                &mut child,
+                                target,
+                                &cancel_readers,
+                                &mut stdout,
+                                &mut stderr,
+                                &execution,
+                            );
+                            return Err(format!("reap timed out program: {error}"));
+                        }
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -569,47 +700,55 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
         }
     };
 
-    // The primary process can exit while a descendant still owns an inherited
-    // pipe. Give ordinary buffered output a brief drain window, then terminate
-    // remaining in-group descendants. A process that deliberately starts a new
-    // session is outside group cleanup, so the nonblocking collectors also obey
-    // the absolute deadline and can close their descriptors without EOF.
-    let drain_grace = Instant::now() + Duration::from_millis(50);
-    while (!stdout.is_finished() || !stderr.is_finished())
+    // `wait`/`try_wait` has reaped the group leader, so the numeric PGID is no
+    // longer stable identity. Never signal it again: an escaped descendant can
+    // keep a pipe open after the old group becomes empty and recyclable.
+    // Instead, let nonblocking collectors drain until the original absolute
+    // deadline, then cancel them without requiring EOF.
+    execution.deactivate_target();
+    while readers_running(&stdout, &stderr)
         && Instant::now() < deadline
-        && Instant::now() < drain_grace
         && !overflow.load(Ordering::SeqCst)
+        && execution.received_signal().is_none()
     {
         std::thread::sleep(Duration::from_millis(5));
     }
-    let lingering_descendants = !stdout.is_finished() || !stderr.is_finished();
+    let lingering_descendants = readers_running(&stdout, &stderr);
     if lingering_descendants {
-        timed_out = true;
-        terminate(child.id() as i32, libc::SIGTERM);
-        let cleanup_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
-        while (!stdout.is_finished() || !stderr.is_finished()) && Instant::now() < cleanup_deadline
-        {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-    if !stdout.is_finished() || !stderr.is_finished() {
-        terminate(child.id() as i32, libc::SIGKILL);
+        timed_out |= post_reap_reader_exhaustion_is_timeout(
+            execution.received_signal(),
+            overflow.load(Ordering::SeqCst),
+        );
         cancel_readers.store(true, Ordering::SeqCst);
     }
     cancel_readers.store(true, Ordering::SeqCst);
-    let (stdout_bytes, stdout_tail) = stdout.join().unwrap_or_default();
-    let (_, mut stderr_tail) = stderr.join().unwrap_or_default();
-    CHILD_GROUP.store(0, Ordering::SeqCst);
+    let (stdout_bytes, stdout_tail) = stdout
+        .take()
+        .expect("program stdout reader was initialized")
+        .join()
+        .unwrap_or_default();
+    let (_, mut stderr_tail) = stderr
+        .take()
+        .expect("program stderr reader was initialized")
+        .join()
+        .unwrap_or_default();
     let output_overflow = overflow.load(Ordering::SeqCst);
     let _ = std::fs::remove_file(&contract_path);
     #[cfg(unix)]
-    let signal = {
+    let child_signal = {
         use std::os::unix::process::ExitStatusExt;
         status.signal()
     };
     #[cfg(not(unix))]
-    let signal = None;
-    let mut code = status.code().unwrap_or_else(|| 128 + signal.unwrap_or(1));
+    let child_signal = None;
+    let mut signal = child_signal.or(execution.received_signal());
+    let mut code = if let Some(forwarded_signal) = execution.received_signal() {
+        128 + forwarded_signal
+    } else {
+        status
+            .code()
+            .unwrap_or_else(|| 128 + child_signal.unwrap_or(1))
+    };
     if timed_out || output_overflow {
         code = 124;
     }
@@ -660,6 +799,12 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
     } else {
         None
     };
+    if !timed_out && !output_overflow {
+        if let Some(forwarded_signal) = execution.received_signal() {
+            signal.get_or_insert(forwarded_signal);
+            code = 128 + forwarded_signal;
+        }
+    }
     let artifact_commit_success =
         code == 0 && (!has_writable_files(req.proposal) || !artifacts.is_empty());
     Ok(ExecutionResult {
@@ -842,12 +987,17 @@ fn read_bounded<R: Read + Send + std::os::fd::AsRawFd + 'static>(
         let mut tail = VecDeque::with_capacity(tail_limit);
         let mut buf = [0u8; 8192];
         loop {
+            if cancel.load(Ordering::SeqCst) {
+                break;
+            }
             match reader.read(&mut buf) {
                 Ok(0) => break,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if cancel.load(Ordering::SeqCst) {
-                        break;
-                    }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) =>
+                {
                     std::thread::sleep(Duration::from_millis(5));
                 }
                 Err(_) => break,
@@ -871,6 +1021,40 @@ fn read_bounded<R: Read + Send + std::os::fd::AsRawFd + 'static>(
         }
         (retained, tail.into_iter().collect())
     }))
+}
+
+fn readers_running(stdout: &Option<ReaderHandle>, stderr: &Option<ReaderHandle>) -> bool {
+    stdout.as_ref().is_some_and(|handle| !handle.is_finished())
+        || stderr.as_ref().is_some_and(|handle| !handle.is_finished())
+}
+
+fn post_reap_reader_exhaustion_is_timeout(
+    received_signal: Option<i32>,
+    output_overflow: bool,
+) -> bool {
+    received_signal.is_none() && !output_overflow
+}
+
+fn cleanup_failed_execution(
+    child: &mut std::process::Child,
+    target: i32,
+    cancel: &Arc<AtomicBool>,
+    stdout: &mut Option<ReaderHandle>,
+    stderr: &mut Option<ReaderHandle>,
+    execution: &crate::execution_signal::ExecutionGuard,
+) {
+    terminate(target, libc::SIGKILL);
+    cancel.store(true, Ordering::SeqCst);
+    let _ = child.wait();
+    // The group leader is reaped. Clear the numeric target before joining
+    // readers so no concurrent signal can reach a recycled PGID.
+    execution.deactivate_target();
+    if let Some(handle) = stdout.take() {
+        let _ = handle.join();
+    }
+    if let Some(handle) = stderr.take() {
+        let _ = handle.join();
+    }
 }
 
 #[cfg(unix)]
@@ -927,26 +1111,8 @@ fn apply_limits(cmd: &mut Command, config: &ProgramConfig) {
     }
 }
 
-fn install_signal_forwarding() {
-    SIGNALS.call_once(|| {
-        for signal in [libc::SIGINT, libc::SIGTERM] {
-            unsafe {
-                let _ = signal_hook::low_level::register(signal, move || {
-                    let group = CHILD_GROUP.load(Ordering::SeqCst);
-                    if group > 0 {
-                        terminate(group, signal);
-                    }
-                });
-            }
-        }
-    });
-}
-
 fn terminate(group: i32, signal: i32) {
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(-group, signal);
-    }
+    crate::execution_signal::terminate(group, signal);
 }
 
 #[cfg(test)]
@@ -1124,6 +1290,63 @@ mod tests {
         assert_ne!(result.code, 0);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn reader_cancellation_stops_continuous_output() {
+        use std::os::unix::net::UnixStream;
+        use std::sync::mpsc;
+
+        let (reader, mut producer) = UnixStream::pair().unwrap();
+        let total = Arc::new(AtomicUsize::new(0));
+        let overflow = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let stop_producer = Arc::new(AtomicBool::new(false));
+        let reader_handle = read_bounded(
+            reader,
+            total.clone(),
+            overflow,
+            cancel.clone(),
+            usize::MAX,
+            64,
+            false,
+        )
+        .unwrap();
+        let producer_stop = stop_producer.clone();
+        let producer_handle = std::thread::spawn(move || {
+            let bytes = [b'x'; 8192];
+            while !producer_stop.load(Ordering::SeqCst) {
+                if producer.write_all(&bytes).is_err() {
+                    break;
+                }
+            }
+        });
+        let output_deadline = Instant::now() + Duration::from_secs(1);
+        while total.load(Ordering::SeqCst) == 0 && Instant::now() < output_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(total.load(Ordering::SeqCst) > 0);
+
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let _ = reader_handle.join();
+            let _ = finished_tx.send(());
+        });
+        let started = Instant::now();
+        cancel.store(true, Ordering::SeqCst);
+        let stopped = finished_rx.recv_timeout(Duration::from_millis(500)).is_ok();
+        stop_producer.store(true, Ordering::SeqCst);
+        producer_handle.join().unwrap();
+        if !stopped {
+            finished_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        waiter.join().unwrap();
+        assert!(
+            stopped,
+            "reader ignored cancellation under continuous output"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
     #[test]
     fn descendant_held_pipes_are_bounded_and_report_timeout() {
         let inventory = crate::runtime::inventory();
@@ -1136,10 +1359,9 @@ mod tests {
             child_processes: 4096,
             ..ProgramConfig::default()
         };
-        let started = Instant::now();
         let result = execute(Request {
             proposal: &proposal(
-                "import os,time\npid=os.fork()\nif pid == 0:\n time.sleep(30)\n os._exit(0)\nprint('primary done')",
+                "import os,time\npid=os.fork()\nif pid == 0:\n time.sleep(2)\n os._exit(0)\nprint('primary done')",
             ),
             python: &inventory,
             stdin: None,
@@ -1152,7 +1374,49 @@ mod tests {
         .unwrap();
         assert!(result.timed_out);
         assert_eq!(result.code, 124);
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(result.duration < Duration::from_secs(3));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_descendant_output_drains_before_the_absolute_deadline() {
+        let inventory = crate::runtime::inventory();
+        if !inventory.available {
+            return;
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let config = ProgramConfig {
+            timeout_secs: 1,
+            child_processes: 4096,
+            ..ProgramConfig::default()
+        };
+        let result = execute(Request {
+            proposal: &proposal(
+                "import os,time\npid=os.fork()\nif pid == 0:\n time.sleep(0.2)\n os.write(1,b'delayed-output')\n os._exit(0)",
+            ),
+            python: &inventory,
+            stdin: None,
+            cwd: &cwd,
+            config: &config,
+            containment: crate::containment::Mode::Off,
+            retain_workspace: false,
+            recovery: None,
+        })
+        .unwrap();
+        assert_eq!(result.code, 0);
+        assert!(!result.timed_out);
+        assert_eq!(result.stdout, b"delayed-output");
+        assert!(result.duration >= Duration::from_millis(150));
+    }
+
+    #[test]
+    fn forwarded_signal_is_not_reclassified_as_post_reap_timeout() {
+        assert!(!post_reap_reader_exhaustion_is_timeout(
+            Some(libc::SIGINT),
+            false
+        ));
+        assert!(!post_reap_reader_exhaustion_is_timeout(None, true));
+        assert!(post_reap_reader_exhaustion_is_timeout(None, false));
     }
 
     #[cfg(unix)]
@@ -1305,6 +1569,16 @@ mod tests {
 
         let failed_run = "run-00000101";
         let mut failed = value.clone();
+        let failed_snapshot = data
+            .join("runs")
+            .join(failed_run)
+            .join("snapshots")
+            .join("output-000.preimage");
+        let failed_snapshot_literal =
+            serde_json::to_string(failed_snapshot.to_str().unwrap()).unwrap();
+        failed.source = failed
+            .source
+            .replace(&snapshot_literal, &failed_snapshot_literal);
         failed.source.push_str("\nraise SystemExit(2)");
         let result = execute(Request {
             proposal: &failed,
