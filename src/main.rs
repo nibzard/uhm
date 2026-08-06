@@ -132,7 +132,11 @@ fn run(argv: Vec<String>) -> i32 {
                 "the one-entry shell history sample is empty, oversized, or contains NUL",
             );
         }
-        eprintln!("uhm: the following one shell-history entry will be sent to OpenAI if you continue:\n{}",ansi::sanitize_untrusted(entry));
+        eprintln!(
+            "uhm: the following one shell-history entry will be sent to {} if you continue:\n{}",
+            config.provider,
+            ansi::sanitize_untrusted(entry)
+        );
         if !std::io::stderr().is_terminal() {
             return app_error(
                 &args,
@@ -217,7 +221,7 @@ fn run(argv: Vec<String>) -> i32 {
                 let request = format!(
                     "Repair the retained action using only this bounded receipt subset.\n{seed}"
                 );
-                eprintln!("uhm: exact retained subset and repair instruction that will be sent to OpenAI:\n{}", ansi::sanitize_untrusted(&request));
+                eprintln!("uhm: exact retained subset and repair instruction that will be sent to {}:\n{}", config.provider, ansi::sanitize_untrusted(&request));
                 eprintln!("uhm: the selected current machine context will also be sent under the normal context policy. Snapshots and the full journal will not be sent.");
                 if !std::io::stderr().is_terminal() {
                     return app_error(
@@ -278,7 +282,7 @@ fn run(argv: Vec<String>) -> i32 {
         ) {
             Ok((id, subset)) => {
                 let request = format!("Propose one best-effort inverse for this retained receipt subset. Execution success must not be described as verified restoration.\n{subset}");
-                eprintln!("uhm: exact retained subset and recovery instruction that will be sent to OpenAI:\n{}", ansi::sanitize_untrusted(&request));
+                eprintln!("uhm: exact retained subset and recovery instruction that will be sent to {}:\n{}", config.provider, ansi::sanitize_untrusted(&request));
                 eprintln!("uhm: the selected current machine context will also be sent under the normal context policy. Snapshots and the full journal will not be sent.");
                 if !std::io::stderr().is_terminal() {
                     return app_error(
