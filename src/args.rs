@@ -82,6 +82,7 @@ const VERBS: &[&str] = &[
     "undo",
     "restore",
     "recovery",
+    "update",
     "shell-init",
     "shell-control-open",
     "shell-validate",
@@ -286,6 +287,14 @@ mod tests {
     }
 
     #[test]
+    fn update_is_a_command_without_model_intent() {
+        let args = pv(&["uhm", "update"]).unwrap();
+        assert_eq!(args.subcommand.as_deref(), Some("update"));
+        assert!(args.operands.is_empty());
+        assert!(args.prompt.is_empty());
+    }
+
+    #[test]
     fn provider_and_model_are_independent_explicit_options() {
         let args = pv(&[
             "uhm",
@@ -477,6 +486,11 @@ mod tests {
             "history replay may send completion telemetry"
         );
         assert!(local("doctor").is_local_only(), "doctor without network");
+
+        assert!(
+            !local("update").is_local_only(),
+            "update queries the GitHub release API"
+        );
 
         let doctor_network = Args {
             subcommand: Some("doctor".into()),

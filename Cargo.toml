@@ -1,6 +1,6 @@
 [package]
 name = "uhm-cli"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 rust-version = "1.89"
 authors = ["Nikola Balic"]
@@ -50,6 +50,7 @@ include = [
   "/CONTRIBUTING.md",
   "/config.example.yaml",
   "/docs/*.md",
+  "/docs/install.sh",
   "/docs/architecture/*.md",
   "/docs/explanation/*.md",
   "/docs/how-to/*.md",

@@ -148,12 +148,15 @@ install_binary() {
   destination_path="${destination_dir}/uhm"
 
   mkdir -p "$destination_dir"
+  staged_binary="$(mktemp "${destination_dir%/}/.uhm-install.XXXXXX")"
   if command -v install >/dev/null 2>&1; then
-    install -m 0755 "$source_binary" "$destination_path"
+    install -m 0755 "$source_binary" "$staged_binary"
   else
-    cp "$source_binary" "$destination_path"
-    chmod 0755 "$destination_path"
+    cp "$source_binary" "$staged_binary"
+    chmod 0755 "$staged_binary"
   fi
+  mv -f "$staged_binary" "$destination_path"
+  staged_binary=""
 }
 
 need_cmd tar
@@ -169,8 +172,12 @@ archive="uhm-${version}-${target}.tar.gz"
 release_base="https://github.com/${repo_slug}/releases/download/${version}"
 tmp_root="$(resolve_tmp_root)"
 tmp_dir="$(mktemp -d "${tmp_root%/}/uhm-install.XXXXXX")"
+staged_binary=""
 
 cleanup() {
+  if [ -n "$staged_binary" ]; then
+    rm -f "$staged_binary"
+  fi
   rm -rf "$tmp_dir"
 }
 

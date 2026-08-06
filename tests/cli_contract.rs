@@ -47,6 +47,24 @@ fn configured_fresh(home: &Path, yaml: &str, arguments: &[&str]) -> Output {
         .unwrap()
 }
 
+#[test]
+fn update_is_a_builtin_and_validates_usage_before_loading_api_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = Command::new(binary())
+        .args(["update", "unexpected"])
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("config"))
+        .env("XDG_DATA_HOME", temp.path().join("data"))
+        .env("XDG_CACHE_HOME", temp.path().join("cache"))
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("usage: uhm update"), "{stderr}");
+    assert!(!stderr.contains("API key"), "{stderr}");
+}
+
 #[cfg(target_os = "linux")]
 fn reviewed_through_closed_pty(home: &Path, arguments: &str) -> Output {
     let command = format!("{} {arguments}", binary());

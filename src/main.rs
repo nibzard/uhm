@@ -38,6 +38,7 @@ mod sse;
 mod telemetry;
 mod tool_surface;
 mod tty;
+mod update;
 
 use render::ansi;
 use std::io::{IsTerminal, Write};
@@ -63,6 +64,22 @@ fn run(argv: Vec<String>) -> i32 {
     if args.version || args.subcommand.as_deref() == Some("version") {
         println!("uhm {}", VERSION);
         return 0;
+    }
+    if args.subcommand.as_deref() == Some("update") {
+        if !args.operands.is_empty() {
+            return app_error(&args, outcome::USAGE, "usage_error", "usage: uhm update");
+        }
+        return match update::run(VERSION) {
+            Ok(result) => {
+                if args.json {
+                    println!("{}", serde_json::to_string(&result).unwrap_or_default());
+                } else {
+                    result.render();
+                }
+                0
+            }
+            Err(error) => app_error(&args, outcome::UNAVAILABLE, "update_failed", &error),
+        };
     }
     if args.subcommand.as_deref() == Some("shell-init") {
         let words = args.operands.iter().map(String::as_str).collect::<Vec<_>>();
@@ -1411,5 +1428,5 @@ fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     code
 }
 fn print_help() {
-    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]     requires retained history (history.detail: full)\n  uhm recover <run-id|last> [guidance]    requires retained history (history.detail: full)\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network|environment]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras|deepseek>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]     requires retained history (history.detail: full)\n  uhm recover <run-id|last> [guidance]    requires retained history (history.detail: full)\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm update\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network|environment]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras|deepseek>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
 }

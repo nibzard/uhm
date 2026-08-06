@@ -150,6 +150,14 @@ uhm doctor [all] [network|environment]
 
 Local configuration and terminal checks. `network` checks reachability and authentication for the selected provider. `all` inspects all built-in adapters; `all network` also checks every configured credential and endpoint. The command exits 13 if any selected non-optional check fails, and 0 only when all selected checks pass.
 
+### update — install the latest release
+
+```
+uhm update
+```
+
+Queries the latest published GitHub release and, when it is newer, runs UHM's embedded installer for that exact version. The release archive is verified against its published SHA-256 checksum before replacing the current `uhm` executable. This command does not load provider configuration, require an API key, or send telemetry. Development builds newer than the published release are never downgraded.
+
 ### help and version
 
 ```

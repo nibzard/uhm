@@ -22,25 +22,25 @@ Fast path:
 curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
 ```
 
-The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.6.3` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
+The installer downloads the latest release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin` by default. It does not edit shell startup files. Set `UHM_VERSION=v0.6.4` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
 
-If you want the manual path instead, download the archive for your machine from the [v0.6.3 release](https://github.com/nibzard/uhm/releases/tag/v0.6.3):
+If you want the manual path instead, download the archive for your machine from the [v0.6.4 release](https://github.com/nibzard/uhm/releases/tag/v0.6.4):
 
 | System | Archive |
 |---|---|
-| Linux x86-64 | `uhm-v0.6.3-x86_64-unknown-linux-musl.tar.gz` |
-| Linux arm64 | `uhm-v0.6.3-aarch64-unknown-linux-musl.tar.gz` |
-| macOS Intel | `uhm-v0.6.3-x86_64-apple-darwin.tar.gz` |
-| macOS Apple silicon | `uhm-v0.6.3-aarch64-apple-darwin.tar.gz` |
+| Linux x86-64 | `uhm-v0.6.4-x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 | `uhm-v0.6.4-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `uhm-v0.6.4-x86_64-apple-darwin.tar.gz` |
+| macOS Apple silicon | `uhm-v0.6.4-aarch64-apple-darwin.tar.gz` |
 
 Verify the download before installing it:
 
 ```sh
-grep 'uhm-v0.6.3-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
-grep 'uhm-v0.6.3-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
-tar --no-same-owner -xzf uhm-v0.6.3-<target>.tar.gz
+grep 'uhm-v0.6.4-<target>.tar.gz$' SHA256SUMS | sha256sum --check  # Linux
+grep 'uhm-v0.6.4-<target>.tar.gz$' SHA256SUMS | shasum -a 256 -c - # macOS
+tar --no-same-owner -xzf uhm-v0.6.4-<target>.tar.gz
 mkdir -p "$HOME/.local/bin"
-install -m 755 uhm-v0.6.3-<target>/uhm "$HOME/.local/bin/uhm"
+install -m 755 uhm-v0.6.4-<target>/uhm "$HOME/.local/bin/uhm"
 uhm --version
 ```
 
@@ -49,7 +49,7 @@ The macOS archives are not notarized yet. If Gatekeeper quarantines the binary, 
 Rust users can build the same binary from source:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.6.3 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.6.4 uhm-cli
 ```
 
 The crates.io package is prepared but publication is deferred until ownership is ready.
@@ -206,7 +206,7 @@ The wrapper uses a private nonce-bound control directory, never application stdo
 
 Warnings for deletion, broad writes, privilege elevation, remote mutation, and process control are convenience signals. They are not a sandbox or a safety guarantee. Model output and the detector can both be wrong. Exit code zero proves only that the process exited zero, not that your intent was satisfied.
 
-The current release has no universal undo, filesystem-wide transaction layer, background agent, native Windows build, shell completion, auto-updater, package installation, JavaScript program runtime, or project-scale code generation.
+The current release has no universal undo, filesystem-wide transaction layer, background agent, native Windows build, shell completion, package installation, JavaScript program runtime, or project-scale code generation. Standalone installs can update themselves from checksum-verified GitHub release assets with `uhm update`.
 
 ## CLI reference
 
@@ -222,6 +222,7 @@ uhm recover <run-id|last> [guidance]
 uhm undo <run-id|last> [--review]
 uhm restore <run-id|last> --force
 uhm recovery on|off|status|prune|pin|unpin|resume
+uhm update
 uhm history [list|show|search|replay|export|prune|clear|status]
 uhm config [show|check]
 uhm doctor [all] [network|environment]
