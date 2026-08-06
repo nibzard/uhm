@@ -10,7 +10,6 @@ use crate::action::{
 };
 use crate::config::{HistoryConfig, HistoryDetail};
 use crate::dirs;
-use crate::file_lock::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -350,8 +349,7 @@ fn lock(data: &Path) -> Result<std::fs::File, String> {
     }
     dirs::ensure_private_dir(data)?;
     let file = private_file(&data.join(LOCK), false)?;
-    file.lock_exclusive()
-        .map_err(|e| format!("lock history: {}", e))?;
+    file.lock().map_err(|e| format!("lock history: {}", e))?;
     migrate_locked(data)?;
     Ok(file)
 }

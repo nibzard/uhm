@@ -109,7 +109,7 @@ fish_add_path "${HOME}/.local/bin"
 
 ## Option 3 — build from source
 
-With Rust 1.82 or newer:
+With Rust 1.89 or newer:
 
 ```sh
 cargo install --locked --git https://github.com/nibzard/uhm --tag v0.5.2 uhm-cli

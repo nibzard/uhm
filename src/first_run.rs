@@ -1,6 +1,5 @@
 //! Versioned first-use disclosure. The marker is persisted only after stderr is flushed.
 
-use crate::file_lock::FileExt;
 use crate::{
     config::Config,
     dirs,
@@ -55,7 +54,7 @@ pub fn ensure(config: &Config, telemetry_enabled: bool) -> Result<&'static str, 
             .map_err(|e| format!("set first-use notice lock permissions: {e}"))?;
     }
     notice_lock
-        .lock_exclusive()
+        .lock()
         .map_err(|e| format!("lock first-use notice: {e}"))?;
     if is_current(config) {
         return Ok(RENDERED_MARKER);

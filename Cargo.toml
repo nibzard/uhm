@@ -2,7 +2,7 @@
 name = "uhm-cli"
 version = "0.5.2"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.89"
 authors = ["Nikola Balic"]
 description = "A fast natural-language layer over terminal tools."
 license = "MIT"

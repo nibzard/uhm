@@ -6,7 +6,6 @@
 
 use crate::config::RecoveryConfig;
 use crate::dirs;
-use crate::file_lock::FileExt;
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
@@ -278,7 +277,7 @@ fn lock(data: &Path) -> Result<File, String> {
         .map_err(|error| format!("open recovery lock: {error}"))?;
     file.set_permissions(std::fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())?;
-    file.lock_exclusive()
+    file.lock()
         .map_err(|error| format!("lock recovery state: {error}"))?;
     Ok(file)
 }
@@ -2151,6 +2150,66 @@ fn sync_directory_handle(parent: &File) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    // Pins the blocking-exclusive contract of std::fs::File advisory locking
+    // (the primitive recovery::exclusive_guard relies on for cross-process
+    // mutual exclusion): a second holder must block until the first drops or
+    // unlocks. Guards against a future accidental switch to a non-blocking
+    // try_lock.
+    #[cfg(unix)]
+    #[test]
+    fn lock_exclusive_blocks_until_the_holder_releases() {
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let path = std::env::temp_dir().join(format!(
+            "uhm-file-lock-{}-{}.lock",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let holder = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .expect("open holder lock file");
+        holder.lock().expect("acquire holder lock");
+
+        let (tx, rx) = mpsc::channel::<()>();
+        let waiter_path = path.clone();
+        let waiter = thread::spawn(move || {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&waiter_path)
+                .expect("open waiter lock file");
+            // Blocks until the holder releases the lock.
+            file.lock().expect("acquire waiter lock");
+            tx.send(()).expect("signal acquisition");
+            file.unlock().expect("release waiter lock");
+        });
+
+        // While the holder keeps the lock, the waiter must not have acquired it.
+        thread::sleep(Duration::from_millis(200));
+        assert!(
+            rx.try_recv().is_err(),
+            "lock returned while another holder still held the lock"
+        );
+
+        // Closing the holder's descriptor releases the lock; the waiter proceeds.
+        drop(holder);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "lock never completed after the holder released"
+        );
+        waiter.join().expect("waiter thread panicked");
+
+        let _ = std::fs::remove_file(&path);
+    }
 
     fn paths(root: &Path, name: &str) -> (PathBuf, PathBuf) {
         (root.join(name), root.join(format!(".uhm-stage-{name}")))

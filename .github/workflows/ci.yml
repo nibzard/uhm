@@ -133,15 +133,15 @@ jobs:
         run: git diff --exit-code -- docs/demo/uhm-demo.svg docs/demo/uhm-demo.gif
 
   msrv:
-    name: MSRV / Rust 1.82
+    name: MSRV / Rust 1.89
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Install Rust 1.82
-        uses: dtolnay/rust-toolchain@1.82
+      - name: Install Rust 1.89
+        uses: dtolnay/rust-toolchain@1.89
 
       - name: Check MSRV
         run: cargo check --all-targets --locked

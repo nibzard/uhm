@@ -277,7 +277,7 @@ cargo build --release --locked
 (cd telemetry-worker && npm ci && npm test)
 ```
 
-CI covers stable Rust on Linux and macOS, Rust 1.82, a static Linux build, the packaged crate, and the telemetry gateway. Release tags build and smoke-test four archives, generate SHA-256 checksums, and attach GitHub provenance attestations.
+CI covers stable Rust on Linux and macOS, Rust 1.89, a static Linux build, the packaged crate, and the telemetry gateway. Release tags build and smoke-test four archives, generate SHA-256 checksums, and attach GitHub provenance attestations.
 
 Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), [AI_POLICY.md](AI_POLICY.md), and [SECURITY.md](SECURITY.md).
 

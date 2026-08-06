@@ -2,7 +2,6 @@
 
 use crate::action::Effect;
 use crate::config::Config;
-use crate::file_lock::FileExt;
 use crate::{dirs, history};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
@@ -310,16 +309,16 @@ pub fn complete(config: &Config, resolved_policy: &Policy, interaction: Interact
     let Ok(send_lock) = open_lock(&telemetry_root(config), "send.lock") else {
         return;
     };
-    if send_lock.lock_exclusive().is_err() {
+    if send_lock.lock().is_err() {
         return;
     }
     if !policy(config, false).enabled {
-        let _ = crate::file_lock::FileExt::unlock(&send_lock);
+        let _ = send_lock.unlock();
         return;
     }
     if event.parent_action == "unknown" || !crate::first_run::is_current(config) {
         let _ = enqueue(config, &run_id, &event);
-        let _ = crate::file_lock::FileExt::unlock(&send_lock);
+        let _ = send_lock.unlock();
         return;
     }
     if network_bound {
@@ -331,7 +330,7 @@ pub fn complete(config: &Config, resolved_policy: &Policy, interaction: Interact
             let _ = enqueue(config, &run_id, &event);
         }
     }
-    let _ = crate::file_lock::FileExt::unlock(&send_lock);
+    let _ = send_lock.unlock();
 }
 
 pub fn disable(config: &Config) -> Result<(), String> {
@@ -340,11 +339,11 @@ pub fn disable(config: &Config) -> Result<(), String> {
     let root = telemetry_root(config);
     let send_lock = open_lock(&root, "send.lock")?;
     send_lock
-        .lock_exclusive()
+        .lock()
         .map_err(|e| format!("lock telemetry sender: {}", e))?;
     let queue_lock = open_lock(&root, "queue.lock")?;
     queue_lock
-        .lock_exclusive()
+        .lock()
         .map_err(|e| format!("lock telemetry queue: {}", e))?;
     if let Ok(entries) = std::fs::read_dir(root.join("queue")) {
         for entry in entries.flatten() {
@@ -353,8 +352,8 @@ pub fn disable(config: &Config) -> Result<(), String> {
             }
         }
     }
-    crate::file_lock::FileExt::unlock(&queue_lock).map_err(|e| e.to_string())?;
-    crate::file_lock::FileExt::unlock(&send_lock).map_err(|e| e.to_string())
+    queue_lock.unlock().map_err(|e| e.to_string())?;
+    send_lock.unlock().map_err(|e| e.to_string())
 }
 
 pub fn enable(config: &Config) -> Result<(), String> {
@@ -383,21 +382,21 @@ pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::Co
     let Ok(send_lock) = open_lock(&root, "send.lock") else {
         return;
     };
-    if send_lock.lock_exclusive().is_err() {
+    if send_lock.lock().is_err() {
         return;
     }
     if !policy(config, false).enabled {
-        let _ = crate::file_lock::FileExt::unlock(&send_lock);
+        let _ = send_lock.unlock();
         return;
     }
     let event = feedback_event(receipt);
     if event.validate().is_err() {
-        let _ = crate::file_lock::FileExt::unlock(&send_lock);
+        let _ = send_lock.unlock();
         return;
     }
     if !crate::first_run::is_current(config) {
         let _ = enqueue(config, &format!("feedback-{}", history::run_id()), &event);
-        let _ = crate::file_lock::FileExt::unlock(&send_lock);
+        let _ = send_lock.unlock();
         return;
     }
     match send(&event, Duration::from_millis(100)) {
@@ -406,7 +405,7 @@ pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::Co
         }
         SendResult::Accepted | SendResult::Ambiguous | SendResult::Rejected => {}
     }
-    let _ = crate::file_lock::FileExt::unlock(&send_lock);
+    let _ = send_lock.unlock();
 }
 
 fn feedback_event(receipt: &history::CoarseReceipt) -> Event {
@@ -441,11 +440,11 @@ pub fn ack_parent(config: &Config, resolved_policy: &Policy, run_id: &str, statu
     let Ok(send_lock) = open_lock(&root, "send.lock") else {
         return;
     };
-    if send_lock.lock_exclusive().is_err() {
+    if send_lock.lock().is_err() {
         return;
     }
     if !policy(config, false).enabled || !update_parent_candidate(config, run_id, status) {
-        let _ = crate::file_lock::FileExt::unlock(&send_lock);
+        let _ = send_lock.unlock();
         return;
     }
     // Acknowledgement is an internal/local command. If the notice marker was
@@ -454,7 +453,7 @@ pub fn ack_parent(config: &Config, resolved_policy: &Policy, run_id: &str, statu
     if crate::first_run::is_current(config) {
         flush_older_locked(config, Duration::from_millis(300));
     }
-    let _ = crate::file_lock::FileExt::unlock(&send_lock);
+    let _ = send_lock.unlock();
 }
 
 fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool {
@@ -462,11 +461,11 @@ fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool 
     let Ok(lock) = open_lock(&root, "queue.lock") else {
         return false;
     };
-    if lock.lock_exclusive().is_err() {
+    if lock.lock().is_err() {
         return false;
     }
     if !policy(config, false).enabled {
-        let _ = crate::file_lock::FileExt::unlock(&lock);
+        let _ = lock.unlock();
         return false;
     }
     let path = root
@@ -487,7 +486,7 @@ fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool 
     if let Some(event) = updated {
         let _ = write_private_atomic(&path, &serde_json::to_vec(&event).unwrap_or_default());
     }
-    let _ = crate::file_lock::FileExt::unlock(&lock);
+    let _ = lock.unlock();
     changed
 }
 
@@ -534,7 +533,7 @@ fn enqueue(config: &Config, run_id: &str, event: &Event) -> Result<(), String> {
     event.validate()?;
     let root = telemetry_root(config);
     let lock = open_lock(&root, "queue.lock")?;
-    lock.lock_exclusive()
+    lock.lock()
         .map_err(|e| format!("lock telemetry queue: {}", e))?;
     let queue = root.join("queue");
     dirs::ensure_private_dir(&queue)?;
@@ -543,7 +542,7 @@ fn enqueue(config: &Config, run_id: &str, event: &Event) -> Result<(), String> {
     let bytes = serde_json::to_vec(event).map_err(|e| e.to_string())?;
     write_private_atomic(&path, &bytes)?;
     prune_count(&queue);
-    crate::file_lock::FileExt::unlock(&lock).map_err(|e| e.to_string())
+    lock.unlock().map_err(|e| e.to_string())
 }
 
 /// Flush queued events while the caller holds `send.lock` and has rechecked
@@ -554,7 +553,7 @@ fn flush_older_locked(config: &Config, budget: Duration) {
     let Ok(lock) = open_lock(&root, "queue.lock") else {
         return;
     };
-    if lock.lock_exclusive().is_err() {
+    if lock.lock().is_err() {
         return;
     }
     let queue = root.join("queue");
@@ -569,7 +568,7 @@ fn flush_older_locked(config: &Config, budget: Duration) {
             claims.push((path, claim));
         }
     }
-    let _ = crate::file_lock::FileExt::unlock(&lock);
+    let _ = lock.unlock();
     for (original, claim) in claims {
         let elapsed = started.elapsed();
         if elapsed >= budget {
