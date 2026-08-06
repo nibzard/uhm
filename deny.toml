@@ -4,20 +4,17 @@
 # CI runs the same via .github/workflows/deps.yml (a decoupled, non-gating job
 # that is intentionally NOT wired into ci.yml or the release gate).
 #
-# Day-one baseline (verified against Cargo.lock on 2026-08-06):
-#   - 104 package entries, single crate (no [workspace]).
-#   - No RUSTSEC *security* vulnerabilities.
-#   - One open *unmaintained* advisory, RUSTSEC-2025-0134 (rustls-pemfile 2.2.0,
-#     pulled directly via Cargo.toml and transitively via rustls-native-certs).
-#     It is ignored below pending migration to
-#     rustls_pki_types::pem::PemObject; drop the ignore once migrated.
+# Baseline (verified against Cargo.lock on 2026-08-06):
+#   - 103 package entries, single crate (no [workspace]).
+#   - No RUSTSEC advisories (security or unmaintained) after rustls-pemfile was
+#     migrated to rustls::pki_types::pem::PemObject and dropped from the tree.
 #   - Duplicate versions (syn 2/3, webpki-roots 0.26/1.0, windows-sys x3) warn only.
 #
-# Coverage gap: cargo-deny validates advisories / licenses / bans / sources but
-# CANNOT detect typosquatted, dependency-confused, or silently-substituted
-# crates. (In-repo, serde_json resolves to the "zmij" crate in place of ryu and
-# still passes all four checks.) Add cargo-vet or github dependency-review-action
-# if substitution detection is needed.
+# Coverage gap: cargo-deny validates advisories / licenses / bans / sources, but
+# it cannot detect a legitimate-looking typosquat or dependency-confusion crate
+# published to crates.io (it validates *that* a crate is on an allowed registry,
+# not *what* the crate is). Add cargo-vet or the github dependency-review-action
+# if build-reproducibility / provenance vetting is needed.
 
 [graph]
 all-features = true
@@ -26,8 +23,6 @@ all-features = true
 version = 2
 yanked = "deny"
 unmaintained = "all"
-# TODO: migrate rustls-pemfile -> rustls_pki_types::pem::PemObject and drop this.
-ignore = ["RUSTSEC-2025-0134"]
 
 [licenses]
 version = 2

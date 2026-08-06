@@ -3,6 +3,7 @@
 //! Every outbound caller uses this module so trust loading, proxy selection,
 //! bypass rules, deadlines, and failure classification remain identical.
 
+use rustls::pki_types::pem::PemObject;
 use std::fmt;
 use std::fs::File;
 use std::io::{BufReader, Read};
@@ -222,7 +223,7 @@ fn build_tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
 fn append_ca_bundle(store: &mut rustls::RootCertStore, path: &Path) -> Result<(), String> {
     let file = File::open(path)
         .map_err(|error| format!("read UHM_CA_BUNDLE {}: {error}", path.display()))?;
-    let certificates = rustls_pemfile::certs(&mut BufReader::new(file))
+    let certificates = rustls::pki_types::CertificateDer::pem_reader_iter(BufReader::new(file))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("parse UHM_CA_BUNDLE {}: {error}", path.display()))?;
     if certificates.is_empty() {

@@ -37,7 +37,7 @@ Verification on 2026-08-01:
 Verification on 2026-08-06 (MSRV 1.82 -> 1.89, advisory locking migrated to `std::fs::File`):
 
 - `cargo +1.89.0 check --all-targets --locked` passed; the in-repo `file_lock` module is deleted and all exclusive-lock sites call `std::fs::File::lock`/`unlock` directly.
-- `cargo deny check` (advisories, licenses, bans, sources) is green against 104 locked packages; the one open unmaintained advisory RUSTSEC-2025-0134 (rustls-pemfile 2.2.0) is ignored pending migration to `rustls_pki_types::pem::PemObject`.
+- `cargo deny check` (advisories, licenses, bans, sources) is green against 103 locked packages with no ignored advisories. `rustls-pemfile` (RUSTSEC-2025-0134, unmaintained) was migrated to `rustls::pki_types::pem::PemObject` and dropped from the tree.
 
 ## Consequences
 
