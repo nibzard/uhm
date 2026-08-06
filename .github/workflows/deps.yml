@@ -32,9 +32,8 @@ jobs:
   cargo-deny:
     name: cargo deny check
     runs-on: ubuntu-latest
-    # Non-gating for the first cycle: surface advisories/license/ban/source
-    # findings without failing PRs or releases. Drop once findings are triaged.
-    continue-on-error: true
+    # Gating: advisory, license, ban, and source findings fail the job. deny.toml
+    # carries no ignore list, so a new finding is a real finding.
 
     steps:
       - name: Check out repository
