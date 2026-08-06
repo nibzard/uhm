@@ -27,3 +27,7 @@ Thumbs.db
 *.tmp
 /coverage/
 /telemetry-worker/node_modules/
+
+# Python bytecode caches
+__pycache__/
+*.pyc
