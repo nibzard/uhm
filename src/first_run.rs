@@ -1,11 +1,11 @@
 //! Versioned first-use disclosure. The marker is persisted only after stderr is flushed.
 
+use crate::file_lock::FileExt;
 use crate::{
     config::Config,
     dirs,
     render::{ansi, layout},
 };
-use fs2::FileExt;
 use std::io::Write;
 
 pub const NOTICE_REVISION: u8 = 5;

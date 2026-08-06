@@ -18,7 +18,7 @@ Correctness boundaries use focused maintained crates:
 | JSON | `serde` and `serde_json`; delete the local JSON parser. |
 | YAML | `serde_yaml_ng`; it is a maintained Serde parser with a declared Rust 1.64 MSRV. Delete the local YAML parser. |
 | Temporary files | `tempfile`; cache writes use private same-directory temporary files and atomic persistence. Plan 1 also removes the raw editor and its hand-rolled temporary file. |
-| File locking | `fs2`; JSONL receipt appends take an exclusive cross-process lock. Revisit this if Plan 2 selects SQLite. |
+| File locking | In-repo `file_lock` module over `libc::flock(2)` (replaces the dormant, archived `fs2`); JSONL receipt appends take an exclusive cross-process lock. `std::fs::File` advisory locking (stable 1.89) is the intended replacement once MSRV moves past 1.89. Revisit if Plan 2 selects SQLite. |
 | Unix process/signal behavior | Standard `ExitStatusExt` is sufficient for the Plan 1 child-status contract. Consider `rustix` only when process-group control is implemented. |
 | Artifact hashing | `blake3` for cache/provenance identifiers. |
 | Display width | `unicode-width` is reserved for any future terminal geometry. Plan 1 removes cursor-positioning UI, so correctness does not currently depend on width calculations. |

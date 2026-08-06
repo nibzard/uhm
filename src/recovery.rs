@@ -6,7 +6,7 @@
 
 use crate::config::RecoveryConfig;
 use crate::dirs;
-use fs2::FileExt;
+use crate::file_lock::FileExt;
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};

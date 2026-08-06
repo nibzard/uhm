@@ -47,7 +47,7 @@ curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
 The installer fetches the latest release archive for your platform, verifies `SHA256SUMS`, and installs to `~/.local/bin` by default. Source builds are still supported:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.5.1 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.5.2 uhm-cli
 ```
 
 Prebuilt binaries, version pinning, and manual verification are on the [Install](install.md) page. OpenAI is the default provider; Cerebras is an explicit fixed alternative. See [Getting started](getting-started.md) for the under-five-minute path.

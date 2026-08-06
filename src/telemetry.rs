@@ -2,8 +2,8 @@
 
 use crate::action::Effect;
 use crate::config::Config;
+use crate::file_lock::FileExt;
 use crate::{dirs, history};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -314,12 +314,12 @@ pub fn complete(config: &Config, resolved_policy: &Policy, interaction: Interact
         return;
     }
     if !policy(config, false).enabled {
-        let _ = fs2::FileExt::unlock(&send_lock);
+        let _ = crate::file_lock::FileExt::unlock(&send_lock);
         return;
     }
     if event.parent_action == "unknown" || !crate::first_run::is_current(config) {
         let _ = enqueue(config, &run_id, &event);
-        let _ = fs2::FileExt::unlock(&send_lock);
+        let _ = crate::file_lock::FileExt::unlock(&send_lock);
         return;
     }
     if network_bound {
@@ -331,7 +331,7 @@ pub fn complete(config: &Config, resolved_policy: &Policy, interaction: Interact
             let _ = enqueue(config, &run_id, &event);
         }
     }
-    let _ = fs2::FileExt::unlock(&send_lock);
+    let _ = crate::file_lock::FileExt::unlock(&send_lock);
 }
 
 pub fn disable(config: &Config) -> Result<(), String> {
@@ -353,8 +353,8 @@ pub fn disable(config: &Config) -> Result<(), String> {
             }
         }
     }
-    fs2::FileExt::unlock(&queue_lock).map_err(|e| e.to_string())?;
-    fs2::FileExt::unlock(&send_lock).map_err(|e| e.to_string())
+    crate::file_lock::FileExt::unlock(&queue_lock).map_err(|e| e.to_string())?;
+    crate::file_lock::FileExt::unlock(&send_lock).map_err(|e| e.to_string())
 }
 
 pub fn enable(config: &Config) -> Result<(), String> {
@@ -387,17 +387,17 @@ pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::Co
         return;
     }
     if !policy(config, false).enabled {
-        let _ = fs2::FileExt::unlock(&send_lock);
+        let _ = crate::file_lock::FileExt::unlock(&send_lock);
         return;
     }
     let event = feedback_event(receipt);
     if event.validate().is_err() {
-        let _ = fs2::FileExt::unlock(&send_lock);
+        let _ = crate::file_lock::FileExt::unlock(&send_lock);
         return;
     }
     if !crate::first_run::is_current(config) {
         let _ = enqueue(config, &format!("feedback-{}", history::run_id()), &event);
-        let _ = fs2::FileExt::unlock(&send_lock);
+        let _ = crate::file_lock::FileExt::unlock(&send_lock);
         return;
     }
     match send(&event, Duration::from_millis(100)) {
@@ -406,7 +406,7 @@ pub fn feedback(config: &Config, resolved_policy: &Policy, receipt: &history::Co
         }
         SendResult::Accepted | SendResult::Ambiguous | SendResult::Rejected => {}
     }
-    let _ = fs2::FileExt::unlock(&send_lock);
+    let _ = crate::file_lock::FileExt::unlock(&send_lock);
 }
 
 fn feedback_event(receipt: &history::CoarseReceipt) -> Event {
@@ -445,7 +445,7 @@ pub fn ack_parent(config: &Config, resolved_policy: &Policy, run_id: &str, statu
         return;
     }
     if !policy(config, false).enabled || !update_parent_candidate(config, run_id, status) {
-        let _ = fs2::FileExt::unlock(&send_lock);
+        let _ = crate::file_lock::FileExt::unlock(&send_lock);
         return;
     }
     // Acknowledgement is an internal/local command. If the notice marker was
@@ -454,7 +454,7 @@ pub fn ack_parent(config: &Config, resolved_policy: &Policy, run_id: &str, statu
     if crate::first_run::is_current(config) {
         flush_older_locked(config, Duration::from_millis(300));
     }
-    let _ = fs2::FileExt::unlock(&send_lock);
+    let _ = crate::file_lock::FileExt::unlock(&send_lock);
 }
 
 fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool {
@@ -466,7 +466,7 @@ fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool 
         return false;
     }
     if !policy(config, false).enabled {
-        let _ = fs2::FileExt::unlock(&lock);
+        let _ = crate::file_lock::FileExt::unlock(&lock);
         return false;
     }
     let path = root
@@ -487,7 +487,7 @@ fn update_parent_candidate(config: &Config, run_id: &str, status: &str) -> bool 
     if let Some(event) = updated {
         let _ = write_private_atomic(&path, &serde_json::to_vec(&event).unwrap_or_default());
     }
-    let _ = fs2::FileExt::unlock(&lock);
+    let _ = crate::file_lock::FileExt::unlock(&lock);
     changed
 }
 
@@ -543,7 +543,7 @@ fn enqueue(config: &Config, run_id: &str, event: &Event) -> Result<(), String> {
     let bytes = serde_json::to_vec(event).map_err(|e| e.to_string())?;
     write_private_atomic(&path, &bytes)?;
     prune_count(&queue);
-    fs2::FileExt::unlock(&lock).map_err(|e| e.to_string())
+    crate::file_lock::FileExt::unlock(&lock).map_err(|e| e.to_string())
 }
 
 /// Flush queued events while the caller holds `send.lock` and has rechecked
@@ -569,7 +569,7 @@ fn flush_older_locked(config: &Config, budget: Duration) {
             claims.push((path, claim));
         }
     }
-    let _ = fs2::FileExt::unlock(&lock);
+    let _ = crate::file_lock::FileExt::unlock(&lock);
     for (original, claim) in claims {
         let elapsed = started.elapsed();
         if elapsed >= budget {

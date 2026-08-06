@@ -10,7 +10,7 @@ use crate::action::{
 };
 use crate::config::{HistoryConfig, HistoryDetail};
 use crate::dirs;
-use fs2::FileExt;
+use crate::file_lock::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
