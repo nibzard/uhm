@@ -133,6 +133,9 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
         .spawn()
         .map_err(|e| format!("failed to spawn shell ({}): {}", req.shell, e))?;
     let target = target_for(&child, separate_group);
+    if separate_group {
+        crate::execution_signal::assign_process_group(child.id() as i32);
+    }
     execution.activate(target);
     if let (Some(bytes), Some(mut input)) = (req.stdin, child.stdin.take()) {
         let data = bytes.to_vec();
@@ -235,20 +238,10 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
                     }
                     Ok(None) => {
                         terminate(target, libc::SIGKILL);
-                        match child.wait() {
-                            Ok(status) => break 'wait status,
-                            Err(error) => {
-                                cleanup_failed_execution(
-                                    &mut child,
-                                    target,
-                                    &cancel_readers,
-                                    &mut stdout,
-                                    &mut stderr,
-                                    &execution,
-                                );
-                                return Err(format!("reap interrupted child: {error}"));
-                            }
-                        }
+                        break 'wait crate::execution_signal::reap_within(
+                            &mut child,
+                            Instant::now() + crate::execution_signal::KILL_REAP_GRACE,
+                        );
                     }
                     Err(error) => {
                         cleanup_failed_execution(
@@ -286,20 +279,10 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
                 }
                 if grace.elapsed() >= Duration::from_millis(500) {
                     terminate(target, libc::SIGKILL);
-                    match child.wait() {
-                        Ok(status) => break 'wait status,
-                        Err(error) => {
-                            cleanup_failed_execution(
-                                &mut child,
-                                target,
-                                &cancel_readers,
-                                &mut stdout,
-                                &mut stderr,
-                                &execution,
-                            );
-                            return Err(format!("reap timed out child: {error}"));
-                        }
-                    }
+                    break 'wait crate::execution_signal::reap_within(
+                        &mut child,
+                        Instant::now() + crate::execution_signal::KILL_REAP_GRACE,
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -472,7 +455,10 @@ fn cleanup_failed_execution(
     execution: &crate::execution_signal::ExecutionGuard,
 ) {
     terminate(target, libc::SIGKILL);
-    let _ = child.wait();
+    let _ = crate::execution_signal::reap_within(
+        child,
+        Instant::now() + crate::execution_signal::KILL_REAP_GRACE,
+    );
     // The leader is now reaped. Clear the pid/group before any reader join so
     // a concurrent signal cannot be forwarded to a recycled identifier.
     execution.deactivate_target();
@@ -563,6 +549,29 @@ mod tests {
         .unwrap();
         assert!(result.timed_out);
         assert_ne!(result.code, 0);
+    }
+
+    #[test]
+    fn a_sigterm_ignoring_child_is_reaped_by_the_sigkill_escalation() {
+        // The child installs an ignored SIGTERM, so the first escalation signal
+        // cannot stop it; only the SIGKILL at the grace boundary can. If that
+        // escalation (or its bounded reap) is removed, uhm blocks until `sleep`
+        // exits on its own (~3 s) and the duration assertion fails fast instead
+        // of stalling the suite.
+        let result = execute(Request {
+            shell: "/bin/sh",
+            command: "trap '' TERM; sleep 3",
+            stdin: None,
+            timeout: Duration::from_millis(100),
+            diagnostic_bytes: 32,
+            deny_common_env: false,
+            deny_env: &[],
+            containment: crate::containment::Mode::Off,
+        })
+        .unwrap();
+        assert!(result.timed_out);
+        assert_ne!(result.code, 0);
+        assert!(result.duration < Duration::from_secs(2));
     }
 
     #[test]

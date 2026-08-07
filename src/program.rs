@@ -314,7 +314,10 @@ pub fn preflight(
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             _ => {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = crate::execution_signal::reap_within(
+                    &mut child,
+                    Instant::now() + crate::execution_signal::KILL_REAP_GRACE,
+                );
                 return vec![ProgramContractDiagnostic {
                     code: "runtime_unavailable".into(),
                     severity: DiagnosticSeverity::Availability,
@@ -521,6 +524,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
         .spawn()
         .map_err(|e| format!("spawn isolated Python runtime: {e}"))?;
     let target = child.id() as i32;
+    crate::execution_signal::assign_process_group(target);
     execution.activate(target);
     let total = Arc::new(AtomicUsize::new(0));
     let overflow = Arc::new(AtomicBool::new(false));
@@ -638,20 +642,10 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
                 }
                 if Instant::now() >= grace {
                     terminate(target, libc::SIGKILL);
-                    match child.wait() {
-                        Ok(status) => break 'wait status,
-                        Err(error) => {
-                            cleanup_failed_execution(
-                                &mut child,
-                                target,
-                                &cancel_readers,
-                                &mut stdout,
-                                &mut stderr,
-                                &execution,
-                            );
-                            return Err(format!("reap interrupted program: {error}"));
-                        }
-                    }
+                    break 'wait crate::execution_signal::reap_within(
+                        &mut child,
+                        Instant::now() + crate::execution_signal::KILL_REAP_GRACE,
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -678,20 +672,10 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
                 }
                 if grace.elapsed() >= Duration::from_millis(500) {
                     terminate(target, libc::SIGKILL);
-                    match child.wait() {
-                        Ok(status) => break 'wait status,
-                        Err(error) => {
-                            cleanup_failed_execution(
-                                &mut child,
-                                target,
-                                &cancel_readers,
-                                &mut stdout,
-                                &mut stderr,
-                                &execution,
-                            );
-                            return Err(format!("reap timed out program: {error}"));
-                        }
-                    }
+                    break 'wait crate::execution_signal::reap_within(
+                        &mut child,
+                        Instant::now() + crate::execution_signal::KILL_REAP_GRACE,
+                    );
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -719,6 +703,16 @@ pub fn execute(req: Request<'_>) -> std::result::Result<ExecutionResult, String>
             execution.received_signal(),
             overflow.load(Ordering::SeqCst),
         );
+        // Do NOT signal the group here, even though a descendant may still hold
+        // the pipe. `readers_running` proves a process holds the pipe write-end,
+        // not that the process is still a member of group `target`: a descendant
+        // that called setpgid(0,0) leaves the group while keeping the inherited
+        // pipe open, the reaped leader's pid then recycles, and kill(-target)
+        // would strike an unrelated process group (possibly while uhm runs under
+        // sudo/pkexec). The leader is gone, so its pid is no longer a safe group
+        // identity. Drain to the deadline, then cancel the nonblocking readers.
+        // A persistent descendant that outlives this is a known limitation of the
+        // default containment=Off mode; Bubblewrap's --die-with-parent fences it.
         cancel_readers.store(true, Ordering::SeqCst);
     }
     cancel_readers.store(true, Ordering::SeqCst);
@@ -1045,7 +1039,10 @@ fn cleanup_failed_execution(
 ) {
     terminate(target, libc::SIGKILL);
     cancel.store(true, Ordering::SeqCst);
-    let _ = child.wait();
+    let _ = crate::execution_signal::reap_within(
+        child,
+        std::time::Instant::now() + crate::execution_signal::KILL_REAP_GRACE,
+    );
     // The group leader is reaped. Clear the numeric target before joining
     // readers so no concurrent signal can reach a recycled PGID.
     execution.deactivate_target();

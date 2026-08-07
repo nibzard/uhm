@@ -98,6 +98,64 @@ pub(crate) fn terminate(target: i32, signal: i32) {
     }
 }
 
+/// Grace given to a `SIGKILL`ed child to actually disappear before uhm stops
+/// waiting for it. `SIGKILL` is pending, so a normally-scheduled child is gone
+/// in milliseconds; this bound only elapses for a process stuck in
+/// uninterruptible sleep (a hung page-in, NFS, or device ioctl), which the
+/// kernel cannot interrupt.
+pub(crate) const KILL_REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Place a freshly-spawned child in its own process group from the parent side,
+/// racing idempotently against the child's own `setpgid(0, 0)` in `pre_exec`.
+/// Without this, a signal delivered between fork and the child's `pre_exec`
+/// targets a group that does not yet exist — `kill(-child_pid)` returns `ESRCH`
+/// and the escalation silently misses, so a stalled or `ptrace`-stopped child
+/// defeats `SIGTERM`/`SIGKILL` and the blocking `wait` that follows can hang
+/// forever. Whichever side wins the race, the child becomes the leader of a
+/// group equal to its pid; the loser's call is a harmless no-op. Errors are
+/// ignored: `EACCES` means the child already `exec`'d (after setting its own
+/// group), `ESRCH` means it is already gone.
+#[cfg(unix)]
+pub(crate) fn assign_process_group(child_pid: i32) {
+    debug_assert!(child_pid > 0);
+    unsafe {
+        let _ = libc::setpgid(child_pid, child_pid);
+    }
+}
+
+/// Bound a final reap after `SIGKILL`. A child stuck in uninterruptible sleep is
+/// not killed until its syscall returns, so a blocking `wait` could hang
+/// indefinitely; `SIGKILL` is already pending, so once `deadline` elapses we
+/// stop waiting and report the escalation honestly. The kernel reaps the
+/// reparented zombie when uhm exits.
+#[cfg(unix)]
+pub(crate) fn reap_within(
+    child: &mut std::process::Child,
+    deadline: std::time::Instant,
+) -> std::process::ExitStatus {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            // No exit before the deadline (or an unrecoverable wait error): the
+            // child is wedged in the kernel. Report the pending SIGKILL honestly
+            // rather than blocking uhm on a process it cannot force to die.
+            Ok(None) | Err(_) => return killed_status(),
+        }
+    }
+}
+
+/// Synthesize an `ExitStatus` meaning "killed by `SIGKILL`", for the rare case
+/// where `reap_within` gives up on a child that never reaped. The raw wait-status
+/// encoding keeps the terminating signal in its low byte.
+#[cfg(unix)]
+fn killed_status() -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(libc::SIGKILL)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
