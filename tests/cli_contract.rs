@@ -848,6 +848,165 @@ fn forced_restore_requires_the_literal_authority_flag() {
 }
 
 #[test]
+fn history_export_honors_a_positional_destination_and_output_flag() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "aliases:\n  local-noop: true\n";
+    assert!(configured(temp.path(), yaml, &["local-noop"])
+        .status
+        .success());
+
+    let dest = temp.path().join("positional.jsonl");
+    let export = configured(
+        temp.path(),
+        yaml,
+        &["history", "export", dest.to_str().unwrap()],
+    );
+    assert!(
+        export.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert!(dest.is_file(), "positional destination was not written");
+    assert!(
+        fs::metadata(&dest).map(|m| m.len() > 0).unwrap_or(false),
+        "positional destination is empty — seeded history was not exported"
+    );
+    let reported = String::from_utf8_lossy(&export.stdout);
+    assert!(
+        reported.contains(dest.to_str().unwrap()),
+        "reported path did not name the positional destination: {reported}"
+    );
+
+    let flagged = temp.path().join("flagged.jsonl");
+    let via_flag = configured(
+        temp.path(),
+        yaml,
+        &["history", "export", "--output", flagged.to_str().unwrap()],
+    );
+    assert!(
+        via_flag.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&via_flag.stderr)
+    );
+    assert!(flagged.is_file(), "--output destination was not written");
+}
+
+#[test]
+fn history_export_rejects_an_ambiguous_destination() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "aliases:\n  local-noop: true\n";
+    assert!(configured(temp.path(), yaml, &["local-noop"])
+        .status
+        .success());
+
+    let both = configured(
+        temp.path(),
+        yaml,
+        &[
+            "history",
+            "export",
+            temp.path().join("positional.jsonl").to_str().unwrap(),
+            "--output",
+            temp.path().join("flagged.jsonl").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(both.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&both.stderr).contains("not both"),
+        "stderr: {}",
+        String::from_utf8_lossy(&both.stderr)
+    );
+
+    let multiple = configured(
+        temp.path(),
+        yaml,
+        &[
+            "history",
+            "export",
+            temp.path().join("one.jsonl").to_str().unwrap(),
+            temp.path().join("two.jsonl").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(multiple.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&multiple.stderr).contains("at most one destination"),
+        "stderr: {}",
+        String::from_utf8_lossy(&multiple.stderr)
+    );
+}
+
+#[test]
+fn history_export_defaults_when_no_destination_is_given() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "aliases:\n  local-noop: true\n";
+    assert!(configured(temp.path(), yaml, &["local-noop"])
+        .status
+        .success());
+
+    // The default destination is current_dir/uhm-history.redacted.jsonl, so run
+    // from a scratch workdir to avoid writing into the repository tree.
+    let workdir = temp.path().join("work");
+    fs::create_dir_all(&workdir).unwrap();
+    let export = configured_command(temp.path(), yaml, &["history", "export"])
+        .current_dir(&workdir)
+        .output()
+        .unwrap();
+    assert!(
+        export.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let default = workdir.join("uhm-history.redacted.jsonl");
+    assert!(
+        default.is_file(),
+        "default redacted destination was not written at {default:?}"
+    );
+    let reported = String::from_utf8_lossy(&export.stdout);
+    assert!(
+        reported.contains("uhm-history.redacted.jsonl"),
+        "did not report the default redacted destination: {reported}"
+    );
+}
+
+#[test]
+fn history_export_requires_a_value_for_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "aliases:\n  local-noop: true\n";
+    let export = configured(temp.path(), yaml, &["history", "export", "--output"]);
+    assert_eq!(export.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&export.stderr);
+    assert!(
+        stderr.contains("usage: uhm history export"),
+        "missing-value error did not show the synopsis: {stderr}"
+    );
+}
+
+#[test]
+fn history_export_tolerates_the_separator_before_a_positional() {
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "aliases:\n  local-noop: true\n";
+    assert!(configured(temp.path(), yaml, &["local-noop"])
+        .status
+        .success());
+
+    let dest = temp.path().join("via-separator.jsonl");
+    let export = configured(
+        temp.path(),
+        yaml,
+        &["history", "export", "--", dest.to_str().unwrap()],
+    );
+    assert!(
+        export.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert!(
+        dest.is_file(),
+        "destination after the -- separator was not written"
+    );
+}
+
+#[test]
 fn disabled_recovery_creates_no_recovery_timeline_events() {
     let temp = tempfile::tempdir().unwrap();
     let run = configured(
