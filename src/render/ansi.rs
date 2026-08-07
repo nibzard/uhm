@@ -65,7 +65,13 @@ pub fn color_enabled() -> bool {
 pub fn is_format_control(c: char) -> bool {
     matches!(c,
         '\u{00ad}'
+        | '\u{0600}'..='\u{0605}'
         | '\u{061c}'
+        | '\u{06dd}'
+        | '\u{070f}'
+        | '\u{0890}'..='\u{0891}'
+        | '\u{0898}'..='\u{089f}'
+        | '\u{08e2}'
         | '\u{180e}'
         | '\u{200b}'..='\u{200f}'
         | '\u{202a}'..='\u{202e}'
@@ -75,6 +81,8 @@ pub fn is_format_control(c: char) -> bool {
         | '\u{fff9}'..='\u{fffb}'
         | '\u{110bd}'
         | '\u{110cd}'
+        | '\u{13430}'..='\u{13438}'
+        | '\u{1bca0}'..='\u{1bca3}'
         | '\u{1d173}'..='\u{1d17a}'
         | '\u{e0000}'..='\u{e007f}')
 }
@@ -88,6 +96,10 @@ pub fn sanitize_untrusted(s: &str) -> String {
             '\n' => out.push('\n'),
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
+            '\u{2028}' | '\u{2029}' => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{{{:x}}}", c as u32);
+            }
             c if c.is_control() || is_format_control(c) => {
                 use std::fmt::Write as _;
                 let _ = write!(out, "\\u{{{:x}}}", c as u32);
@@ -196,6 +208,20 @@ mod tests {
         assert_eq!(
             sanitize_untrusted("caf\u{e9} \u{2192} ok"),
             "caf\u{e9} \u{2192} ok"
+        );
+    }
+
+    #[test]
+    fn line_and_paragraph_separators_cannot_forge_a_line() {
+        // U+2028/U+2029 (Zl/Zp, not Cf) break lines on some terminals, so they
+        // must be escaped — including in the single-line inline variant used by
+        // command previews and history rows.
+        assert_eq!(sanitize_untrusted("a\u{2028}b"), "a\\u{2028}b");
+        assert_eq!(sanitize_untrusted("a\u{2029}b"), "a\\u{2029}b");
+        assert_eq!(sanitize_untrusted_inline("a\u{2028}b"), "a\\u{2028}b");
+        assert_eq!(
+            sanitize_untrusted_inline("safe\u{2028}rm -rf /"),
+            "safe\\u{2028}rm -rf /"
         );
     }
 }

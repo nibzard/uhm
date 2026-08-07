@@ -85,7 +85,7 @@ fn infer_effects(cmd: &str, tier: Tier, reasons: &[String]) -> Vec<Effect> {
     let mut effects = Vec::new();
     if lower
         .split_whitespace()
-        .any(|w| matches!(w, "sudo" | "doas"))
+        .any(|w| matches!(w, "sudo" | "doas" | "pkexec"))
     {
         add(&mut effects, Effect::PrivilegeElevation);
     }
@@ -259,7 +259,10 @@ fn classify_segment(seg: &str) -> (Tier, Vec<String>) {
     // ---- privilege ----
     // `first_command_word` deliberately skips wrappers, so check the actual
     // tokens for privilege-changing wrappers before normalizing the command.
-    if words.iter().any(|w| matches!(*w, "sudo" | "doas")) {
+    if words
+        .iter()
+        .any(|w| matches!(*w, "sudo" | "doas" | "pkexec"))
+    {
         tier = higher(tier, Tier::Destructive);
         reasons.push("privilege escalation".into());
     }
@@ -331,20 +334,35 @@ fn classify_segment(seg: &str) -> (Tier, Vec<String>) {
         reasons.push("system package op".into());
     }
 
+    // A network command that runs a destructive command on the remote side is
+    // destructive even when it is not the catastrophic `rm -rf` the backstop
+    // below catches (e.g. `ssh host rm file`).
+    if matches!(cmd_word, "ssh" | "scp" | "rsync")
+        && words
+            .iter()
+            .any(|w| is_destructive_command_word(&normalized_command(w)))
+    {
+        tier = higher(tier, Tier::Destructive);
+        reasons.push("remote destructive command".into());
+    }
+
     // ---- defense-in-depth: lethal substrings ANYWHERE in the segment ----
     // e.g. `find ... -exec rm -rf '{}' +`. Over-warns by design: the model's
     // verdict is advisory, so the local classifier must still catch these even
-    // when the command word looks harmless.
+    // when the command word looks harmless. Backslashes are shell identity
+    // escapes, so they are stripped before scanning or `r\m -rf` hides the
+    // pattern from this backstop.
+    let canonical = lower.replace('\\', "");
     if cmd_word != "rm" {
         for pat in ["rm -rf", "rm -fr", "rm -r -f", "rm -Rf"] {
-            if lower.contains(pat) {
+            if canonical.contains(pat) {
                 tier = higher(tier, Tier::Irreversible);
                 reasons.push(format!("contains '{}'", pat));
             }
         }
     }
     for pat in ["dd of=/dev/", "mkfs", "shred"] {
-        if lower.contains(pat) {
+        if canonical.contains(pat) {
             tier = higher(tier, Tier::Irreversible);
             reasons.push(format!("contains '{}'", pat));
         }
@@ -353,64 +371,155 @@ fn classify_segment(seg: &str) -> (Tier, Vec<String>) {
     (tier, reasons)
 }
 
-/// Skip env assignments (FOO=bar) and prefixes (sudo/nohup/time/exec/env/xargs).
+/// Skip env assignments (`FOO=bar`) and command-running prefixes
+/// (sudo/env/xargs/strace/chroot/...). Once a wrapper has been seen, its own
+/// flags and numeric operands are skipped too: `xargs -0 rm` runs `rm`.
 ///
-/// Once a wrapper has been seen, its own options are skipped too: `xargs -0 rm`
-/// runs `rm`, so stopping at `-0` would skip every `rm` rule. Skipping extra
-/// tokens only ever looks further for the real command word, so an unfamiliar
-/// wrapper option cannot hide a command behind it.
+/// Two non-trivial cases are handled so a wrapper cannot hide a destructive
+/// command behind its own options:
+///   * an option that takes a separate-word value consumes that value, so the
+///     `PATH` in `env -u PATH rm` is not mistaken for the command;
+///   * `chroot DIR cmd ...` places the new-root directory before the command,
+///     so that directory is skipped too.
 fn first_command_word<'a>(words: &[&'a str]) -> &'a str {
+    let mut active_wrapper: Option<&str> = None;
+    let mut consume_next_value = false;
+    let mut chroot_dir_pending = false;
     let mut i = 0;
-    let mut saw_wrapper = false;
     while i < words.len() {
         let w = words[i];
+        // An inline assignment (`FOO=bar`) never starts a command.
         if w.contains('=') && !w.starts_with('-') {
             i += 1;
             continue;
         }
-        if matches!(
-            w,
-            "sudo"
-                | "doas"
-                | "nohup"
-                | "time"
-                | "exec"
-                | "env"
-                | "xargs"
-                | "command"
-                | "timeout"
-                | "nice"
-                | "ionice"
-                | "setsid"
-                | "stdbuf"
-                | "watch"
-                | "busybox"
-        ) {
-            saw_wrapper = true;
+        // A value owed to the previous option (the VAR in `env -u VAR`) is a
+        // value, not the command.
+        if consume_next_value {
+            consume_next_value = false;
             i += 1;
             continue;
         }
-        // A wrapper's flags and its numeric operands (`timeout 5`, `nice -n 10`)
-        // precede the command it runs.
-        if saw_wrapper && (w.starts_with('-') || w.starts_with(|c: char| c.is_ascii_digit())) {
+        if let Some(wrapper) = wrapper_name(w) {
+            active_wrapper = Some(wrapper);
+            if wrapper == "chroot" {
+                chroot_dir_pending = true;
+            }
             i += 1;
             continue;
+        }
+        if let Some(wrapper) = active_wrapper {
+            // A wrapper's own flags precede the command it runs. A flag may take
+            // the following token as its value.
+            if w.starts_with('-') {
+                if option_takes_value(wrapper, w) {
+                    consume_next_value = true;
+                }
+                i += 1;
+                continue;
+            }
+            // Numeric operands like `timeout 5` precede the command.
+            if w.starts_with(|c: char| c.is_ascii_digit()) {
+                i += 1;
+                continue;
+            }
+            if chroot_dir_pending {
+                // `chroot DIR cmd ...`: this token is the new-root directory.
+                chroot_dir_pending = false;
+                i += 1;
+                continue;
+            }
         }
         return w;
     }
     ""
 }
 
+/// Recognised command-running prefixes. The returned name keys the per-wrapper
+/// option semantics in [`option_takes_value`].
+fn wrapper_name(w: &str) -> Option<&'static str> {
+    Some(match w {
+        "sudo" | "doas" | "pkexec" => "priv",
+        "nohup" | "time" | "exec" | "command" => "exec",
+        "env" => "env",
+        "xargs" => "xargs",
+        "timeout" => "timeout",
+        "nice" => "nice",
+        "ionice" => "ionice",
+        "setsid" => "setsid",
+        "stdbuf" => "stdbuf",
+        "watch" => "watch",
+        "busybox" => "busybox",
+        "strace" | "ltrace" | "valgrind" => "tracer",
+        "chroot" => "chroot",
+        "fakeroot" => "fakeroot",
+        "firejail" => "firejail",
+        "proot" => "proot",
+        _ => return None,
+    })
+}
+
+/// Whether a flag of `wrapper` consumes the following token as its value. Only
+/// options whose value is non-numeric need listing: numeric operands
+/// (`timeout 5`, `nice -n 10`) are already skipped by the digit rule, and a
+/// value attached to the flag (`-o0`, `--arg-file=x`) never consumes a second
+/// token.
+fn option_takes_value(wrapper: &str, flag: &str) -> bool {
+    if flag.len() == 2 && flag.starts_with('-') {
+        let opt = flag.as_bytes()[1] as char;
+        return matches!(
+            (wrapper, opt),
+            ("env", 'u' | 'C' | 'P') | ("xargs", 'a' | 'I' | 'd') | ("stdbuf", 'i' | 'o' | 'e')
+        );
+    }
+    if let Some(long) = flag.strip_prefix("--") {
+        if long.contains('=') {
+            return false;
+        }
+        return matches!(
+            (wrapper, long),
+            ("env", "unset" | "chdir")
+                | ("xargs", "arg-file" | "replace" | "delimiter")
+                | ("stdbuf", "input" | "output" | "error")
+        );
+    }
+    false
+}
+
+/// Whether a normalised command word is destructive, used to spot a destructive
+/// command run on the remote side of a network command (`ssh host rm file`).
+fn is_destructive_command_word(word: &str) -> bool {
+    matches!(
+        word,
+        "rm" | "rmdir"
+            | "unlink"
+            | "dd"
+            | "mkfs"
+            | "shred"
+            | "fdisk"
+            | "parted"
+            | "mv"
+            | "cp"
+            | "chmod"
+            | "chown"
+            | "kill"
+            | "killall"
+            | "pkill"
+    )
+}
+
 /// Reduce a command word to the binary it names. Quoting a command word does
 /// not change what runs, so `"rm"`, `'rm'`, `\rm`, and `/bin/rm` are all `rm`.
+/// A backslash before an ordinary character is a shell identity escape, so
+/// `r\m` and `\r\m` run `rm` too; every backslash is stripped — not just a
+/// leading one — or an interior escape slips past every rule and the lethal
+/// substring backstop alike.
 fn normalized_command(word: &str) -> String {
-    let unquoted: String = word.chars().filter(|c| *c != '\'' && *c != '"').collect();
-    unquoted
-        .trim_start_matches('\\')
-        .rsplit('/')
-        .next()
-        .unwrap_or(&unquoted)
-        .to_owned()
+    let stripped: String = word
+        .chars()
+        .filter(|c| *c != '\'' && *c != '"' && *c != '\\')
+        .collect();
+    stripped.rsplit('/').next().unwrap_or(&stripped).to_owned()
 }
 
 /// Output redirects are destructive for gating purposes because `>` truncates
@@ -700,8 +809,10 @@ mod tests {
         for cmd in [
             "timeout 5 rm important.txt",
             "nice rm important.txt",
+            "ionice rm important.txt",
             "setsid rm important.txt",
             "stdbuf -o0 rm important.txt",
+            "watch rm important.txt",
         ] {
             assert!(
                 classify(cmd).tier.severity() >= Tier::Destructive.severity(),
@@ -726,5 +837,86 @@ mod tests {
         // POSIX shells do not honour `\` as an escape inside single quotes, so
         // the `;` still separates segments and `rm` must still be classified.
         assert_eq!(classify("echo 'a\\' ; rm file.txt").tier, Tier::Destructive);
+    }
+
+    #[test]
+    fn interior_backslash_is_treated_as_an_identity_escape() {
+        // `r\m` runs `rm`, so it must not slip past the classifier the way a
+        // leading-only backslash strip would let it.
+        for cmd in [
+            "r\\m -rf /tmp/x",
+            "r\\m file.txt",
+            "\\r\\m file.txt",
+            "m\\kfs /dev/sda",
+            "sh\\red file.txt",
+            "d\\d of=/dev/sda",
+            "gi\\t reset --hard repo",
+        ] {
+            assert!(
+                classify(cmd).tier.severity() >= Tier::Destructive.severity(),
+                "{cmd}"
+            );
+        }
+        // It must not hide from the defense-in-depth backstop either.
+        assert_eq!(
+            classify("find . -exec r\\m -rf '{}' +").tier,
+            Tier::Irreversible
+        );
+    }
+
+    #[test]
+    fn wrapper_value_options_do_not_hide_the_command() {
+        // A value owed to a wrapper option is a value, not the command it runs.
+        for cmd in [
+            "env -u PATH rm important.txt",
+            "env -C /tmp rm important.txt",
+            "env --unset PATH rm important.txt",
+            "xargs -a inputs.txt rm",
+            "xargs -I {} rm {}",
+            "stdbuf -o L rm important.txt",
+        ] {
+            assert!(
+                classify(cmd).tier.severity() >= Tier::Destructive.severity(),
+                "{cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn command_running_wrappers_are_transparent() {
+        // Tracers, privilege elevators, and root-changing prefixes must not hide
+        // the destructive command they run.
+        for cmd in [
+            "strace rm important.txt",
+            "ltrace rm important.txt",
+            "valgrind rm important.txt",
+            "pkexec rm important.txt",
+            "chroot /root rm important.txt",
+            "fakeroot rm important.txt",
+            "firejail rm important.txt",
+            "proot rm important.txt",
+            "busybox rm important.txt",
+        ] {
+            assert!(
+                classify(cmd).tier.severity() >= Tier::Destructive.severity(),
+                "{cmd}"
+            );
+        }
+        // pkexec elevates privilege just like sudo/doas.
+        assert!(classify("pkexec chmod 777 /etc/shadow")
+            .effects
+            .contains(&Effect::PrivilegeElevation));
+    }
+
+    #[test]
+    fn ssh_remote_destructive_command_is_gated() {
+        // The catastrophic form is already caught by the backstop; plain remote
+        // deletions must also reach the review gate.
+        assert!(
+            classify("ssh host rm important.txt").tier.severity() >= Tier::Destructive.severity()
+        );
+        assert_eq!(classify("ssh host rm -rf /remote").tier, Tier::Irreversible);
+        // A network read stays a network read.
+        assert_eq!(classify("ssh host ls").tier, Tier::Network);
     }
 }
