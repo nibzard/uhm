@@ -92,15 +92,26 @@ or `minisign-verify`. The key is public; only `uhm-release.key` is secret.
 ## Rotating the key
 
 A pinned key cannot be replaced silently: older binaries carry the old key and
-will reject signatures under a new one. To rotate:
+will reject signatures under a new one. The rotation therefore needs one
+transition release that old binaries still accept while it installs the new key.
 
-1. Generate a new unencrypted keypair with `-W` (`uhm-release2.pub`,
-   `uhm-release2.key`), as in the one-time setup above.
-2. In the same change, set `RELEASE_PUBLIC_KEY` to the **new** public key, and
-   set `UHM_RELEASE_SIGNING_KEY` to the base64 of the **new** secret.
-3. Sign the transition release with the **old** key. Users on the old binary
-   accept it (signature verifies), install the new binary, and now pin the new
-   key. Every release after that is signed with the new key.
+The release workflow signs `SHA256SUMS` with a single secret
+(`UHM_RELEASE_SIGNING_KEY`) and cross-checks that signature against the single
+key compiled into `src/update.rs`. A true rotation — a transition release signed
+with the **old** key while the binary carries the **new** key — does not fall out
+of that single-secret, single-key pipeline automatically and needs a one-time
+accommodation for that release. For example, keep `UHM_RELEASE_SIGNING_KEY` on
+the old secret for the transition release so it signs with the old key, and
+verify the cross-check against both the old and new keys rather than the new one
+alone (or produce the old-key signature out of band and upload it after the
+workflow, since `gh release upload --clobber` would otherwise overwrite it).
+
+Finalize the exact mechanism when you first activate signing. It is not exercised
+while the placeholder key is compiled in, and it only matters once a real key
+exists and a rotation is actually needed. After the transition release, set
+`RELEASE_PUBLIC_KEY` to the new public key and `UHM_RELEASE_SIGNING_KEY` to the
+base64 of the new secret; every release after that is signed with the new key,
+and old binaries that accepted the transition release now pin it.
 
 If the old key is lost or compromised and no transition release was prepared,
 users must reinstall from a trusted channel to pick up the new key — there is no
