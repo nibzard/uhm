@@ -117,6 +117,11 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+    # The `secrets` context is not allowed in a step-level `if`, so the signing
+    # key is lifted into the job environment here and the Sign step's `if` reads
+    # this env var. Empty (inert) until the maintainer adds UHM_RELEASE_SIGNING_KEY.
+    env:
+      UHM_RELEASE_SIGNING_KEY: ${{ secrets.UHM_RELEASE_SIGNING_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -151,9 +156,7 @@ jobs:
         # updater can authenticate the manifest against the public key compiled
         # into src/update.rs before installing. Inert (skipped) until the
         # maintainer adds UHM_RELEASE_SIGNING_KEY; see docs/reference/release-signing.md.
-        if: ${{ secrets.UHM_RELEASE_SIGNING_KEY != '' }}
-        env:
-          UHM_RELEASE_SIGNING_KEY: ${{ secrets.UHM_RELEASE_SIGNING_KEY }}
+        if: ${{ env.UHM_RELEASE_SIGNING_KEY != '' }}
         shell: bash
         run: |
           set -eu
@@ -175,20 +178,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          compiled_key="$(python3 - <<'PY'
-          import re
-          src = open('src/update.rs').read()
-          def resolve(name):
-              m = re.search(r'^const ' + re.escape(name) + r': &str = (.+?);\s*$', src, re.M)
-              if not m:
-                  raise SystemExit('could not find const ' + name + ' in src/update.rs')
-              rhs = m.group(1).strip()
-              if rhs.startswith('"') and rhs.endswith('"'):
-                  return rhs[1:-1]
-              return resolve(rhs)
-          print(resolve('RELEASE_PUBLIC_KEY'))
-          PY
-          )"
+          compiled_key="$(python3 scripts/extract-release-key.py)"
           if [ "$compiled_key" = "REPLACE_WITH_MINISIGN_PUBLIC_KEY" ]; then
             echo "release signing not configured (placeholder key); skipping cross-check"
             exit 0
