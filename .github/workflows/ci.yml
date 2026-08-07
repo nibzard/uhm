@@ -66,6 +66,45 @@ jobs:
       - name: Package crate
         run: cargo package --locked
 
+  actionlint:
+    name: Lint workflow files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install actionlint (pinned + checksum-verified)
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          # SHA-256 of actionlint_<ver>_linux_amd64.tar.gz, taken from that
+          # release's checksums.txt. Update both fields together when bumping.
+          ACTIONLINT_SHA256: '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8'
+        run: |
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          asset="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          # Fetch the tarball and the maintainer's published checksums file.
+          curl -fsSL "${base}/${asset}" -o "${asset}"
+          curl -fsSL "${base}/actionlint_${ACTIONLINT_VERSION}_checksums.txt" -o checksums.txt
+          # Verify against the pinned hash AND the live published checksums line.
+          # Explicit fetch (not the install-actionlint.bash script) so every byte
+          # is visible and the version is locked to a checksum, not a moving tag.
+          echo "${ACTIONLINT_SHA256}  ${asset}" | sha256sum -c -
+          grep -F "${asset}" checksums.txt | sha256sum -c -
+          # Install to RUNNER_TEMP and expose it on PATH for the next step.
+          tar -xzf "${asset}" actionlint
+          install -m 0755 actionlint "${RUNNER_TEMP}/actionlint"
+          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
+
+      - name: Lint GitHub Actions workflows
+        # Catches invalid/unloadable workflow files — e.g. a `secrets` context
+        # used in a step-level `if:` (the failure that blocked the v0.6.5
+        # release) — before they can break a release. Because release.yml calls
+        # this workflow via workflow_call, the gate also runs on every tag.
+        # actionlint additionally runs shellcheck on `run:` blocks (preinstalled
+        # on ubuntu-latest) for stricter bash checking.
+        run: actionlint -color
+
   telemetry-worker:
     name: Telemetry Worker
     runs-on: ubuntu-latest
