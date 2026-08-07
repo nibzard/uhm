@@ -140,7 +140,7 @@ jobs:
         shell: bash
         run: |
           test "$(find dist -maxdepth 1 -name '*.tar.gz' -type f | wc -l)" -eq 4
-          (cd dist && sha256sum *.tar.gz > SHA256SUMS && sha256sum --check SHA256SUMS)
+          (cd dist && sha256sum -- *.tar.gz > SHA256SUMS && sha256sum --check SHA256SUMS)
       - name: Prepare installer assets
         shell: bash
         run: |
