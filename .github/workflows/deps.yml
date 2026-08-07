@@ -3,9 +3,9 @@ name: Dependencies
 # Decoupled supply-chain scan. Intentionally NOT referenced by ci.yml or
 # release.yml: release.yml re-runs ci.yml as its quality gate, so anything in
 # ci.yml gates the release. Keeping cargo-deny here means a live advisory-db
-# fetch or a flagged advisory (e.g. the ignored RUSTSEC-2025-0134) can never
-# block a release. Promote this to a deliberate release gate — NOT a ci.yml
-# gate — once rustls-pemfile is migrated and the advisory feed is trusted.
+# fetch or a flagged advisory can never block a release — this job fails PRs
+# and the weekly schedule, but releases stay gated only by ci.yml. deny.toml
+# carries no ignore list, so a finding is a real finding.
 
 on:
   push:
