@@ -249,6 +249,18 @@ pub struct StatusReport {
     pub max_age_days: u64,
     pub max_total_bytes: u64,
     pub max_file_bytes: u64,
+    /// Runs whose manifest could not be read or validated and was therefore
+    /// skipped instead of failing the whole scan. Each carries the failure
+    /// reason so an operator can tell a benign truncation from a privacy or
+    /// tampering signal. Excise with `uhm recovery prune --run <id>`.
+    pub corrupt_runs: Vec<CorruptRun>,
+}
+
+/// A recovery run whose manifest could not be read or validated during a scan.
+#[derive(Debug, Clone, Serialize)]
+pub struct CorruptRun {
+    pub run: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -264,6 +276,9 @@ pub struct PruneReport {
     /// Terminal recovery manifests finalized during this pass.
     pub manifests_removed: usize,
     pub expired_runs: Vec<String>,
+    /// Runs skipped because their manifest could not be read or validated, with
+    /// the per-run failure reason attached.
+    pub corrupt_runs: Vec<CorruptRun>,
 }
 
 fn runs_dir(data: &Path) -> PathBuf {
@@ -740,16 +755,27 @@ pub fn prepare_with_lease(
     })
 }
 
-fn scan_manifests(
+/// Scan every recovery run, returning the manifests that validated plus the run
+/// ids whose manifest could not be read or validated. A single corrupt manifest
+/// is recorded and skipped rather than failing the scan: the previous behavior
+/// fail-closed at the first unreadable manifest, which wedged the entire
+/// subsystem — status, selection, and even `prune` (the natural remedy) all
+/// route through this scan, so one bad file made every recovery operation
+/// unavailable. Skipping restores the prior "flag and continue" behavior while
+/// still surfacing the corrupt run so the user can remove it.
+fn scan_runs(
     data: &Path,
     manifest_limit: Option<usize>,
-) -> Result<Vec<RecoveryManifest>, String> {
+) -> Result<(Vec<RecoveryManifest>, Vec<CorruptRun>), String> {
     let entries = match std::fs::read_dir(runs_dir(data)) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), Vec::new()))
+        }
         Err(error) => return Err(format!("scan recovery manifests: {error}")),
     };
     let mut manifests = Vec::new();
+    let mut corrupt = Vec::new();
     let mut active_manifests = 0usize;
     for entry in entries {
         let entry = entry.map_err(|error| format!("scan recovery manifests: {error}"))?;
@@ -774,16 +800,27 @@ fn scan_manifests(
         let Some(run) = entry.file_name().to_str().map(str::to_owned) else {
             return Err("cannot prove recovery state: non-UTF-8 recovery run directory".into());
         };
-        let manifest = read_manifest(data, &run)?;
-        if manifest.state != RecoveryState::Expired && !prune_intent_started(&manifest) {
-            if manifest_limit.is_some_and(|limit| active_manifests >= limit) {
-                return Err("recovery manifest count exceeds recovery.scan_limit; selection is unavailable until `uhm recovery prune --all` makes the inventory complete".into());
+        match read_manifest(data, &run) {
+            Ok(manifest) => {
+                if manifest.state != RecoveryState::Expired && !prune_intent_started(&manifest) {
+                    if manifest_limit.is_some_and(|limit| active_manifests >= limit) {
+                        return Err("recovery manifest count exceeds recovery.scan_limit; selection is unavailable until `uhm recovery prune --all` makes the inventory complete".into());
+                    }
+                    active_manifests += 1;
+                }
+                manifests.push(manifest);
             }
-            active_manifests += 1;
+            Err(reason) => corrupt.push(CorruptRun { run, reason }),
         }
-        manifests.push(manifest);
     }
-    Ok(manifests)
+    Ok((manifests, corrupt))
+}
+
+fn scan_manifests(
+    data: &Path,
+    manifest_limit: Option<usize>,
+) -> Result<Vec<RecoveryManifest>, String> {
+    Ok(scan_runs(data, manifest_limit)?.0)
 }
 
 fn retained_snapshot_bytes(manifests: &[RecoveryManifest]) -> u64 {
@@ -1542,11 +1579,13 @@ pub fn status(
         max_age_days: config.max_age_days,
         max_total_bytes: config.max_total_bytes,
         max_file_bytes: config.max_file_bytes,
+        corrupt_runs: Vec::new(),
     };
     let selected_run = selected
         .map(|value| resolve_manifest_run(data, value, config))
         .transpose()?;
-    let manifests = scan_manifests(data, Some(config.scan_limit))?;
+    let (manifests, corrupt) = scan_runs(data, Some(config.scan_limit))?;
+    report.corrupt_runs = corrupt;
     let now = crate::history::now_secs();
     for manifest in manifests {
         report.manifests += 1;
@@ -1929,7 +1968,7 @@ fn prune_impl(
     let now = crate::history::now_secs();
     // Prune is the recovery path when the ordinary selection bound is full,
     // so it must inspect the complete private recovery inventory.
-    let mut manifests = scan_manifests(data, None)?;
+    let (mut manifests, corrupt) = scan_runs(data, None)?;
     manifests.sort_by_key(|manifest| manifest.created_at);
     let scanned = manifests.len();
     let mut report = PruneReport {
@@ -1941,6 +1980,7 @@ fn prune_impl(
         retained_within_limits: 0,
         manifests_removed: 0,
         expired_runs: Vec::new(),
+        corrupt_runs: corrupt,
     };
     let mut active = Vec::with_capacity(manifests.len());
     for manifest in manifests {
@@ -2134,6 +2174,63 @@ pub fn prune(
     all: bool,
 ) -> Result<PruneReport, String> {
     prune_impl(data, config, dry_run, all, true)
+}
+
+/// Force-remove a single recovery run by id (`uhm recovery prune --run <id>`),
+/// the remedy for a manifest the scan now skips instead of wedging on. Holds the
+/// cross-process lock for the duration; delegates to `prune_single_run`.
+pub fn prune_run(data: &Path, run: &str, dry_run: bool) -> Result<PruneReport, String> {
+    let _guard = lock(data)?;
+    prune_single_run(data, run, dry_run)
+}
+
+/// Force-remove a single recovery run's snapshots and manifest by id. Unlike the
+/// ordinary prune this does not consult manifest state, so it is the remedy for a
+/// run whose manifest cannot be read or validated (which the scan now skips
+/// rather than wedging on). Removal mirrors `cleanup_incomplete_capture`: the
+/// snapshots directory is removed only after confirming it is a real directory
+/// (never a symlink), and the validated run id keeps every path bounded under
+/// `runs/<id>/`. Called with the cross-process lock already held by `prune_impl`.
+fn prune_single_run(data: &Path, run: &str, dry_run: bool) -> Result<PruneReport, String> {
+    validate_run_id(run)?;
+    let directory = run_dir(data, run);
+    let manifest_path = directory.join(MANIFEST);
+    let manifest_present = manifest_path.exists();
+    let snapshots = directory.join(SNAPSHOTS);
+    let snapshots_present = snapshots
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
+    let mut report = PruneReport {
+        dry_run,
+        manifests_scanned: usize::from(manifest_present),
+        snapshots_removed: 0,
+        bytes_removed: 0,
+        retained_pinned: 0,
+        retained_within_limits: 0,
+        manifests_removed: 0,
+        expired_runs: Vec::new(),
+        corrupt_runs: Vec::new(),
+    };
+    if dry_run {
+        report.manifests_removed = usize::from(manifest_present);
+        return Ok(report);
+    }
+    // Best-effort accounting: if the manifest happens to be readable, count what
+    // its retained snapshots occupy before removing them. A corrupt manifest
+    // contributes no byte/snapshot counts but is still removed by id below.
+    if snapshots_present {
+        if let Ok(manifest) = read_manifest(data, run) {
+            let retained = manifest.items.iter().filter(|item| {
+                item.snapshot_file.is_some() && !matches!(item.state, ItemState::Expired)
+            });
+            report.snapshots_removed = retained.clone().count();
+            report.bytes_removed = retained.map(|item| item.preimage_bytes).sum();
+        }
+        let _ = std::fs::remove_dir_all(&snapshots);
+    }
+    let _ = std::fs::remove_file(&manifest_path);
+    report.manifests_removed = usize::from(manifest_present);
+    Ok(report)
 }
 
 fn transition(manifest: &mut RecoveryManifest, next: RecoveryState) -> Result<(), String> {
@@ -3048,6 +3145,46 @@ mod tests {
             read_manifest(&data, &run).unwrap().state,
             RecoveryState::Expired
         );
+    }
+
+    #[test]
+    fn a_corrupt_manifest_is_skipped_not_wedged_and_can_be_pruned_by_run() {
+        let (_root, data, config, run) = committed_replacement();
+        // Corrupt the manifest so it no longer decodes. The previous scan
+        // fail-closed here, wedging status, selection, and prune (the remedy)
+        // behind the same unreadable file.
+        write_private_atomic(&manifest_path(&data, &run), b"not valid json").unwrap();
+
+        // The scan skips the corrupt run instead of erroring, so the whole
+        // subsystem stays available.
+        assert!(scan_manifests(&data, None).unwrap().is_empty());
+
+        let report = status(&data, None, &config).unwrap();
+        assert_eq!(report.corrupt_runs.len(), 1);
+        assert_eq!(report.corrupt_runs[0].run, run);
+        // The failure reason is surfaced so an operator can distinguish a
+        // benign truncation from a privacy/tampering signal.
+        assert!(report.corrupt_runs[0].reason.contains("corrupt"));
+
+        // A normal prune also proceeds (it is not blocked by the corrupt scan)
+        // and surfaces the skipped run (with its reason) without removing it.
+        let pruned = prune(&data, &config, false, false).unwrap();
+        assert_eq!(pruned.corrupt_runs.len(), 1);
+        assert_eq!(pruned.corrupt_runs[0].run, run);
+        assert!(pruned.corrupt_runs[0].reason.contains("corrupt"));
+        assert_eq!(pruned.manifests_removed, 0);
+        assert!(manifest_path(&data, &run).exists());
+
+        // The targeted per-run remedy removes the corrupt manifest by id even
+        // though its bytes cannot be parsed.
+        let removed = prune_run(&data, &run, false).unwrap();
+        assert_eq!(removed.manifests_removed, 1);
+        assert!(!manifest_path(&data, &run).exists());
+        // After removal the run is no longer flagged as corrupt.
+        assert!(status(&data, None, &config)
+            .unwrap()
+            .corrupt_runs
+            .is_empty());
     }
 
     #[test]

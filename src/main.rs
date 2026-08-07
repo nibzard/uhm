@@ -903,27 +903,53 @@ fn management(
                 },
                 "status" | "" => {
                     match recovery::status(&config.paths.data_dir, words.get(1).copied(), &config.recovery) {
-                        Ok(report) => { if args.json { println!("{}", serde_json::to_string(&report).unwrap()); } else { println!("recovery {} · state {}\n{} manifests · {} snapshots · {} bytes · {} pinned\nlimits: {} days / {} total bytes / {} bytes per file\n{}{}", if report.enabled { "enabled" } else { "disabled" }, report.state, report.manifests, report.snapshots, report.snapshot_bytes, report.pinned, report.max_age_days, report.max_total_bytes, report.max_file_bytes, report.reason, report.run_id.map(|id| format!("\nrun: {id}")).unwrap_or_default()); } 0 }
+                        Ok(report) => {
+                            if args.json {
+                                println!("{}", serde_json::to_string(&report).unwrap());
+                            } else {
+                                println!("recovery {} · state {}\n{} manifests · {} snapshots · {} bytes · {} pinned\nlimits: {} days / {} total bytes / {} bytes per file\n{}{}", if report.enabled { "enabled" } else { "disabled" }, report.state, report.manifests, report.snapshots, report.snapshot_bytes, report.pinned, report.max_age_days, report.max_total_bytes, report.max_file_bytes, report.reason, report.run_id.map(|id| format!("\nrun: {id}")).unwrap_or_default());
+                                if !report.corrupt_runs.is_empty() {
+                                    println!("{} corrupt manifest(s) skipped during scan; remove with `uhm recovery prune --run <id>`: {}", report.corrupt_runs.len(), report.corrupt_runs.iter().map(|entry| format!("{} ({})", entry.run, entry.reason)).collect::<Vec<_>>().join(", "));
+                                }
+                            }
+                            0
+                        }
                         Err(error) => app_error(args, outcome::CONFIG, "recovery_error", &error),
                     }
                 }
                 "prune" => {
                     let dry = args.dry_run || words.contains(&"--dry-run");
                     let all = words.contains(&"--all");
-                    match recovery::prune(&config.paths.data_dir, &config.recovery, dry, all) {
+                    let run = words
+                        .iter()
+                        .position(|word| *word == "--run")
+                        .and_then(|index| words.get(index + 1).copied());
+                    let outcome = if let Some(target) = run {
+                        recovery::prune_run(&config.paths.data_dir, target, dry)
+                    } else {
+                        recovery::prune(&config.paths.data_dir, &config.recovery, dry, all)
+                    };
+                    match outcome {
                         Ok(mut report) => {
-                            if !dry {
-                                for run in &report.expired_runs {
-                                    match record_and_finalize_recovery_expiry(config, run) {
+                            if !dry && run.is_none() {
+                                for expired in &report.expired_runs {
+                                    match record_and_finalize_recovery_expiry(config, expired) {
                                         Ok(()) => report.manifests_removed += 1,
-                                        Err(error) => eprintln!("uhm: recovery expiry for {run} remains pending: {error}"),
+                                        Err(error) => eprintln!("uhm: recovery expiry for {expired} remains pending: {error}"),
                                     }
                                 }
                             }
                             if args.json { println!("{}", serde_json::to_string(&report).unwrap()); } else {
-                                println!("{} {} snapshots ({} bytes); {} manifests {}; {} pinned retained", if dry { "would prune" } else { "pruned" }, report.snapshots_removed, report.bytes_removed, report.manifests_removed, if dry { "would be finalized" } else { "finalized" }, report.retained_pinned);
-                                if report.retained_within_limits > 0 {
-                                    println!("{} manifest(s) skipped: within the {}-day age and {}-byte total caps (use `uhm recovery prune --all` to remove retained snapshots now)", report.retained_within_limits, config.recovery.max_age_days, config.recovery.max_total_bytes);
+                                if run.is_some() {
+                                    println!("{} {} snapshots ({} bytes); {} manifests {}", if dry { "would prune" } else { "pruned" }, report.snapshots_removed, report.bytes_removed, report.manifests_removed, if dry { "would be finalized" } else { "finalized" });
+                                } else {
+                                    println!("{} {} snapshots ({} bytes); {} manifests {}; {} pinned retained", if dry { "would prune" } else { "pruned" }, report.snapshots_removed, report.bytes_removed, report.manifests_removed, if dry { "would be finalized" } else { "finalized" }, report.retained_pinned);
+                                    if report.retained_within_limits > 0 {
+                                        println!("{} manifest(s) skipped: within the {}-day age and {}-byte total caps (use `uhm recovery prune --all` to remove retained snapshots now)", report.retained_within_limits, config.recovery.max_age_days, config.recovery.max_total_bytes);
+                                    }
+                                }
+                                if !report.corrupt_runs.is_empty() {
+                                    println!("{} corrupt manifest(s) skipped during scan; remove with `uhm recovery prune --run <id>`: {}", report.corrupt_runs.len(), report.corrupt_runs.iter().map(|entry| format!("{} ({})", entry.run, entry.reason)).collect::<Vec<_>>().join(", "));
                                 }
                             }
                             0
@@ -948,7 +974,7 @@ fn management(
                         Err(error) => app_error(args, outcome::NOT_EXECUTED, "recovery_resume_failed", &error),
                     }
                 }
-                _ => app_error(args, outcome::USAGE, "usage_error", "usage: uhm recovery on|off [--prune]|status [<run-id|last>]|prune [--dry-run] [--all]|pin|unpin <run-id|last>|resume <run-id>"),
+                _ => app_error(args, outcome::USAGE, "usage_error", "usage: uhm recovery on|off [--prune]|status [<run-id|last>]|prune [--dry-run] [--all] [--run <run-id>]|pin|unpin <run-id|last>|resume <run-id>"),
             }
         }
         "config" => {
