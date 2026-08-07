@@ -144,6 +144,64 @@ jobs:
           cp dist/install.sh "dist/install-${version}.sh"
           chmod 0755 dist/install.sh "dist/install-${version}.sh"
           sh -n dist/install.sh
+      - name: Install release-signing toolchain
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Sign checksum manifest
+        # Produces a detached minisign (ed25519) signature over SHA256SUMS so the
+        # updater can authenticate the manifest against the public key compiled
+        # into src/update.rs before installing. Inert (skipped) until the
+        # maintainer adds UHM_RELEASE_SIGNING_KEY; see docs/reference/release-signing.md.
+        if: ${{ secrets.UHM_RELEASE_SIGNING_KEY != '' }}
+        env:
+          UHM_RELEASE_SIGNING_KEY: ${{ secrets.UHM_RELEASE_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -eu
+          umask 077
+          printf '%s' "$UHM_RELEASE_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/release-key.minisign"
+          minisign -S -s "$RUNNER_TEMP/release-key.minisign" \
+            -m dist/SHA256SUMS \
+            -c "uhm ${{ github.ref_name }} SHA256SUMS" \
+            -x dist/SHA256SUMS.minisig
+          rm -f "$RUNNER_TEMP/release-key.minisign"
+          test -s dist/SHA256SUMS.minisig
+      - name: Verify the signature against the compiled-in key
+        # Catches a signing pipeline wired out of lockstep before the tag ships:
+        # a typo'd or comment-line key pasted into RELEASE_PUBLIC_KEY, a secret
+        # that does not match the compiled constant, or a real key committed with
+        # no signing secret. Each would ship a green release that every installed
+        # binary fail-closes on. Skips harmlessly while the placeholder key is
+        # still compiled in.
+        shell: bash
+        run: |
+          set -eu
+          compiled_key="$(python3 - <<'PY'
+          import re
+          src = open('src/update.rs').read()
+          def resolve(name):
+              m = re.search(r'^const ' + re.escape(name) + r': &str = (.+?);\s*$', src, re.M)
+              if not m:
+                  raise SystemExit('could not find const ' + name + ' in src/update.rs')
+              rhs = m.group(1).strip()
+              if rhs.startswith('"') and rhs.endswith('"'):
+                  return rhs[1:-1]
+              return resolve(rhs)
+          print(resolve('RELEASE_PUBLIC_KEY'))
+          PY
+          )"
+          if [ "$compiled_key" = "REPLACE_WITH_MINISIGN_PUBLIC_KEY" ]; then
+            echo "release signing not configured (placeholder key); skipping cross-check"
+            exit 0
+          fi
+          test -f dist/SHA256SUMS.minisig || {
+            echo "::error::RELEASE_PUBLIC_KEY is set but no SHA256SUMS.minisig was produced; set UHM_RELEASE_SIGNING_KEY"
+            exit 1
+          }
+          minisign -V -P "$compiled_key" -m dist/SHA256SUMS -x dist/SHA256SUMS.minisig || {
+            echo "::error::release signature does not verify against the compiled-in RELEASE_PUBLIC_KEY (keypair out of lockstep)"
+            exit 1
+          }
+          echo "release signature verifies against the compiled-in key"
       - name: Attest checksum manifest
         uses: actions/attest-build-provenance@v4
         with:
@@ -161,5 +219,7 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" --draft --verify-tag \
             --title "${GITHUB_REF_NAME}" --notes-file "docs/releases/v${{ needs.validate.outputs.version }}.md"
           gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
-          test "$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets | length')" -eq 8
+          expected_assets=8
+          [ -f dist/SHA256SUMS.minisig ] && expected_assets=9
+          test "$(gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets | length')" -eq "$expected_assets"
           gh release edit "${GITHUB_REF_NAME}" --draft=false --latest

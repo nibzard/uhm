@@ -46,6 +46,9 @@ jobs:
       - name: Test installer temporary-directory fallback
         run: sh scripts/test-installer.sh
 
+      - name: Test installer rejects a tampered checksum
+        run: sh scripts/test-installer-rejects-tampered-checksum.sh
+
       - name: Run Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 

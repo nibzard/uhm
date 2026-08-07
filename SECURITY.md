@@ -28,7 +28,9 @@ Older releases may be asked to upgrade rather than receive a backport.
 
 The most sensitive areas are command/program classification, confirmation and auto-run
 logic, terminal escape handling, program staging and temporary files, local secret
-storage, API response parsing, and the telemetry schema and queue.
+storage, API response parsing, the telemetry schema and queue, and the self-update
+transport and release-signature verification
+(see [docs/reference/release-signing.md](docs/reference/release-signing.md)).
 
 `uhm` executes model-generated shell commands. Its warnings are advisory, not a
 sandbox or safety boundary. A report that shows an unexpected command can run,

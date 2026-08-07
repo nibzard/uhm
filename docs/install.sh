@@ -185,7 +185,23 @@ trap cleanup EXIT INT HUP TERM
 
 say "uhm installer: downloading ${archive}"
 download "${release_base}/${archive}" "${tmp_dir}/${archive}"
-download "${release_base}/SHA256SUMS" "${tmp_dir}/SHA256SUMS"
+if [ -z "${UHM_SHA256SUMS_FILE:-}" ]; then
+  # Manual install (no binary yet to carry a pinned key): fetch the manifest and
+  # rely on TLS plus the checksum check below.
+  download "${release_base}/SHA256SUMS" "${tmp_dir}/SHA256SUMS"
+elif [ -r "${UHM_SHA256SUMS_FILE}" ]; then
+  # `uhm update` authenticated this manifest against the pinned release signing
+  # key and staged the exact verified bytes; trust them instead of fetching a
+  # substitutable copy. The archive above was still downloaded over TLS and is
+  # checked against this manifest below.
+  cp "${UHM_SHA256SUMS_FILE}" "${tmp_dir}/SHA256SUMS"
+else
+  # The updater staged a manifest we cannot now read. Treat that as fatal rather
+  # than silently downgrading to an unauthenticated network fetch: a fallback
+  # here would reopen the checksum-substitution surface signing closes (e.g. a
+  # shared writable temp directory where the staged file was removed or swapped).
+  fail "authenticated checksum manifest ${UHM_SHA256SUMS_FILE} is missing or unreadable; refusing to fall back to an unauthenticated download"
+fi
 
 say "uhm installer: verifying checksum"
 verify_sha256 "${tmp_dir}/SHA256SUMS" "${tmp_dir}/${archive}"
