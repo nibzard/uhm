@@ -42,10 +42,12 @@ That release-hosted script is pinned to `v0.6.5` unless you override it with `UH
 Useful overrides:
 
 ```sh
-UHM_VERSION=v0.6.5 curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
-UHM_INSTALL_DIR="$HOME/bin" curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
-UHM_TARGET=aarch64-unknown-linux-musl curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | UHM_VERSION=v0.6.5 sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | UHM_INSTALL_DIR="$HOME/bin" sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | UHM_TARGET=aarch64-unknown-linux-musl sh
 ```
+
+Put the variable after the pipe (`| UHM_…=… sh`) so it reaches the installer process. Writing it before `curl` (`UHM_…=… curl … | sh`) sets the variable for `curl`, which ignores it, so the override silently does nothing.
 
 Inspect the script before running it if you prefer:
 

@@ -1140,16 +1140,65 @@ fn management(
                 }
                 "export" => {
                     let include = words.contains(&"--include-content");
-                    let output = words
-                        .iter()
-                        .position(|v| *v == "--output")
-                        .and_then(|i| words.get(i + 1))
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|| {
-                            std::env::current_dir()
-                                .unwrap_or_default()
-                                .join("uhm-history.redacted.jsonl")
-                        });
+                    // Honor either a positional destination (`uhm history export
+                    // <path>`) or `--output <path>`. operands[0] is "export", so
+                    // destination words start at index 1; walk them collecting a
+                    // positional while skipping the `--output` flag and its value.
+                    let mut output_flag: Option<&str> = None;
+                    let mut positional: Vec<&str> = Vec::new();
+                    let mut index = 1;
+                    while index < words.len() {
+                        match words[index] {
+                            "--output" => match words.get(index + 1) {
+                                Some(value) => {
+                                    output_flag = Some(value);
+                                    index += 2;
+                                }
+                                None => {
+                                    return app_error(
+                                        args,
+                                        outcome::USAGE,
+                                        "usage_error",
+                                        "usage: uhm history export [--output <path>] \
+                                         [--include-content] [<path>]",
+                                    );
+                                }
+                            },
+                            "--include-content" => index += 1,
+                            // Tolerate the documented `--` separator the way the
+                            // sibling `search` arm does (it filters "--" out), so
+                            // `uhm history export -- <path>` is not mistaken for a
+                            // second positional destination.
+                            "--" => index += 1,
+                            other => {
+                                positional.push(other);
+                                index += 1;
+                            }
+                        }
+                    }
+                    let output = match (output_flag, positional.len()) {
+                        (Some(path), 0) => std::path::PathBuf::from(path),
+                        (Some(_), _) => {
+                            return app_error(
+                                args,
+                                outcome::USAGE,
+                                "usage_error",
+                                "pass either a positional path or --output <path>, not both",
+                            );
+                        }
+                        (None, 1) => std::path::PathBuf::from(positional[0]),
+                        (None, 0) => std::env::current_dir()
+                            .unwrap_or_default()
+                            .join("uhm-history.redacted.jsonl"),
+                        (None, _) => {
+                            return app_error(
+                                args,
+                                outcome::USAGE,
+                                "usage_error",
+                                "specify at most one destination path",
+                            );
+                        }
+                    };
                     match history::export(&config.paths.data_dir, &output, include) {
                         Ok(count) => {
                             println!(
@@ -1454,5 +1503,5 @@ fn app_error(args: &args::Args, code: i32, name: &str, message: &str) -> i32 {
     code
 }
 fn print_help() {
-    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]     requires retained history (history.detail: full)\n  uhm recover <run-id|last> [guidance]    requires retained history (history.detail: full)\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm update\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network|environment]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras|deepseek>\n  -m, --model <id>\n      --shell <auto|bash|zsh|fish|pwsh>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
+    println!("uhm — say what you need; get the result\n\nUsage:\n  uhm [options] <intent>\n  uhm run|ask|explain [options] <intent>\n  uhm repair <run-id|last> [feedback]     requires retained history (history.detail: full)\n  uhm recover <run-id|last> [guidance]    requires retained history (history.detail: full)\n  uhm undo <run-id|last> [--review]\n  uhm restore <run-id|last> --force\n  uhm recovery on|off|status|prune|pin|unpin|resume\n  uhm update\n  uhm shell-init bash|zsh|fish\n  uhm context show [minimal|standard|full]\n  uhm telemetry [status|preview|on|off]\n  uhm feedback good|bad [run-id]\n  uhm history [list|show|search|replay|export|prune|clear|status]\n  uhm config [show|check]\n  uhm doctor [all] [network|environment]\n\nExecution:\n  ordinary actions run and return their result\n  non-TTY jobs that may mutate existing state or file metadata pause with status 11; rerun with --force\n  --review    review with run/revise/edit/copy/cancel controls\n  --dry-run   return the exact proposal without executing\n  --force     authorize a non-interactive mutation and proceed after warnings\n  --recoverable capture bounded managed-file preimages for this job\n  --context <minimal|standard|full>\n  --local-input keep piped bytes on-device for a generated program\n  --input-format <label> describe local-only input without sending its content\n  --retain-program keep the private program workspace for debugging\n  --plain     cooked ASCII-safe UI with no styling or animation\n  --no-motion disable animation while retaining color and Unicode\n  --no-telemetry disable telemetry for this invocation\n  --json      machine-readable product outcomes (child stdout remains result data)\n\nOptions:\n      --provider <openai|cerebras|deepseek>\n  -m, --model <id>\n      --shell <auto|sh|bash|zsh|fish|pwsh|powershell>\n      --no-stream\n      --fresh\n  -v, --verbose\n  -h, --help\n  -V, --version\n\nEverything after the first intent word is user text. The -- separator is only needed when the intent itself starts with '-'.")
 }
