@@ -8,4 +8,4 @@ One intent in. One bounded job out. Then `uhm` exits — not a coding agent, not
 - [Install](install.md)
 - [Watch the demo ↗](https://nibzard.github.io/uhm/demo/)
 
-<p class="cover-meta">v0.6.5 · Linux &amp; macOS · MIT licensed</p>
+<p class="cover-meta">v0.6.6 · Linux &amp; macOS · MIT licensed</p>
