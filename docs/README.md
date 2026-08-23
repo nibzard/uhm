@@ -4,7 +4,7 @@
 
 Say what you need. Get the result. **The result, not the command.**
 
-You know the result you want. The command, the flag, or the one-liner will not come. `uhm` is for that moment — the name is the sound it starts with.
+You know the result you want. The command, the flag, or the one-liner will not come. `uhm` is for that moment — the name is the sound you make when the command will not come.
 
 `uhm` is an AI assistant for the terminal. Say the job in plain words. `uhm` picks one way to do it — a shell command or a short Python program — runs it, and prints the real output. Then it exits.
 
@@ -18,7 +18,7 @@ It is deliberately smaller than a coding agent. One or two model calls per job. 
 - **One job per invocation** — at most two model calls, then `uhm` exits. No open-ended chat loop.
 - **Stays legible** — result data on stdout; progress and review on stderr. `--plain` gives plain ASCII output.
 - **You keep control** — `--dry-run` previews exact bytes; `--review` pauses every proposal; warnings flag deletion, broad writes, and privilege changes.
-- **Explicit provider boundary** — your intent and a bounded context go only to the selected fixed provider. Each job spends a small amount of API credit, so you need a provider API key. Content-free telemetry is separate and opt-out.
+- **Explicit provider boundary** — your intent and a bounded context go only to the selected provider (OpenAI, Cerebras, or DeepSeek). Each job spends a small amount of API credit, so you need a provider API key. Content-free telemetry is separate and opt-out.
 
 ## What it is — and isn't
 
@@ -33,10 +33,10 @@ It is deliberately smaller than a coding agent. One or two model calls per job. 
     </tr>
     <tr>
       <td data-label="uhm is">One-shot: one intent in, one result out</td>
-      <td data-label="uhm is not">A chatbot or persistent REPL</td>
+      <td data-label="uhm is not">A chatbot or a persistent read-eval-print loop</td>
     </tr>
     <tr>
-      <td data-label="uhm is">Honest about limits — exit zero only means the process exited zero</td>
+      <td data-label="uhm is">Honest about limits — exit zero says the command completed, not that the result is correct</td>
       <td data-label="uhm is not">A sandbox or a safety guarantee</td>
     </tr>
   </tbody>
@@ -61,7 +61,7 @@ The installer fetches the latest release archive for your platform, verifies `SH
 cargo install --locked --git https://github.com/nibzard/uhm --tag v0.6.6 uhm-cli
 ```
 
-Prebuilt binaries, version pinning, and manual verification are on the [Install](install.md) page. See [Getting started](getting-started.md) for the under-five-minute path.
+Prebuilt binaries, version pinning, and manual verification are on the [Install](install.md) page. See the [Quickstart](getting-started.md) for the under-five-minute path.
 
 ## Choose what you need
 
