@@ -1,6 +1,7 @@
 - [Home](/)
 
 - **Start here**
+  - [What is uhm?](concepts.md)
   - [Install](install.md)
   - [Quickstart](getting-started.md)
 
@@ -46,12 +47,13 @@
     - [Provider adapters & selection](architecture/0005-provider-adapters-and-qualified-selection.md)
 
 - **Project**
-  - [Documentation structure](documentation.md)
+  - [Releases](releases/v0.6.6.md)
+  - [Demo ↗](https://nibzard.github.io/uhm/demo/)
+  - [Source ↗](https://github.com/nibzard/uhm)
   - **Topic maps**
     - [Programs](program.md)
     - [History](local-history.md)
     - [Recovery](recovery.md)
     - [Model selection](model-selection.md)
-  - [Releases](releases/v0.6.6.md)
-  - [Demo ↗](https://nibzard.github.io/uhm/demo/)
-  - [Source ↗](https://github.com/nibzard/uhm)
+  - **Maintainer guides**
+    - [Documentation structure](documentation.md)

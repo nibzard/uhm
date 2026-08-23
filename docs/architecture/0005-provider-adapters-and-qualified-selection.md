@@ -4,7 +4,7 @@
 
 - Status: accepted
 - Date: 2026-08-03
-- Supersedes: the OpenAI-only transport portion of [ADR 0002](0002-responses-result-loop.md)
+- Supersedes: the OpenAI-only transport portion of [ADR 0002](../architecture/0002-responses-result-loop.md)
 
 ## Context
 

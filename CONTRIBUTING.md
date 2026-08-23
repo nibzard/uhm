@@ -59,7 +59,10 @@ parsing, file permissions, and terminal handling.
 3. Avoid destructive test commands. Use temporary directories and explicit
    paths, and clean up only files the test created.
 4. Update the README or example config when user-visible behavior changes.
-5. Record what you actually verified. Do not claim a manual check or platform
+5. For documentation edits, follow the
+   [documentation structure guide](docs/documentation.md). Canonical wording
+   and the privacy mirror are check-enforced.
+6. Record what you actually verified. Do not claim a manual check or platform
    test that you did not run.
 
 ## Commit messages

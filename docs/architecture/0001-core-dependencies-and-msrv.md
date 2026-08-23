@@ -4,7 +4,7 @@
 
 Status: accepted for Plan 1
 
-Plan 2 transport and process-control decisions are superseded by [ADR 0002](0002-responses-result-loop.md); this record preserves the Plan 1 rationale.
+Plan 2 transport and process-control decisions are superseded by [ADR 0002](../architecture/0002-responses-result-loop.md); this record preserves the Plan 1 rationale.
 
 ## Decision
 

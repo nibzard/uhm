@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import posixpath
 import re
 import subprocess
 import sys
@@ -82,10 +83,13 @@ def check_provider_language() -> None:
         "PRIVACY.md",
         "docs/README.md",
         "docs/behavior-contract.md",
+        "docs/comparison.md",
         "docs/concepts.md",
+        "docs/install.md",
         "docs/local-history.md",
         "docs/privacy.md",
         "docs/recovery.md",
+        "docs/troubleshooting.md",
     ]
     forbidden = (
         "terminal work goes to OpenAI",
@@ -94,12 +98,26 @@ def check_provider_language() -> None:
         "never attached to an OpenAI request",
         "asks OpenAI for one reviewed",
         "serialized into an OpenAI request",
+        "Cerebras is an explicit fixed alternative",
+        "Fixed OpenAI or Cerebras adapters",
+        "or the fixed Cerebras Chat Completions endpoint when explicitly configured",
     )
     for path in current_docs:
         body = read(path)
         for phrase in forbidden:
             if phrase in body:
                 fail(f"{path} contains stale provider-specific phrase {phrase!r}")
+
+    canonical = "OpenAI is the default provider; Cerebras and DeepSeek are explicit alternatives"
+    for path in (
+        "README.md",
+        "docs/README.md",
+        "docs/concepts.md",
+        "docs/install.md",
+        "docs/troubleshooting.md",
+    ):
+        if canonical not in read(path):
+            fail(f"{path} does not state the canonical provider sentence")
 
     privacy_requirements = (
         "## Provider requests",
@@ -133,6 +151,38 @@ def check_local_links() -> None:
                 fail(f"{path.relative_to(ROOT)} links to missing local path {target!r}")
 
 
+def check_docsify_links() -> None:
+    """Catch links that resolve on GitHub but 404 on the docs site.
+
+    docsify (relativePath unset) resolves every relative link from the site
+    root after normalization; GitHub resolves it from the containing file.
+    A link is safe only when both rules hold.
+    """
+    for path in (ROOT / "docs").rglob("*.md"):
+        body = path.read_text(encoding="utf-8")
+        for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", body):
+            target = target.strip().strip("<>").split("#", 1)[0]
+            if not target or target.startswith(("https://", "http://", "mailto:", "/")):
+                continue
+            normalized = posixpath.normpath("/" + target).lstrip("/")
+            if not (ROOT / "docs" / normalized).exists():
+                fail(
+                    f"{path.relative_to(ROOT)} links to {target!r}, which 404s on the"
+                    f" docs site (docsify resolves it to /{normalized})"
+                )
+
+
+def check_privacy_mirror() -> None:
+    body = read("PRIVACY.md").split("\n", 1)[1].strip("\n")
+    mirror = read("docs/privacy.md")
+    index = mirror.find(body)
+    if index < 0:
+        fail("docs/privacy.md does not embed the current PRIVACY.md body; regenerate the mirror")
+    preamble = mirror[:index]
+    if "diataxis: reference" not in preamble or "PRIVACY.md" not in preamble:
+        fail("docs/privacy.md preamble lost the Diátaxis marker or the mirror note")
+
+
 def check_diataxis_navigation() -> None:
     sidebar = read("docs/_sidebar.md")
     for section in ("Tutorials", "How-to guides", "Reference", "Explanation"):
@@ -150,7 +200,7 @@ def check_diataxis_navigation() -> None:
             fail(f"{path.relative_to(ROOT)} has unknown Diátaxis type {match.group(1)!r}")
 
     expected = {
-        "Start here": {"tutorial", "how-to"},
+        "Start here": {"tutorial", "how-to", "explanation"},
         "Tutorials": {"tutorial"},
         "How-to guides": {"how-to"},
         "Reference": {"reference"},
@@ -181,6 +231,8 @@ def main() -> None:
     check_provider_language()
     check_manifest_status()
     check_local_links()
+    check_docsify_links()
+    check_privacy_mirror()
     check_diataxis_navigation()
     print(f"docs check: v{version} documentation is synchronized")
 
