@@ -2,9 +2,26 @@
 
 # How uhm compares
 
-`uhm` takes one natural-language intent, picks one bounded shell action or a generated Python microprogram, runs it, prints the real result, and exits. It is deliberately smaller than a coding agent and deliberately quieter than a chatbot. One intent goes in. One bounded job comes out. Then `uhm` exits.
+`uhm` takes one natural-language intent, picks one bounded shell action or a short generated Python program, runs it, prints the real result, and exits. It is deliberately smaller than a coding agent and deliberately quieter than a chatbot. One intent goes in. One bounded job comes out. Then `uhm` exits.
 
-That places it in a narrow band most "AI terminal" tools do not occupy. This page is a point-in-time public scan (August 2026) — comprehensive, but not mathematically exhaustive. Small natural-language shell wrappers appear on GitHub often; what follows is the set worth reasoning about.
+## What you do today
+
+Today, when the command will not come, you leave the terminal. You search the web or paste the job into a chat tab. You read an answer, adapt it to your machine, run it, and switch back. `uhm` removes the detour. Say the job in the shell where you work, and receive the real result. The command becomes an implementation detail you can inspect when you want it.
+
+## Recall or expression
+
+Two problems sound alike but need different tools.
+
+- **Recall** — you have run the command before. You know it exists, but you cannot retrieve it. [Atuin](https://atuin.sh) searches your shell history. [tldr pages](https://github.com/tldr-pages/tldr) and [navi](https://github.com/denisidoro/navi) hold cheatsheets. For recall, they are faster than `uhm`, and they are free. [The Fuck](https://github.com/nvbn/thefuck) covers a third case: correcting the command you just mistyped.
+- **Expression** — you know the outcome, but you never knew the command. It is not in your history and not on a cheatsheet. Saying the outcome and receiving the result is the job `uhm` is built for.
+
+If your problem is recall, use the non-AI tools above. This page is about expression.
+
+## Against coding agents
+
+Coding agents — [Claude Code](https://github.com/anthropics/claude-code), [OpenAI Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Warp](https://www.warp.dev/ai) — inspect repositories, edit files, and loop until a larger objective is done. If your task is genuinely multi-step, they are the better fit. `uhm` is the wrong shape for it.
+
+For a one-off terminal job, an agent brings the wrong contract: a session, broad file access, and an open-ended loop for work that needs one command. `uhm` spends one or two model calls, prints the real output, and exits. The smallness is the feature: predictable cost, nothing running in the background, no session state to review afterwards.
 
 ## What counts as a competitor
 
@@ -14,9 +31,9 @@ Three tiers, ordered by how directly each overlaps:
 |---|---|---|
 | Direct alternatives | Natural language → terminal command or action | The same job: turn words into a run, then stop |
 | Broader terminal and coding agents | Multi-step loops that inspect, edit, and execute | Compete for the same terminal-AI usage and budget, not a like-for-like replacement |
-| Non-AI substitutes | Command discovery, history, correction | Often the better answer when the real problem is recall, not expression |
+| Non-AI substitutes | Command discovery, history, correction | The better answer for recall; `uhm` serves expression |
 
-`uhm` is result-first rather than command-first, and one-job-and-exit rather than an agent. The command or microprogram is an implementation detail; what you receive is the result, and you can inspect the implementation when necessary. That framing governs every comparison below.
+`uhm` is result-first rather than command-first, and one-job-and-exit rather than an agent. The command or program is an implementation detail; what you receive is the result, and you can inspect the implementation when necessary. That framing governs every comparison below.
 
 If you already know what you are looking for:
 
@@ -34,7 +51,7 @@ If you already know what you are looking for:
 
 Names link to verified sources. hai and Spren are listed plain where no canonical source was confirmed.
 
-## Closest direct alternative: llm-cmd
+## The closest direct alternative
 
 [llm-cmd](https://github.com/simonw/llm-cmd) is the closest command-first minimalist competitor. The workflow is `llm cmd undo last git commit` — the plugin asks the configured LLM for a shell command, drops that command into an editable prompt, and you press Enter to execute or Ctrl+C to cancel. It takes `-m` for a model and `-s` for a custom system prompt, and draws on the broader LLM CLI plugin ecosystem for cloud and local models.
 
@@ -48,8 +65,8 @@ The cleanest way to state the difference:
 | Core model | Natural language → editable shell command | Natural language → typed action → useful result |
 | Default approval | Always exposes the command for editing before execution | Ordinary actions run immediately; review can be requested or triggered for consequential actions |
 | Primary interface | Command-first | Result-first |
-| Execution types | Shell commands only | Shell commands, non-executing answers, or bounded Python microprograms |
-| Model selection | Inherits the cloud and local model ecosystem of the LLM CLI | Fixed OpenAI or Cerebras adapters; automatic selection requires reviewed qualification evidence |
+| Execution types | Shell commands only | Shell commands, non-executing answers, or bounded Python programs |
+| Model selection | Inherits the cloud and local model ecosystem of the LLM CLI | Fixed OpenAI, Cerebras, or DeepSeek adapters; automatic selection requires reviewed qualification evidence |
 | Context | Joins the command-line words into a prompt | Bounded OS, shell, working-directory, Git and installed-tool context |
 | Piped input | No dedicated stdin-data workflow | Explicit piped input, including a local-only input mode |
 | Failure handling | Prints the command's captured error output | One bounded repair attempt in interactive use |
@@ -79,9 +96,27 @@ The next nine, in rough order of overlap with `uhm`.
 | [llm.fish](https://github.com/avafloww/llm.fish) | Generate, refine, execute, or immediate "yolo" mode; can repair failed commands | Lightweight for Fish users; requires Claude Code and Fish; narrower portability and safety envelope |
 | [nlsh](https://github.com/abakermi/nlsh) | Generate and execute with confirmation and command filters | Straightforward, safety-oriented execution loop; conventional NL-to-shell rather than result-first orchestration |
 
-## Wider direct and near-direct alternatives
+## Non-AI substitutes
 
-Grouped by approach. These overlap with `uhm` but did not make the shortlist above.
+Covered in [recall or expression](#recall-or-expression) above: [Atuin](https://atuin.sh) for history, [navi](https://github.com/denisidoro/navi) and [tldr pages](https://github.com/tldr-pages/tldr) for cheatsheets, [The Fuck](https://github.com/nvbn/thefuck) for correction. None need a model, a network call, or a credit balance — which is exactly why they win for recall and lose for expression.
+
+## Which to try first
+
+For benchmarking, install the sourceable shortlist first: [llm-cmd](https://github.com/simonw/llm-cmd), [ShellGPT](https://github.com/TheR1D/shell_gpt), [cmd-ai](https://github.com/BrodaNoel/cmd-ai), [llm-term](https://github.com/dh1011/llm-term), [uwu](https://github.com/context-labs/uwu), [llm.fish](https://github.com/avafloww/llm.fish), [Termax](https://github.com/huangyz0918/termax), [nlsh](https://github.com/abakermi/nlsh). By dimension:
+
+- Minimalism — llm-cmd, hai, uwu.
+- Command-assistant maturity and breadth — ShellGPT, AIChat.
+- Local or private inference — cmd-ai, cmdh, osh, Spren.
+- Shell-native, hotkey-driven interaction — Termax, hi-shell, whai, clai.
+- Safe, confirmation-based execution — llm-term, cmd-ai, Spren, nlsh.
+- Automatic or result-oriented execution — llm.fish, Termax, and several smaller executors.
+- Full-agent displacement — Warp, GitHub Copilot CLI, Claude Code, OpenAI Codex CLI, Gemini CLI, OpenCode.
+
+No surveyed alternative documents the same complete combination as `uhm`: the actual result as the default output rather than a proposed command; a strict one-intent, one-bounded-job lifecycle; a choice between shell actions and generated Python programs; explicit handling of piped-data privacy; bounded clarification and repair rather than open-ended loops; and local receipts, review and bounded recovery. Several tools cover any one of these; none cover the set.
+
+## Appendix: the August 2026 scan
+
+This appendix is a point-in-time public scan dated August 2026. It is comprehensive but not mathematically exhaustive — small natural-language shell wrappers appear on GitHub frequently, and existing tools change features, licensing, and reach between scans. Treat the lists as a starting set, not a census. Where a tool is described as "command-first" or "confirm-first," confirm against its current repository before relying on the distinction.
 
 **Command generation and execution.**
 
@@ -131,11 +166,7 @@ Grouped by approach. These overlap with `uhm` but did not make the shortlist abo
 - [Luminos](https://github.com/benbaptist/luminos) — NL assistant with filesystem, network and shell tools under permission prompts.
 - [RealConsole](https://github.com/hongxin/RealConsole) — Rust "smart shell" with planning and task orchestration, not just command translation.
 
-## Broader terminal and coding agents
-
-These compete for the same terminal-AI usage and budget, but they are not direct replacements. They run in multi-step loops, inspect repositories, modify files, and continue until a larger objective is complete. If your task is genuinely multi-step, these are the better fit; `uhm` is the wrong shape for it.
-
-**Commercial and platform-backed.**
+**Broader terminal and coding agents.** These compete for the same terminal-AI usage and budget, but they are not direct replacements. They run in multi-step loops, inspect repositories, modify files, and continue until a larger objective is complete.
 
 - [Warp](https://www.warp.dev/ai) — plain-English multi-step agent built into Warp.
 - [GitHub Copilot CLI](https://github.com/features/copilot/cli) — agentic terminal assistant; reads files, modifies projects, runs commands in trusted directories.
@@ -145,9 +176,6 @@ These compete for the same terminal-AI usage and budget, but they are not direct
 - [Cursor CLI](https://cursor.com/cli) — terminal and headless Cursor agent for shell, scripts, CI/CD.
 - [Amp](https://ampcode.com/) — Sourcegraph coding agent in terminal and editors.
 - [Factory Droid CLI](https://docs.factory.ai/droid-cli/quickstart) — terminal interface for Factory's autonomous Droids.
-
-**Open-source or provider-flexible.**
-
 - [Gemini CLI](https://github.com/google-gemini/gemini-cli) — open-source ReAct-style agent; built-in tools and MCP.
 - [OpenCode](https://github.com/sst/opencode) — open-source terminal coding agent; multiple providers, persistent sessions.
 - [Qwen Code](https://github.com/QwenLM/qwen-code) — open-source terminal agent; multiple providers, local models, headless, MCP, sandboxing.
@@ -158,33 +186,6 @@ These compete for the same terminal-AI usage and budget, but they are not direct
 - [Plandex](https://github.com/plandex-ai/plandex) — plans and executes long multi-step coding tasks.
 - [Open Interpreter](https://github.com/OpenInterpreter/open-interpreter) — NL interface to run code and shell locally.
 - [Microsoft Intelligent Terminal](https://github.com/microsoft/intelligent-terminal) — Windows Terminal fork with native agent integration over ACP.
-
-## Non-AI substitutes
-
-Often the better choice when the real problem is remembering or recovering a command rather than expressing an arbitrary task in natural language. None of these need a model, a network call, or a credit balance.
-
-- [Atuin](https://atuin.sh) — searchable, optionally synced, end-to-end-encrypted shell history.
-- [navi](https://github.com/denisidoro/navi) — interactive cheatsheets with executable examples.
-- [The Fuck](https://github.com/nvbn/thefuck) — corrects the previous failed or mistyped command against built-in rules.
-- [tldr pages](https://github.com/tldr-pages/tldr) — concise, community-maintained examples for command-line tools.
-
-## Which to try first
-
-For benchmarking, install the sourceable shortlist first: [llm-cmd](https://github.com/simonw/llm-cmd), [ShellGPT](https://github.com/TheR1D/shell_gpt), [cmd-ai](https://github.com/BrodaNoel/cmd-ai), [llm-term](https://github.com/dh1011/llm-term), [uwu](https://github.com/context-labs/uwu), [llm.fish](https://github.com/avafloww/llm.fish), [Termax](https://github.com/huangyz0918/termax), [nlsh](https://github.com/abakermi/nlsh). By dimension:
-
-- Minimalism — llm-cmd, hai, uwu.
-- Command-assistant maturity and breadth — ShellGPT, AIChat.
-- Local or private inference — cmd-ai, cmdh, osh, Spren.
-- Shell-native, hotkey-driven interaction — Termax, hi-shell, whai, clai.
-- Safe, confirmation-based execution — llm-term, cmd-ai, Spren, nlsh.
-- Automatic or result-oriented execution — llm.fish, Termax, and several smaller executors.
-- Full-agent displacement — Warp, GitHub Copilot CLI, Claude Code, OpenAI Codex CLI, Gemini CLI, OpenCode.
-
-No surveyed alternative documents the same complete combination as `uhm`: the actual result as the default output rather than a proposed command; a strict one-intent, one-bounded-job lifecycle; a choice between shell actions and generated Python microprograms; explicit handling of piped-data privacy; bounded clarification and repair rather than open-ended loops; and local receipts, review and bounded recovery. Several tools cover any one of these; none cover the set.
-
-## A point-in-time note
-
-This page is a public scan dated August 2026. It is comprehensive but not mathematically exhaustive — small natural-language shell wrappers appear on GitHub frequently, and existing tools change features, licensing, and reach between scans. Treat the tables as a starting set, not a census. Where a tool is described as "command-first" or "confirm-first," confirm against its current repository before relying on the distinction.
 
 ## Next
 
