@@ -4,7 +4,7 @@
 
 `uhm` runs on Linux and macOS. It is a single binary — no runtime, no daemon, no background services. Linux builds are statically linked (musl); macOS builds link the system shared libraries. Native Windows is not supported.
 
-OpenAI is the default provider. You need an [OpenAI API key](https://platform.openai.com/api-keys); `uhm` calls the Responses API with `store: false`. Set it before your first invocation:
+OpenAI is the default provider; Cerebras and DeepSeek are explicit alternatives. Each job sends your intent to the provider and spends a small amount of API credit, so you need a provider API key. Get an [OpenAI API key](https://platform.openai.com/api-keys); `uhm` calls the Responses API with `store: false`. Set it before your first invocation:
 
 ```sh
 export OPENAI_API_KEY="sk-..."
@@ -19,7 +19,14 @@ export CEREBRAS_API_KEY="csk-..."
 uhm --provider cerebras --model gpt-oss-120b doctor network
 ```
 
-This verifies endpoint compatibility and credentials; it does not claim that the pair is qualified for automatic evidence-based selection. See [Configuration](configuration.md) for persistent selection and optional fallback.
+DeepSeek follows the same pattern:
+
+```sh
+export DEEPSEEK_API_KEY="..."
+uhm --provider deepseek --model deepseek-v4-flash doctor network
+```
+
+This verifies endpoint compatibility and credentials; it does not claim that the pair is qualified for automatic evidence-based selection. See [configure a provider](how-to/configure-providers.md) for all three providers, and [Configuration](configuration.md) for persistent selection and optional fallback.
 
 ## Option 1 — one-line installer (recommended)
 

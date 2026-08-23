@@ -31,7 +31,7 @@ Never clear quarantine for a file whose checksum did not match.
 
 ## API key and authentication
 
-`uhm` reads the selected provider's environment variable first (`OPENAI_API_KEY` or `CEREBRAS_API_KEY`), then the matching assignment in a private `0600` secrets file whose path `uhm doctor` prints. If the key is missing or rejected:
+OpenAI is the default provider; Cerebras and DeepSeek are explicit alternatives. `uhm` reads the selected provider's environment variable first (`OPENAI_API_KEY`, `CEREBRAS_API_KEY`, or `DEEPSEEK_API_KEY`), then the matching assignment in a private `0600` secrets file whose path `uhm doctor` prints. If the key is missing or rejected:
 
 ```sh
 export OPENAI_API_KEY="sk-..."
