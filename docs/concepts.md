@@ -2,16 +2,18 @@
 
 # Core concepts
 
-`uhm` is a natural-language layer over the terminal tools you already have. You describe a small job in plain language; `uhm` picks one concrete way to do it, runs that one thing, prints the real result, and exits.
+You know the result you want. The command, the flag, or the one-liner will not come. `uhm` is for that moment.
 
-It is deliberately not a coding agent. There is no open-ended loop, no background process, no daemon, and no autonomous editing session. One intent goes in. One bounded job comes out. Then `uhm` is done.
+`uhm` is an AI assistant for the terminal — a natural-language layer over the terminal tools you already have. You describe a small job in plain words; `uhm` picks one concrete way to do it, runs that one thing, prints the real result, and exits.
+
+It is deliberately not a coding agent. There is no open-ended loop, no background process, no daemon, and no autonomous editing session. One intent goes in. One bounded job comes out. Then `uhm` is done. A job is bounded: one child process, one time limit, one result.
 
 ## The shape of a request
 
 Every invocation has the same shape:
 
 1. **Intent** — the words after the options. Everything after the first intent word is opaque user text, so a phrase that happens to contain `-y`, `--help`, or `--system` cannot raise its own authority.
-2. **A typed action** — `uhm` asks the model to choose one of a small, fixed set of action types (run a shell command, run a bounded Python program, answer a question, ask one clarifying question, or decline). It does not run free-form generated shell blindly; the action is chosen from a closed list.
+2. **A typed action** — `uhm` asks the model to choose one of a small, fixed set of action types (run a shell command, run a bounded Python program, answer a question, ask one clarifying question, or decline). It does not run free-form generated shell blindly; the action is chosen from a closed list. The chosen type is called the route.
 3. **A bounded execution** — one child process, with timeouts, native terminal streams, and result bytes on stdout.
 4. **The real output** — what the tool actually printed, not a paraphrase. Then `uhm` exits.
 
@@ -41,9 +43,9 @@ Three things can leave your machine on a normal request:
 - **Explicitly piped input**, unless you use `--local-input`.
 - **The selected context** — bounded environment facts. The default `standard` mode is OS, architecture, target shell, installed-tool booleans, a normalized working directory, bounded Git state, and up to 40 entry names. It does not include file contents, diffs, remotes, environment values, or history.
 
-Requests go only to the selected fixed provider: OpenAI Responses with `store: false` by default, or the fixed Cerebras Chat Completions endpoint when explicitly configured. Content-free telemetry is separate and opt-out. See [Privacy & telemetry](privacy.md) for the exact boundary.
+Requests go only to the selected fixed provider. OpenAI is the default provider; Cerebras and DeepSeek are explicit alternatives. OpenAI and DeepSeek use the Responses API with `store: false`; Cerebras uses its fixed Chat Completions endpoint. Content-free telemetry is separate and opt-out. See [Privacy & telemetry](privacy.md) for the exact boundary.
 
-## What stays
+## What stays on your machine
 
 Private, append-only metadata history stays on your machine by default — state transitions, route, effects, hashes, and timing categories, never the intent, proposal, paths, input, or output. See the [history reference](reference/history.md).
 

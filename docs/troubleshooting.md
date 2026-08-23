@@ -110,7 +110,7 @@ Exit code **12** means `uhm` asked a question and could not settle on a proposal
 
 If output looks garbled, animates when you do not want it to, or your terminal reports odd capabilities:
 
-- `--plain` — cooked, ASCII-safe, no terminal controls or animation.
+- `--plain` — plain ASCII output, no terminal controls or animation.
 - `--no-motion` — keep color and Unicode, disable animation.
 - Environment fallbacks: `UHM_PLAIN=1`, `NO_COLOR`, `NO_MOTION=1`, `TERM=dumb`.
 

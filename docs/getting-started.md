@@ -25,7 +25,7 @@ Say what you need in plain language:
 uhm list the three biggest files in this directory
 ```
 
-`uhm` turns that into one typed action, shows you the proposal, runs the ordinary work, and prints the result. Result data goes to **stdout**; progress and the review UI go to **stderr**, so piping the result elsewhere just works.
+`uhm` turns the intent into one action — a shell command or a short Python program — and runs it. Result data goes to **stdout**; progress and the review UI go to **stderr**. Piping the result elsewhere just works.
 
 Quote the intent whenever it contains `?`, `'`, `*`, or `!` — the shell expands those characters before `uhm` runs, and zsh (the macOS default) turns an unmatched `?` or `*` into a hard error:
 
@@ -62,7 +62,7 @@ cat data.csv | uhm ask "how many columns does this file have"
 
 A question about a file's content needs the file's bytes on stdin, as above — naming the file in a bare question gives the model nothing to read.
 
-With `--local-input`, the piped body stays on-device and only a presence, byte-count, and UTF-8 status summary (plus any `--input-format` label) is sent, which the generated program reads from a private spool:
+With `--local-input`, the piped bytes stay on your machine. `uhm` sends only a byte count, a UTF-8 status, and the format label. The generated program reads the bytes from a private local file:
 
 ```sh
 curl -s https://example.com/big.json | uhm --local-input --input-format application/json summarize the top-level keys
@@ -77,7 +77,7 @@ uhm ask "what does the -I flag mean on python3"
 
 `ask` returns an answer for prose-valued work; `explain` returns a typed explanation. Neither executes a command.
 
-## 6. Local shortcuts
+## 6. Add local shortcuts
 
 Aliases are short triggers expanded **locally** — no API call, no API key. They are empty by default; add them under `aliases` in your config (see [Configuration](configuration.md)):
 
