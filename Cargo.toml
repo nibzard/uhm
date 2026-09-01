@@ -67,7 +67,7 @@ name = "uhm"
 path = "src/main.rs"
 
 [dependencies]
-blake3 = "=1.5.5"
+blake3 = "=1.8.7"
 libc = "0.2"
 # Verify-only minisign (ed25519) signatures for release-authenticity checks.
 # Zero runtime dependencies; the corresponding private key is held offline and
