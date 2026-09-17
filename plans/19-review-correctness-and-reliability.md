@@ -101,7 +101,7 @@ exist, pass, and are included in the relevant automated gate.
 | W05 | Finding 3 | Preserve history-export parent permissions | P2 | S / LOW | Baseline | DONE |
 | W06 | Findings 4 and 10 | Repair telemetry schema interoperability and bounded reads | P2 | M / LOW | Baseline | DONE |
 | W07 | Finding 5 | Preserve the question in clarification follow-ups | P2 | S / LOW | Baseline | DONE |
-| W08 | Finding 7a/7b | Bound Python inventory and context/help subprocesses | P2 | M / MED | W01 | TODO |
+| W08 | Finding 7a/7b | Bound Python inventory and context/help subprocesses | P2 | M / MED | W01 | DONE |
 | W09 | Finding 8a/8b | Correct consent timing and unanswered-consent persistence | P2 | M / LOW | W01, W08 | TODO |
 | W10 | Finding 9a/9b | Repair qualification resume and action-kind interoperability | P2 | M / LOW | Baseline | TODO |
 | W11 | Dependency-scan results | Update rustls and affected Worker development dependencies | P2 | S–M / MED | Baseline | TODO |

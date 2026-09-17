@@ -1330,3 +1330,49 @@ fn audit19_export_preserves_existing_parent_permissions() {
         }
     }
 }
+
+// Plan 19 W08: a sleeping Python shim cannot stall a local alias, and the
+// normal request path probes Python exactly once.
+#[cfg(unix)]
+#[test]
+fn audit19_runtime_a_sleeping_shim_does_not_stall_a_local_alias() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let shim_dir = temp.path().join("shims");
+    fs::create_dir(&shim_dir).unwrap();
+    let counter = temp.path().join("python-probes.log");
+    let shim = shim_dir.join("python3");
+    fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nprintf 'probe\\n' >> '{}'\nsleep 30\n",
+            counter.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let yaml = "aliases:\n  sleepy-noop: true\n";
+    let path = format!("{}:{}", shim_dir.display(), std::env::var("PATH").unwrap());
+    let started = std::time::Instant::now();
+    let run = configured_command(temp.path(), yaml, &["sleepy-noop"])
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "a sleeping shim stalled the alias for {elapsed:?}"
+    );
+    let probes = fs::read_to_string(&counter).unwrap_or_default();
+    let count = probes.lines().filter(|line| *line == "probe").count();
+    assert_eq!(
+        count, 1,
+        "the normal request path must probe Python exactly once, got {probes:?}"
+    );
+}

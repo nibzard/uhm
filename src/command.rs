@@ -106,6 +106,7 @@ pub fn handle(
     route: &str,
     stdin: &crate::input::Spool,
     disclosure_marker: &str,
+    python: &crate::runtime::PythonInventory,
     interaction: &mut telemetry::Interaction,
     preset_action: Option<ProposedAction>,
     related_run_id: Option<&str>,
@@ -154,13 +155,14 @@ pub fn handle(
     let local_alias = alias.is_some();
     let mut snapshot = if local_alias {
         interaction.suppress();
-        context::gather(
+        context::gather_with_inventory(
             context::Mode::Minimal,
             &shell_name,
             config.context_timeout_ms,
+            python,
         )
     } else {
-        context::gather(mode, &shell_name, config.context_timeout_ms)
+        context::gather_with_inventory(mode, &shell_name, config.context_timeout_ms, python)
     };
     // Plan 18: the names actually shown in this request's surface. A later
     // probe may only name one of these, so an unconsented binary is unreachable.
@@ -2803,6 +2805,7 @@ mod tests {
                 "run",
                 &crate::input::Spool::default(),
                 crate::first_run::RENDERED_MARKER,
+                &crate::runtime::PythonInventory::unavailable(),
                 &mut without,
                 Some(proposal.clone()),
                 None,
@@ -2829,6 +2832,7 @@ mod tests {
             "run",
             &crate::input::Spool::default(),
             crate::first_run::RENDERED_MARKER,
+            &crate::runtime::PythonInventory::unavailable(),
             &mut interaction,
             Some(proposal),
             None,
@@ -2898,6 +2902,7 @@ mod tests {
             "run",
             &crate::input::Spool::default(),
             crate::first_run::RENDERED_MARKER,
+            &crate::runtime::PythonInventory::unavailable(),
             &mut interaction,
             Some(proposal),
             None,
