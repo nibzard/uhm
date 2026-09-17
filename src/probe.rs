@@ -88,7 +88,10 @@ pub(crate) fn run(
     let mut collected: Vec<u8> = Vec::new();
     let mut truncated = false;
     let mut eof = false;
-    let mut status: Option<std::process::ExitStatus> = None;
+    // Observe the leader with waitid(WNOWAIT) so its pid/process-group identity
+    // remains pinned until every cleanup signal has been sent. Child::try_wait
+    // reaps immediately and would allow the numerical pid/pgid to be reused.
+    let mut leader_exited = false;
     let outcome = loop {
         if !eof {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -129,13 +132,13 @@ pub(crate) fn run(
                 }
             }
         }
-        if status.is_none() {
-            match child.try_wait() {
-                Ok(observed) => status = observed,
-                Err(error) => break Err(format!("wait probe child: {error}")),
+        if !leader_exited {
+            match exited_without_reaping(pid) {
+                Ok(observed) => leader_exited = observed,
+                Err(error) => break Err(format!("observe probe child: {error}")),
             }
         }
-        if status.is_some() && (eof || truncated) {
+        if leader_exited && (eof || truncated) {
             break Ok(());
         }
         if Instant::now() >= deadline {
@@ -147,40 +150,38 @@ pub(crate) fn run(
             std::thread::sleep(Duration::from_millis(1));
         }
     };
-    // Terminate exactly the processes this probe owns, then reap the direct
-    // child within a bounded allowance. Escalation is aimed only at provably
-    // live targets: the group is signaled only when it still has a member —
-    // the leader is unreaped, or the pipe has an open writer, which can only
-    // be a member of this probe's tree — and the leader is signaled only
-    // while unreaped, so a recycled process id or group id can never be
-    // targeted. The truncated-success path takes the same route: the child
-    // exited, but a descendant may still hold the pipe.
-    let group_may_live = status.is_none() || !eof;
-    if (outcome.is_err() || truncated) && group_may_live {
-        unsafe {
-            libc::kill(-pid, libc::SIGTERM);
-        }
-        let kill_by = Instant::now() + CLEANUP_ALLOWANCE;
-        while Instant::now() < kill_by {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        // Signal 0 probes liveness without signaling: ESRCH means the target
-        // is gone and must not be signaled (its id may already be recycled).
-        let group_alive = unsafe { libc::kill(-pid, 0) } == 0;
-        if group_alive {
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
-        } else if unsafe { libc::kill(pid, 0) } == 0 {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
+    // Always clean the owned group, including after a short successful leader:
+    // a help program may spawn a descendant that closes stdout and would
+    // otherwise outlive the machine deadline. The unreaped leader pins both
+    // its pid and pgid through the final signal, so no liveness probe or pipe
+    // state is mistaken for proof of ownership.
+    unsafe {
+        libc::kill(-pid, libc::SIGTERM);
+    }
+    if !leader_exited {
+        let term_by = Instant::now() + CLEANUP_ALLOWANCE;
+        while Instant::now() < term_by {
+            match exited_without_reaping(pid) {
+                Ok(true) => break,
+                Ok(false) => std::thread::sleep(Duration::from_millis(2)),
+                Err(_) => break,
             }
         }
+    }
+    // Send the final group signal before any wait call can reap the leader.
+    // This is harmless when only the exited leader remains and terminates any
+    // same-group descendants, including successful probes with closed stdio.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
     }
     drop(pipe);
     match outcome {
         Ok(()) => {
-            let status = status.expect("a finished probe always observed a status");
+            // waitid established that this cannot block; it now performs the
+            // one deliberate reap after all group signalling is finished.
+            let status = child
+                .wait()
+                .map_err(|error| format!("reap probe child: {error}"))?;
             Ok(ProbeOutput {
                 stdout: String::from_utf8_lossy(&collected).into_owned(),
                 truncated,
@@ -203,6 +204,25 @@ pub(crate) fn run(
             Err(message)
         }
     }
+}
+
+/// Report whether the direct child has exited without reaping it. Keeping the
+/// zombie waitable pins its pid and process-group identity until cleanup is
+/// complete, avoiding signals to a subsequently reused numeric id.
+fn exited_without_reaping(pid: libc::pid_t) -> std::io::Result<bool> {
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } != 0)
 }
 
 fn set_nonblocking(fd: std::os::fd::RawFd) -> Result<(), String> {
@@ -335,6 +355,35 @@ mod tests {
         // Either the deadline fired (error) or EOF plus termination ended it;
         // both end the call without an unbounded read.
         let _ = result;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_probe_cleans_successful_descendants_with_closed_stdio() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("descendant.pid");
+        let body = format!(
+            "#!/bin/sh\n(sleep 30) >/dev/null 2>&1 &\necho $! > '{}'\necho done\n",
+            pid_file.display()
+        );
+        let tool = script(dir.path(), "successful-leak", &body);
+        let output = run(&[&string(&tool)], deadline(2_000), 4096, ProbeEnv::Inherit).unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout.trim(), "done");
+        let descendant: libc::pid_t = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let gone_by = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < gone_by && unsafe { libc::kill(descendant, 0) } == 0 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_ne!(
+            unsafe { libc::kill(descendant, 0) },
+            0,
+            "a successful probe descendant survived group cleanup"
+        );
     }
 
     #[cfg(unix)]

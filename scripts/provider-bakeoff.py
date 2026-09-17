@@ -1433,16 +1433,23 @@ def resume_conflict(candidate: dict[str, Any], judged: dict[str, Any]) -> str | 
         return "candidate evidence changed between events"
     if judged.get("stratum") != "semantic":
         return None
+    client_valid = bool(judged.get("client_valid"))
+    if not client_valid:
+        # The judge runner never submits client-invalid candidates. They may
+        # only carry the synthetic outcome written by that eligibility path;
+        # accepting judgments here could promote an unqualified fixture.
+        if "semantic_acceptable" in judged or judged.get("judgments"):
+            return "client-invalid semantic record carries ineligible judgments"
+        if not judged.get("synthetic_outcome"):
+            return "client-invalid semantic record lacks its synthetic outcome"
+        return None
+    if judged.get("synthetic_outcome"):
+        return "client-valid semantic record carries an ineligible synthetic outcome"
     if "semantic_acceptable" in judged:
         if bool(judged["semantic_acceptable"]) != semantic_verdict(judged.get("judgments", [])):
             return "derived semantic verdict is inconsistent with its judgments"
         return None
-    # No derived verdict: legitimate only for a record the judge phase deemed
-    # ineligible (a synthetic outcome with no judgments at all). A judged
-    # semantic record that carries judgments must also carry its verdict.
-    if judged.get("judgments") or not judged.get("synthetic_outcome"):
-        return "semantic judgment record lacks its derived verdict"
-    return None
+    return "semantic judgment record lacks its derived verdict"
 
 
 def job_key(job: tuple) -> tuple:

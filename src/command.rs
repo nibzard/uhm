@@ -90,6 +90,25 @@ impl Budget {
     }
 }
 
+fn tool_probe_consent(
+    interactive: bool,
+    identity_name: &str,
+    ask_user: &mut dyn FnMut(&str) -> bool,
+) -> tool_surface::Consent {
+    if !interactive {
+        return tool_surface::Consent::Unavailable;
+    }
+    let prompt = format!(
+        "Run `{} --help` to learn its interface? [y/N] ",
+        ansi::sanitize_untrusted_inline(identity_name)
+    );
+    if ask_user(&prompt) {
+        tool_surface::Consent::Allow
+    } else {
+        tool_surface::Consent::Decline
+    }
+}
+
 /// Why a shell-route job can never be verified-restorable: recorded on its
 /// history event and rendered on the proposal block.
 const SHELL_RECOVERY_REASON: &str = "shell execution has a receipt but no controlled preimage";
@@ -175,6 +194,7 @@ pub fn handle(
         // machine budget suspends while a human answers; each probe deadline
         // is created after consent from what remains.
         let interactive = tty_available() && !args.json;
+        let mut ask_tool = |prompt: &str| ask(prompt);
         let mut budget =
             tool_surface::ProbeBudget::new(Duration::from_millis(config.context_timeout_ms));
         let observed = tool_surface::surface(
@@ -182,18 +202,7 @@ pub fn handle(
             &config.paths.data_dir,
             &context::path_entries(),
             &mut budget,
-            &mut |identity| {
-                if !interactive {
-                    tool_surface::Consent::Unavailable
-                } else if ask(&format!(
-                    "Run `{} --help` to learn its interface? [y/N] ",
-                    ansi::sanitize_untrusted_inline(&identity.name)
-                )) {
-                    tool_surface::Consent::Allow
-                } else {
-                    tool_surface::Consent::Decline
-                }
-            },
+            &mut |identity| tool_probe_consent(interactive, &identity.name, &mut ask_tool),
         );
         named_tool_names = observed.iter().map(|item| item.name.clone()).collect();
         context::add_tool_surface(&mut snapshot, &observed);
@@ -2573,6 +2582,40 @@ fn normalize_shell(requested: &str, detected: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit19_command_consent_distinguishes_unavailable_declined_and_allowed() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut ask_user = |prompt: &str| {
+            calls.borrow_mut().push(prompt.to_owned());
+            true
+        };
+        assert_eq!(
+            tool_probe_consent(false, "unsafe\u{7}name", &mut ask_user),
+            tool_surface::Consent::Unavailable
+        );
+        assert!(
+            calls.borrow().is_empty(),
+            "a noninteractive request must not prompt"
+        );
+        assert_eq!(
+            tool_probe_consent(true, "unsafe\u{7}name", &mut ask_user),
+            tool_surface::Consent::Allow
+        );
+        assert_eq!(
+            *calls.borrow(),
+            ["Run `unsafe\\u{7}name --help` to learn its interface? [y/N] "]
+        );
+
+        fn decline(_: &str) -> bool {
+            false
+        }
+        assert_eq!(
+            tool_probe_consent(true, "git", &mut decline),
+            tool_surface::Consent::Decline
+        );
+    }
+
     #[test]
     fn local_input_repair_payload_cannot_contain_child_diagnostics() {
         let proposal = crate::action::ProgramProposal {
@@ -3352,8 +3395,12 @@ mod tests {
         // that carries the question. If the arm is ever reverted to a bare
         // answer-only json! payload, this fails.
         let source = include_str!("command.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("command module has a production section");
         assert!(
-            source.contains("Some(clarification_follow_up(&question, &answer))"),
+            production.contains("Some(clarification_follow_up(&question, &answer))"),
             "the clarification follow-up must be built by clarification_follow_up"
         );
     }

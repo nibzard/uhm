@@ -481,15 +481,34 @@ class ResumeTests(unittest.TestCase):
         records, judged_keys, completed = BENCH.rebuild_resume_state(prior)
         self.assertEqual(len(records), 1)
         self.assertTrue(judged_keys and completed)
-        # A judged semantic record WITH judgments but no verdict is still bad.
+        # A client-invalid semantic record can never acquire judgments.
         tampered = copy.deepcopy(judged)
         tampered["judgments"] = [
             {"valid": True, "synthetic": False, "verdict": "pass", "critical_error": False}
         ]
-        with self.assertRaisesRegex(ValueError, "lacks its derived verdict"):
+        with self.assertRaisesRegex(ValueError, "ineligible judgments"):
             BENCH.rebuild_resume_state([
                 self.checkpoint_event(1, "candidate_completed", {"record": record}),
                 self.checkpoint_event(2, "judgment_completed", {"record": tampered}),
+            ])
+        # Supplying a consistent pass verdict still cannot make a
+        # client-invalid candidate eligible after the audit pause.
+        tampered["semantic_acceptable"] = True
+        with self.assertRaisesRegex(ValueError, "ineligible judgments"):
+            BENCH.rebuild_resume_state([
+                self.checkpoint_event(1, "candidate_completed", {"record": record}),
+                self.checkpoint_event(2, "judgment_completed", {"record": tampered}),
+            ])
+
+        # Conversely, the synthetic no-judgment form belongs only to the
+        # client-invalid path.
+        valid = self.candidate_record()
+        synthetic = copy.deepcopy(valid)
+        synthetic["synthetic_outcome"] = "invalid_or_unsampled_deterministic_failure"
+        with self.assertRaisesRegex(ValueError, "ineligible synthetic outcome"):
+            BENCH.rebuild_resume_state([
+                self.checkpoint_event(1, "candidate_completed", {"record": valid}),
+                self.checkpoint_event(2, "judgment_completed", {"record": synthetic}),
             ])
 
     def test_resume_reuses_completed_work_without_new_provider_calls(self):

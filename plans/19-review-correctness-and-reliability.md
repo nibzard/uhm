@@ -8,7 +8,8 @@
 
 ## Status and scope of the request
 
-- **Status:** TODO — planning complete; implementation has not started.
+- **Status:** DONE — all work packages and both integrated-review remediation
+  rounds are implemented and verified on `fix/review-correctness-v0.6.4`.
 - **Planned at:** commit `7ee816f`, package version `0.6.4`, 2026-09-17.
 - **Priority:** P1 for unintended probe execution and recovery durability; P2 for
   the remaining defects and dependency remediation.
@@ -163,6 +164,27 @@ property — the forged-decision consent gate, the manifest kind-validation
 wiring, the clarification display output, the runtime truncation branch,
 the resume reuse guard (now driving the production pending-job filters),
 and the Python suite's direct-execution entry point.
+
+A second full-diff review at `c9c3a97` found nine residual implementation and
+coverage defects. The follow-up remediation keeps the probe group leader
+waitable until all cleanup signals have been sent and cleans same-group
+descendants even after successful probes. Recovery now preflights every linked
+quarantine before the first mutation, persists the exact hash and mode approved
+for a forced creation removal, rejects partial commits without positive staged
+evidence, checks the mode of completed restores, and crosses a destination
+directory barrier before journaling an already-absent quarantine. Qualification
+resume rejects semantic judgments that the runner's eligibility rules could
+never have produced. The clarification source guard now searches production
+code only, and the command-level consent mapping has direct coverage for
+unavailable, declined, and allowed outcomes.
+
+The final follow-up gate passed `cargo fmt --check`, Clippy with warnings denied,
+all Rust targets (834 test executions), the offline Python suite (31 tests, 3
+documented skips), the provider self-test, documentation and installer checks,
+the 12 Worker tests, the real telemetry contract, the Rust 1.89 MSRV check,
+`cargo deny` (all gates; existing duplicate/unmatched-source warnings only), and
+the Worker npm audit with zero vulnerabilities. No live provider, deployed
+Worker, or physical power-failure test was run.
 
 ### Scope boundaries
 
