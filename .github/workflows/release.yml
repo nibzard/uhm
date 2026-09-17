@@ -197,7 +197,7 @@ jobs:
         with:
           subject-path: dist/SHA256SUMS
       - name: Attest release SBOM
-        uses: actions/attest-sbom@v3
+        uses: actions/attest-sbom@v4
         with:
           subject-path: dist/*.tar.gz
           sbom-path: dist/uhm-v${{ needs.validate.outputs.version }}.spdx.json
