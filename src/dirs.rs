@@ -73,6 +73,25 @@ pub fn resolve() -> Result<Paths, String> {
 }
 
 pub fn ensure_private_dir(path: &Path) -> Result<(), String> {
+    // Record which ancestors are missing before creation so every directory
+    // this call creates is durably linked into its parent. Creation by an
+    // earlier call in the same process (first-run notice, history) is
+    // therefore already linked when recovery capture runs.
+    let mut created = Vec::new();
+    let mut current = Some(path);
+    while let Some(directory) = current {
+        if directory.is_dir() {
+            break;
+        }
+        if directory.exists() {
+            return Err(format!(
+                "private directory path {} exists and is not a directory",
+                directory.display()
+            ));
+        }
+        created.push(directory.to_path_buf());
+        current = directory.parent();
+    }
     std::fs::create_dir_all(path)
         .map_err(|e| format!("create private directory {}: {}", path.display(), e))?;
     #[cfg(unix)]
@@ -80,6 +99,21 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| format!("set private permissions on {}: {}", path.display(), e))?;
+    }
+    sync_created_ancestry(&created)
+}
+
+/// Sync the parent of every directory a creation call just created, deepest
+/// first, so a power failure cannot unlink a freshly created owned root
+/// after a write above it was acknowledged.
+fn sync_created_ancestry(created: &[PathBuf]) -> Result<(), String> {
+    for directory in created.iter().rev() {
+        let Some(parent) = directory.parent() else {
+            continue;
+        };
+        std::fs::File::open(parent)
+            .and_then(|file| file.sync_all())
+            .map_err(|e| format!("sync directory {}: {}", parent.display(), e))?;
     }
     Ok(())
 }
@@ -118,7 +152,7 @@ pub fn create_private_new(path: &Path) -> Result<(), String> {
                 .map_err(|e| format!("set private permissions on {}: {}", dir.display(), e))?;
         }
     }
-    Ok(())
+    sync_created_ancestry(&missing)
 }
 
 #[cfg(all(test, unix))]

@@ -147,8 +147,35 @@ pub(crate) fn run(
             std::thread::sleep(Duration::from_millis(1));
         }
     };
-    if outcome.is_err() {
-        terminate_group(pid);
+    // Terminate exactly the processes this probe owns, then reap the direct
+    // child within a bounded allowance. Escalation is aimed only at provably
+    // live targets: the group is signaled only when it still has a member —
+    // the leader is unreaped, or the pipe has an open writer, which can only
+    // be a member of this probe's tree — and the leader is signaled only
+    // while unreaped, so a recycled process id or group id can never be
+    // targeted. The truncated-success path takes the same route: the child
+    // exited, but a descendant may still hold the pipe.
+    let group_may_live = status.is_none() || !eof;
+    if (outcome.is_err() || truncated) && group_may_live {
+        unsafe {
+            libc::kill(-pid, libc::SIGTERM);
+        }
+        let kill_by = Instant::now() + CLEANUP_ALLOWANCE;
+        while Instant::now() < kill_by {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Signal 0 probes liveness without signaling: ESRCH means the target
+        // is gone and must not be signaled (its id may already be recycled).
+        let group_alive = unsafe { libc::kill(-pid, 0) } == 0;
+        if group_alive {
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        } else if unsafe { libc::kill(pid, 0) } == 0 {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
     }
     drop(pipe);
     match outcome {
@@ -161,26 +188,20 @@ pub(crate) fn run(
             })
         }
         Err(message) => {
-            // Reap the terminated direct child; it must not outlive the
-            // call as a zombie.
-            let _ = child.wait();
+            // Bounded reap: SIGKILL cannot preempt a child stuck in
+            // uninterruptible sleep (stalled mount) or ptrace-stop, so the
+            // wait is polled for the cleanup allowance and then abandoned —
+            // a zombie until this process exits is bounded; blocking here
+            // forever is not.
+            let reap_by = Instant::now() + CLEANUP_ALLOWANCE;
+            while Instant::now() < reap_by {
+                if child.try_wait().is_ok_and(|observed| observed.is_some()) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
             Err(message)
         }
-    }
-}
-
-/// Terminate the probe's whole process group and reap the direct child.
-/// SIGTERM first, a short bounded allowance, then SIGKILL.
-fn terminate_group(pid: libc::pid_t) {
-    unsafe {
-        libc::kill(-pid, libc::SIGTERM);
-    }
-    let kill_by = Instant::now() + CLEANUP_ALLOWANCE;
-    while Instant::now() < kill_by {
-        std::thread::sleep(Duration::from_millis(2));
-    }
-    unsafe {
-        libc::kill(-pid, libc::SIGKILL);
     }
 }
 

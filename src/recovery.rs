@@ -1323,6 +1323,23 @@ fn current_hash(item: &RecoveryItem, max: u64) -> Result<Option<String>, String>
     }
 }
 
+/// Whether a created destination is verifiably absent. Only `NotFound`
+/// counts: any other open failure means something occupies the path that
+/// could not be examined, which the caller must treat as a conflict.
+fn destination_absent(item: &RecoveryItem) -> Result<bool, String> {
+    let parent_path = item
+        .destination
+        .parent()
+        .ok_or("destination has no parent")?;
+    let parent = open_parent(parent_path)?;
+    let name = leaf_name(&item.destination)?;
+    match openat_read(&parent, &name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!("inspect current recovery destination: {error}")),
+        Ok(_) => Ok(false),
+    }
+}
+
 fn current_mode(item: &RecoveryItem, max: u64) -> Result<Option<u32>, String> {
     let parent_path = item
         .destination
@@ -1420,7 +1437,11 @@ fn classify_pending(
             && current_hash(item, max).ok().flatten().as_deref() == item.preimage_hash.as_deref()
             && current_mode(item, max).ok().flatten() == item.preimage_mode
     } else {
-        current_hash(item, max).ok().flatten().is_none()
+        // Only a verified absent destination counts as completed. An
+        // unopenable occupant — a symlink or an unreadable file — is not
+        // absence: it keeps the conflict so it is never journaled as a
+        // verified removal.
+        destination_absent(item)?
     };
     if effect_applied {
         Ok(UndoOutcome::AlreadyApplied)
@@ -1469,12 +1490,24 @@ fn reconcile_completed_effect(
             }
         }
         // Without a persisted linkage nothing is deleted by guesswork: only
-        // a verified absent destination completes the removal.
-        if openat_read(parent, &leaf_name(&item.destination)?).is_ok() {
-            return Err(format!(
-                "created output {} reappeared while reconciling its removal",
-                item.destination.display()
-            ));
+        // a verified absent destination completes the removal. An occupant
+        // that cannot be opened is not absence — it is preserved as a
+        // refusal so an unexamined file is never certified as removed.
+        let name = leaf_name(&item.destination)?;
+        match openat_read(parent, &name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "inspect created output {} before reconciling its removal: {error}",
+                    item.destination.display()
+                ));
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "created output {} reappeared while reconciling its removal",
+                    item.destination.display()
+                ));
+            }
         }
         manifest.items[index].state = ItemState::Removed;
     }
@@ -4934,5 +4967,50 @@ mod tests {
         // The additive field stays absent, so a schema-v1 item parses
         // unchanged whether the reader knows the field or not.
         assert!(read_manifest(&data, &run).is_ok());
+    }
+
+    #[test]
+    fn audit19_undo_resume_refuses_an_unopenable_created_destination() {
+        use std::os::unix::fs::PermissionsExt;
+        // An occupant that cannot be examined is not absence: an interrupted
+        // creation-undo must refuse rather than journal a verified removal.
+        for occupant in ["symlink", "write-only"] {
+            let root = tempfile::tempdir().unwrap();
+            let (data, destination, config) =
+                committed_creation(root.path(), "made.txt", "run-00000060");
+            std::fs::remove_file(&destination).unwrap();
+            match occupant {
+                "symlink" => {
+                    symlink("/tmp/uhm-audit19-occupied", &destination).unwrap();
+                }
+                _ => {
+                    std::fs::write(&destination, b"occupied").unwrap();
+                    std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o200))
+                        .unwrap();
+                }
+            }
+            interrupted_undo(&data, "run-00000060");
+            let preview = preview_restore(&data, "run-00000060", &config, false).unwrap();
+            assert!(
+                preview.items[0].conflict.is_some(),
+                "{occupant}: an unopenable occupant must stay a conflict, got {:?}",
+                preview.items[0].conflict
+            );
+            let error =
+                restore(&data, "run-00000060", "undo-00000060", &config, false).unwrap_err();
+            assert!(
+                error.contains("verified undo refused") || error.contains("inspect"),
+                "{occupant}: {error}"
+            );
+            assert!(
+                std::fs::symlink_metadata(&destination).is_ok(),
+                "{occupant}: the occupant must remain untouched"
+            );
+            assert_eq!(
+                read_manifest(&data, "run-00000060").unwrap().items[0].state,
+                ItemState::UndoPending,
+                "{occupant}: no verified removal may be journaled"
+            );
+        }
     }
 }
