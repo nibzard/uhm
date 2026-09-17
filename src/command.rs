@@ -2436,23 +2436,28 @@ fn clarification_follow_up(question: &str, answer: &str) -> serde_json::Value {
     json!({"kind":"clarification","question":question,"answer":answer})
 }
 
-fn clarification(args: &Args, q: &str) -> i32 {
+/// The exact line `clarification` prints: the question itself in plain
+/// mode, or the machine-readable outcome envelope under `--json`. Never a
+/// prompt — a clarification that cannot be answered is information, not an
+/// invitation.
+fn clarification_output(args: &Args, q: &str) -> String {
     if args.json {
-        println!(
-            "{}",
-            Outcome {
-                namespace: "uhm",
-                outcome: "clarification_required",
-                exit_code: outcome::CLARIFICATION,
-                executed: false,
-                command: None,
-                message: Some(q)
-            }
-            .json()
-        )
+        Outcome {
+            namespace: "uhm",
+            outcome: "clarification_required",
+            exit_code: outcome::CLARIFICATION,
+            executed: false,
+            command: None,
+            message: Some(q),
+        }
+        .json()
     } else {
-        println!("{}", ansi::sanitize_untrusted(q))
+        ansi::sanitize_untrusted(q)
     }
+}
+
+fn clarification(args: &Args, q: &str) -> i32 {
+    println!("{}", clarification_output(args, q));
     outcome::CLARIFICATION
 }
 fn not_executed(args: &Args, command: &str, message: &str) -> i32 {
@@ -3340,6 +3345,20 @@ mod tests {
     }
 
     #[test]
+    fn audit19_clarification_production_call_site_uses_the_constructor() {
+        // The clarification arm needs a live terminal answer and a provider,
+        // so no offline test can drive it end to end. This pins the wiring
+        // instead: the payload handle() sends must be the tested constructor
+        // that carries the question. If the arm is ever reverted to a bare
+        // answer-only json! payload, this fails.
+        let source = include_str!("command.rs");
+        assert!(
+            source.contains("Some(clarification_follow_up(&question, &answer))"),
+            "the clarification follow-up must be built by clarification_follow_up"
+        );
+    }
+
+    #[test]
     fn audit19_clarification_request_overflow_is_rejected_before_any_transport() {
         struct RefusesTransport;
         impl crate::provider::Transport for RefusesTransport {
@@ -3376,6 +3395,21 @@ mod tests {
     #[test]
     fn audit19_clarification_without_a_terminal_prints_the_question_instead_of_prompting() {
         let args = Args::default();
+        // The exact rendered output carries the question in both modes and
+        // never a "uhm› " prompt.
+        let plain = clarification_output(&args, "Alpha or Beta?");
+        assert!(plain.contains("Alpha or Beta?"), "{plain}");
+        assert!(!plain.contains("uhm› "), "{plain}");
+        let json = clarification_output(
+            &Args {
+                json: true,
+                ..Args::default()
+            },
+            "Alpha or Beta?",
+        );
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["outcome"], "clarification_required");
+        assert_eq!(parsed["message"], "Alpha or Beta?");
         let code = clarification(&args, "Alpha or Beta?");
         assert_eq!(code, outcome::CLARIFICATION);
         // A clarification spends the one replacement slot, so a later

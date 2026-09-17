@@ -224,6 +224,13 @@ mod tests {
         let started = std::time::Instant::now();
         let inventory = inventory_from(Some(path_env.as_os_str()));
         assert!(!inventory.available, "{inventory:?}");
+        // Excessive output specifically: the cap dropped the version instead
+        // of parsing flood text, and the resolved path is still recorded.
+        assert!(
+            inventory.version.is_none(),
+            "truncated output must yield no version: {inventory:?}"
+        );
+        assert!(inventory.resolved_path.is_some(), "{inventory:?}");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "a flooding shim blocked inventory for {:?}",

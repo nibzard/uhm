@@ -1742,31 +1742,29 @@ mod tests {
     fn audit19_consent_a_forged_or_stale_decision_cannot_authorize_a_probe() {
         // A decision that is not an explicit allow — unknown, declined, or a
         // migrated legacy false — refuses the machine-answered deepening too.
-        let (dir, _) = fake_tool("probeme", "#!/bin/sh\necho 'usage: probeme sessions'\n");
+        // The store record is planted under the tool's real identity key so
+        // the gate itself is exercised, not just the lookup path.
+        let (dir, path) = fake_tool("probeme", "#!/bin/sh\necho 'usage: probeme sessions'\n");
         let data = tempfile::tempdir().unwrap();
-        std::fs::write(
-            data.path().join(STORE_FILE),
-            "{\"version\":2,\"tools\":{\"k\":{\"decision\":false}}}",
-        )
-        .unwrap();
-        // The store above has an unmatched key; use a real declined record.
-        let _ = dir;
-        surface(
-            "run probeme now",
-            data.path(),
-            &[dir.path().to_path_buf()],
-            &mut audit19_budget(),
-            &mut |_| Consent::Decline,
-        );
-        let outcome = probe_subcommand(
-            data.path(),
-            &[dir.path().to_path_buf()],
-            "probeme",
-            "sessions",
-            deadline(),
-            &mut |_| panic!("a declined tool must not narrate"),
-        );
-        assert_eq!(outcome, ProbeResult::Invalid);
+        let identity = Identity::resolve("probeme", &path).unwrap();
+        let key = identity.key();
+        for planted in [
+            // Unresolved encounter: no decision field at all.
+            format!("{{\"version\":2,\"tools\":{{\"{key}\":{{}}}}}}"),
+            // Explicit decline for the real identity.
+            format!("{{\"version\":2,\"tools\":{{\"{key}\":{{\"decision\":false}}}}}}"),
+        ] {
+            std::fs::write(data.path().join(STORE_FILE), planted.clone()).unwrap();
+            let outcome = probe_subcommand(
+                data.path(),
+                &[dir.path().to_path_buf()],
+                "probeme",
+                "sessions",
+                deadline(),
+                &mut |_| panic!("a non-allow decision must not narrate"),
+            );
+            assert_eq!(outcome, ProbeResult::Invalid, "planted store: {planted}");
+        }
     }
 
     #[test]

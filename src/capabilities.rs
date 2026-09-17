@@ -302,6 +302,17 @@ fn validate_manifest_entries(
     manifest: &QualificationManifest,
     now_unix: u64,
 ) -> Result<(), String> {
+    // Action-kind validation runs before the corpus gate: a wire-name
+    // manifest must fail with the kind error, not only in environments
+    // where the holdout is sealed.
+    for entry in &manifest.entries {
+        validate_entry_action_kinds(entry).map_err(|error| {
+            format!(
+                "qualification entry for {}:{}: {error}",
+                entry.provider, entry.model
+            )
+        })?;
+    }
     let expected_corpus =
         qualification_corpus_hash().ok_or("qualification holdout commitment is not sealed")?;
     let mut selected_by_class = BTreeMap::<String, usize>::new();
@@ -324,8 +335,6 @@ fn validate_manifest_entries(
                 "qualification entry for {candidate:?} is incompatible"
             ));
         }
-        validate_entry_action_kinds(entry)
-            .map_err(|error| format!("qualification entry for {candidate:?}: {error}"))?;
         let class = serde_json::to_string(&entry.request_class).expect("request class serializes");
         if !identities.insert((class.clone(), entry.provider, entry.model.clone())) {
             return Err(
@@ -584,6 +593,11 @@ mod tests {
         let unmapped = audit19_manifest(now, &["run_shell"]);
         let error = validate_entry_action_kinds(&unmapped.entries[0]).unwrap_err();
         assert!(error.contains("unknown action kind"), "{error}");
+        // Through the real entry point the wiring is pinned even before the
+        // corpus gate: an unmapped kind fails with the kind error, while a
+        // mapped manifest proceeds to the (unsealed-holdout) corpus gate.
+        let entry_error = validate_manifest_entries(&unmapped, now).unwrap_err();
+        assert!(entry_error.contains("unknown action kind"), "{entry_error}");
         let mapped = audit19_manifest(
             now,
             &[
@@ -595,6 +609,11 @@ mod tests {
             ],
         );
         assert!(validate_entry_action_kinds(&mapped.entries[0]).is_ok());
+        let corpus_error = validate_manifest_entries(&mapped, now).unwrap_err();
+        assert!(
+            corpus_error.contains("holdout commitment is not sealed"),
+            "a mapped manifest must pass the kind gate: {corpus_error}"
+        );
     }
 
     fn audit19_manifest(now: u64, kinds: &[&str]) -> QualificationManifest {

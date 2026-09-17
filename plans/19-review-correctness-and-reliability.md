@@ -115,9 +115,17 @@ completed work rather than testing independently passing branches only.
 ## Execution record (2026-09-17)
 
 All twelve packages completed on branch `fix/review-correctness-v0.6.4`
-from commit `7ee816f`, one conventional commit per package. Every
-reproducer was verified to fail on the unmodified code for its intended
-assertion before the matching fix landed. Final integrated gate, all run
+from commit `7ee816f`, one conventional commit per package, followed by a
+fix round answering an adversarial review of the integrated diff.
+Reproducer demonstrations used three mechanisms, each recorded in its
+package's commit: runs against the unmodified baseline where the test
+could compile there (W01 help argv, W03 creations, W04 false-conflict
+subset, W05 export modes, W06 contract script, W07 request shape, W08
+sleeping shim); runs against a baseline plus the observation seam whose
+assertions then failed for the missing behavior (W02 durability ordering
+on the seam-wrapped original, W10 resume against the old two-field
+projection); and temporary semantic reverts where the baseline lacked the
+seam (W09's consent wiring). Final integrated gate, all run
 from the repository root: `cargo fmt -- --check`, `cargo clippy
 --all-targets --locked -- -D warnings`, `cargo test --all-targets
 --locked` (818 executions), `cargo +1.89.0 check --all-targets --locked`,
@@ -135,7 +143,26 @@ Worker must be deployed before relying on telemetry from corrected
 releases. One coverage limitation recorded in the W09 commit: CLI-level
 consent flows cannot be driven offline because the consent path sits
 behind credential resolution with no test transport; that boundary is
-covered at the unit level instead.
+covered at the unit level, with the production call site pinned by a
+source-level assertion since no offline execution path exists.
+
+The post-integration adversarial review (four dimensions, independent
+verification of every finding) confirmed fourteen issues, all fixed on
+the branch: an interrupted creation-undo treated an unopenable
+destination as absent and journaled a verified removal; the recovery
+ancestry barriers missed multi-level directory chains that
+`create_dir_all` and the first-run notice create (now every creation
+call syncs the parents of what it creates); the probe collector could
+block forever reaping an unkillable child and could signal a recycled
+process id (escalation now targets only provably live groups, with a
+bounded reap); legitimate checkpoints containing client-invalid semantic
+records were unresumable (ineligible records never carry a derived
+verdict, and only verdict-bearing records are checked for one); and the
+review also strengthened tests that passed without pinning their
+property — the forged-decision consent gate, the manifest kind-validation
+wiring, the clarification display output, the runtime truncation branch,
+the resume reuse guard (now driving the production pending-job filters),
+and the Python suite's direct-execution entry point.
 
 ### Scope boundaries
 
