@@ -1840,14 +1840,21 @@ pub fn resume_commit(
         supported_filesystem(&parent)?;
         let destination_name = leaf_name(&item.destination)?;
         let staging_name = leaf_name(&item.staging)?;
-        let preimage = item.existed.then_some(Identity {
-            device: item.device,
-            inode: item.inode,
-            len: item.preimage_bytes,
-            mode: item.preimage_mode.ok_or("preimage mode is missing")?,
-            modified_seconds: item.modified_seconds,
-            modified_nanoseconds: item.modified_nanoseconds,
-        });
+        // A creation has no preimage; its restore evidence is absence plus
+        // the postimage. Only a replacement needs complete preimage metadata,
+        // so construct the identity lazily per kind instead of eagerly.
+        let preimage = if item.existed {
+            Some(Identity {
+                device: item.device,
+                inode: item.inode,
+                len: item.preimage_bytes,
+                mode: item.preimage_mode.ok_or("preimage mode is missing")?,
+                modified_seconds: item.modified_seconds,
+                modified_nanoseconds: item.modified_nanoseconds,
+            })
+        } else {
+            None
+        };
         let value = PreparedItem {
             parent_path,
             parent,
@@ -4178,5 +4185,198 @@ mod tests {
         let manifest = read_manifest(&data, run).unwrap();
         assert_eq!(manifest.state, RecoveryState::CommitPartial);
         assert_eq!(manifest.items[1].state, ItemState::Staged);
+    }
+
+    // Plan 19 W03: resuming a partial commit must work for outputs that
+    // create files, without inventing preimage metadata for them.
+
+    /// Build a durable CommitPartial manifest whose items are Staged, with
+    /// valid staged hashes and modes, as if the process died after the
+    /// commit intent was published but before any item completion.
+    fn partial_commit_state(
+        data: &Path,
+        run: &str,
+        config: &RecoveryConfig,
+        outputs: &[(PathBuf, PathBuf)],
+    ) {
+        let mut coordinator = prepare(data, run, config, outputs).unwrap();
+        for (index, (_, staging)) in outputs.iter().enumerate() {
+            coordinator.manifest.items[index].staged_hash =
+                Some(hash_file(File::open(staging).unwrap(), config.max_total_bytes).unwrap());
+            coordinator.manifest.items[index].postimage_mode =
+                Some(std::fs::metadata(staging).unwrap().permissions().mode() & 0o7777);
+            coordinator.manifest.items[index].state = ItemState::Staged;
+        }
+        transition(&mut coordinator.manifest, RecoveryState::CommitPartial).unwrap();
+        write_manifest(data, &coordinator.manifest).unwrap();
+        coordinator.ownership_guard = None;
+    }
+
+    #[test]
+    fn audit19_resume_creation_only_completes_before_any_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000031";
+        let (made, stage) = paths(root.path(), "made.txt");
+        std::fs::write(&stage, b"created content").unwrap();
+        partial_commit_state(&data, run, &config, &[(made.clone(), stage.clone())]);
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(&made).unwrap(), b"created content");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Available);
+        assert_eq!(manifest.items[0].state, ItemState::Committed);
+        assert_eq!(manifest.items[0].preimage_mode, None);
+    }
+
+    #[test]
+    fn audit19_resume_mixed_completes_after_first_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000032";
+        let (doc, doc_stage) = paths(root.path(), "doc.txt");
+        let (made, made_stage) = paths(root.path(), "made.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        std::fs::write(&doc_stage, b"new one").unwrap();
+        std::fs::write(&made_stage, b"new two").unwrap();
+        // Crash after the replacement's rename but before its item completion
+        // and before the creation ran at all.
+        partial_commit_state(
+            &data,
+            run,
+            &config,
+            &[
+                (doc.clone(), doc_stage.clone()),
+                (made.clone(), made_stage.clone()),
+            ],
+        );
+        let parent = open_parent(root.path()).unwrap();
+        rename_replace(
+            &parent,
+            &CString::new(".uhm-stage-doc.txt").unwrap(),
+            &CString::new("doc.txt").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(&doc).unwrap(), b"new one");
+        assert_eq!(std::fs::read(&made).unwrap(), b"new two");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Available);
+        assert!(manifest
+            .items
+            .iter()
+            .all(|item| item.state == ItemState::Committed));
+        // The creation never gains invented preimage evidence.
+        assert_eq!(manifest.items[1].preimage_mode, None);
+        assert_eq!(manifest.items[1].preimage_hash, None);
+        assert_eq!(manifest.items[1].snapshot_file, None);
+    }
+
+    #[test]
+    fn audit19_resume_refuses_a_concurrently_created_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000033";
+        let (made, stage) = paths(root.path(), "made.txt");
+        std::fs::write(&stage, b"created content").unwrap();
+        partial_commit_state(&data, run, &config, &[(made.clone(), stage)]);
+        // Someone else created the destination while the process was down.
+        std::fs::write(&made, b"unrelated bytes").unwrap();
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(
+            error.contains("concurrent writer created the destination"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&made).unwrap(), b"unrelated bytes");
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::CommitPartial
+        );
+    }
+
+    #[test]
+    fn audit19_resume_refuses_changed_staging_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000034";
+        let (made, stage) = paths(root.path(), "made.txt");
+        std::fs::write(&stage, b"created content").unwrap();
+        partial_commit_state(&data, run, &config, &[(made.clone(), stage.clone())]);
+        std::fs::write(&stage, b"tampered staging").unwrap();
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(
+            error.contains("staging hash differs from the preflighted staged hash"),
+            "{error}"
+        );
+        assert!(!made.exists(), "no destination may appear");
+    }
+
+    #[test]
+    fn audit19_resume_refuses_a_changed_completed_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000035";
+        let (doc, doc_stage) = paths(root.path(), "doc.txt");
+        let (made, made_stage) = paths(root.path(), "made.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        std::fs::write(&doc_stage, b"new one").unwrap();
+        std::fs::write(&made_stage, b"new two").unwrap();
+        partial_commit_state(
+            &data,
+            run,
+            &config,
+            &[(doc.clone(), doc_stage), (made.clone(), made_stage)],
+        );
+        // The replacement was renamed and journaled complete, then edited.
+        let parent = open_parent(root.path()).unwrap();
+        rename_replace(
+            &parent,
+            &CString::new(".uhm-stage-doc.txt").unwrap(),
+            &CString::new("doc.txt").unwrap(),
+        )
+        .unwrap();
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.items[0].postimage_hash =
+            Some(hash_file(File::open(&doc).unwrap(), config.max_total_bytes).unwrap());
+        manifest.items[0].state = ItemState::Committed;
+        write_manifest(&data, &manifest).unwrap();
+        std::fs::write(&doc, b"edited after commit").unwrap();
+
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(
+            error.contains("already committed output") && error.contains("changed"),
+            "{error}"
+        );
+        assert!(!made.exists(), "the pending creation must not run");
+        assert_eq!(
+            std::fs::read(&doc).unwrap(),
+            b"edited after commit",
+            "refusal must not rewrite anything"
+        );
+    }
+
+    #[test]
+    fn audit19_resume_refuses_a_replacement_without_preimage_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000036";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        std::fs::write(&stage, b"new one").unwrap();
+        partial_commit_state(&data, run, &config, &[(doc.clone(), stage)]);
+        // A replacement without recorded preimage mode has unusable restore
+        // evidence and must be refused, exactly like a legacy creation was.
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.items[0].preimage_mode = None;
+        write_manifest(&data, &manifest).unwrap();
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(error.contains("preimage mode is missing"), "{error}");
+        assert_eq!(std::fs::read(&doc).unwrap(), b"one");
     }
 }
