@@ -428,7 +428,7 @@ pub fn handle(
                     request,
                     &snapshot,
                     stdin.model_value_for(args.local_input, args.input_format.as_deref()),
-                    Some(json!({"kind":"clarification","answer":answer})),
+                    Some(clarification_follow_up(&question, &answer)),
                     &shell_name,
                     &run_id,
                     mode,
@@ -2417,6 +2417,14 @@ fn write_command(mut out: impl Write, command: &str, terminal: bool) -> std::io:
     }
     out.flush()
 }
+/// The follow-up payload for a clarification answer. The model's question
+/// travels with the user's answer — a free-text answer is meaningless without
+/// the question it answers — and both stay in the untrusted data layer, never
+/// in the developer instructions.
+fn clarification_follow_up(question: &str, answer: &str) -> serde_json::Value {
+    json!({"kind":"clarification","question":question,"answer":answer})
+}
+
 fn clarification(args: &Args, q: &str) -> i32 {
     if args.json {
         println!(
@@ -3199,5 +3207,172 @@ mod tests {
             Value::String("the subcommand is `sessions`, not `session`".into())
         );
         assert_eq!(guided["exit_code"], Value::from(2));
+    }
+
+    // Plan 19 W07: the model's question travels with the user's answer.
+
+    fn audit19_clarification_config(provider: crate::provider::ProviderId) -> api::ApiConfig {
+        api::ApiConfig {
+            provider,
+            model: "test".into(),
+            key: "unused".into(),
+            max_tokens: 8192,
+            reasoning_effort: "low".into(),
+            request_max_bytes: 256 * 1024,
+            response_max_bytes: 2 * 1024 * 1024,
+            alternate: None,
+            fallback_on: Vec::new(),
+            selection_mode: crate::config::SelectionMode::Fixed,
+            permitted_action_types: None,
+            resolved_fingerprint: None,
+            resolved_model: None,
+        }
+    }
+
+    fn audit19_clarification_input(question: &str, answer: &str) -> String {
+        let follow_up = clarification_follow_up(question, answer);
+        let spool = crate::input::Spool::from_bytes(Vec::new());
+        prompt::proposal_input(
+            "auto",
+            "resize the banner image",
+            json!({}),
+            spool.model_value_for(false, None),
+            Some(follow_up),
+        )
+    }
+
+    #[test]
+    fn audit19_clarification_follow_up_carries_the_question_in_every_adapter_request() {
+        let question = "Should the banner target the shop page or the landing page?";
+        let answer = "the second one";
+        let input = audit19_clarification_input(question, answer);
+        for provider in [
+            crate::provider::ProviderId::Openai,
+            crate::provider::ProviderId::Cerebras,
+            crate::provider::ProviderId::Deepseek,
+        ] {
+            let body = api::request_body(&audit19_clarification_config(provider), &input, false);
+            assert!(
+                body.contains("Should the banner target"),
+                "{provider:?}: the question is missing from the request"
+            );
+            assert!(
+                body.contains("the second one"),
+                "{provider:?}: the answer is missing from the request"
+            );
+            assert!(
+                body.contains("resize the banner image"),
+                "{provider:?}: the original intent is missing from the request"
+            );
+            // Developer instructions are byte-identical, compared on the
+            // parsed body because the wire encodes them as an escaped string.
+            let parsed: Value = serde_json::from_str(&body).unwrap();
+            let instructions = if provider == crate::provider::ProviderId::Cerebras {
+                parsed["messages"][0]["content"].as_str()
+            } else {
+                parsed["instructions"].as_str()
+            };
+            assert_eq!(
+                instructions,
+                Some(prompt::DEVELOPER_INSTRUCTIONS),
+                "{provider:?}: developer instructions must be unchanged"
+            );
+            if provider != crate::provider::ProviderId::Cerebras {
+                assert_eq!(
+                    parsed["store"],
+                    Value::from(false),
+                    "{provider:?}: Responses adapters keep store disabled"
+                );
+            }
+        }
+        // The follow-up payload itself is exactly the untrusted data layer:
+        // kind, question, answer, and nothing else.
+        let follow_up = clarification_follow_up(question, answer);
+        assert_eq!(
+            serde_json::from_str::<Value>(follow_up.to_string().as_str()).unwrap(),
+            json!({
+                "kind": "clarification",
+                "question": "Should the banner target the shop page or the landing page?",
+                "answer": "the second one"
+            })
+        );
+    }
+
+    #[test]
+    fn audit19_clarification_answers_travel_verbatim() {
+        for answer in [
+            "y",
+            "2",
+            "the second one.",
+            "第二个",
+            "bell\u{7} stays one field",
+        ] {
+            let follow_up = clarification_follow_up("Alpha or Beta?", answer);
+            assert_eq!(follow_up["kind"], "clarification");
+            assert_eq!(follow_up["question"], "Alpha or Beta?");
+            assert_eq!(follow_up["answer"], Value::from(answer));
+            // Control characters stay structurally intact in the wire JSON.
+            let input = audit19_clarification_input("Alpha or Beta?", answer);
+            let body = api::request_body(
+                &audit19_clarification_config(crate::provider::ProviderId::Openai),
+                &input,
+                false,
+            );
+            let outer: Value = serde_json::from_str(&body).unwrap();
+            let inner: Value = serde_json::from_str(outer["input"].as_str().unwrap()).unwrap();
+            assert_eq!(inner["follow_up"]["answer"], Value::from(answer));
+            assert_eq!(inner["follow_up"]["question"], "Alpha or Beta?");
+        }
+    }
+
+    #[test]
+    fn audit19_clarification_request_overflow_is_rejected_before_any_transport() {
+        struct RefusesTransport;
+        impl crate::provider::Transport for RefusesTransport {
+            fn post(
+                &self,
+                _: crate::provider::HttpRequest,
+            ) -> Result<crate::provider::HttpResponse, crate::provider::ProviderError> {
+                panic!("an oversized follow-up request must never reach a transport");
+            }
+        }
+        let question = "Should the banner target the shop page or the landing page?";
+        let input = audit19_clarification_input(question, "the second one");
+        let config = audit19_clarification_config(crate::provider::ProviderId::Openai);
+        let adapter = config.provider.adapter();
+        let invocation = crate::provider::Invocation {
+            model: "test",
+            authorization: crate::provider::Authorization::bearer("dummy"),
+            input: &input,
+            stream: false,
+            max_tokens: config.max_tokens,
+            reasoning_effort: "low",
+            request_max_bytes: input.len() - 1,
+            response_max_bytes: config.response_max_bytes,
+        };
+        let error =
+            crate::provider::invoke_with(adapter, &RefusesTransport, &invocation).unwrap_err();
+        assert_eq!(
+            error.kind,
+            crate::provider::ProviderErrorKind::RequestRejected
+        );
+        assert!(error.to_string().contains("exceeds configured"), "{error}");
+    }
+
+    #[test]
+    fn audit19_clarification_without_a_terminal_prints_the_question_instead_of_prompting() {
+        let args = Args::default();
+        let code = clarification(&args, "Alpha or Beta?");
+        assert_eq!(code, outcome::CLARIFICATION);
+        // A clarification spends the one replacement slot, so a later
+        // replacement of any kind is refused.
+        let mut budget = Budget::default();
+        assert!(budget.can_replace());
+        assert!(budget.replace_with_model(Replacement::Clarification));
+        assert!(
+            !budget.can_replace(),
+            "the clarification answer consumes exactly the one slot"
+        );
+        assert!(!budget.replace_with_model(Replacement::Revision));
     }
 }

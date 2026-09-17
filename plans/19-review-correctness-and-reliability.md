@@ -100,7 +100,7 @@ exist, pass, and are included in the relevant automated gate.
 | W04 | Finding 6b | Reconcile undo interrupted after a filesystem mutation | P2 | M / MED | W02, W03 | DONE |
 | W05 | Finding 3 | Preserve history-export parent permissions | P2 | S / LOW | Baseline | DONE |
 | W06 | Findings 4 and 10 | Repair telemetry schema interoperability and bounded reads | P2 | M / LOW | Baseline | DONE |
-| W07 | Finding 5 | Preserve the question in clarification follow-ups | P2 | S / LOW | Baseline | TODO |
+| W07 | Finding 5 | Preserve the question in clarification follow-ups | P2 | S / LOW | Baseline | DONE |
 | W08 | Finding 7a/7b | Bound Python inventory and context/help subprocesses | P2 | M / MED | W01 | TODO |
 | W09 | Finding 8a/8b | Correct consent timing and unanswered-consent persistence | P2 | M / LOW | W01, W08 | TODO |
 | W10 | Finding 9a/9b | Repair qualification resume and action-kind interoperability | P2 | M / LOW | Baseline | TODO |
