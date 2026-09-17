@@ -20,6 +20,8 @@ Generated programs receive private staging paths rather than logical writable de
 
 History is an inspectable local decision journal. Recovery snapshots are separately consented file evidence. The cache stores validated proposals. Telemetry receives only a fixed content-free projection. These stores are not interchangeable, and richer local retention never silently broadens telemetry.
 
+Help-probe consent is its own local record of human answers. Only an explicit allow or decline is stored; a run without an available prompt stores nothing, so an unanswered first encounter is asked again when a person is present. The record was migrated once from an older boolean shape: remembered allows and their retained help carried over, while an older stored `false` cannot be distinguished from a prompt nobody answered, so it was reset to unknown and is re-asked one time.
+
 ## Outbound authorization is disclosed
 
 The first-use notice names the selected fixed provider endpoint set and telemetry boundary before outbound work. Changing a cross-provider alternate changes that authorized set and requires disclosure again. Provider-side retention remains governed by each provider's terms.

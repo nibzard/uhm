@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PythonInventory {
@@ -40,40 +39,60 @@ pub fn inventory() -> PythonInventory {
     inventory_from(std::env::var_os("PATH").as_deref())
 }
 
+/// Internal machine-time bound for one inventory probe. A version line is a
+/// few dozen bytes, so half a second is generous even on a cold start, and a
+/// Python that cannot answer in it is unusable for the bounded job anyway.
+const INVENTORY_DEADLINE_MS: u64 = 500;
+const INVENTORY_MAX_BYTES: usize = 4096;
+
 fn inventory_from(path: Option<&std::ffi::OsStr>) -> PythonInventory {
     let Some(resolved) = resolve_python(path) else {
         return PythonInventory::unavailable();
     };
-    let mut command = Command::new(&resolved);
-    command
-        .args([
+    let resolved_text = resolved.to_string_lossy().into_owned();
+    let minimal = minimal_path(&resolved);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(INVENTORY_DEADLINE_MS);
+    // Timeout, excessive output, or a nonzero exit means an unavailable
+    // inventory; there is no fallback to an unbounded call.
+    let outcome = crate::probe::run(
+        &[
+            &resolved_text,
             "-I",
             "-S",
             "-c",
             "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')",
-        ])
-        .env_clear()
-        .env("PATH", minimal_path(&resolved))
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .stdout(Stdio::piped());
-    let output = match command.output() {
-        Ok(value) => value,
-        Err(_) => return PythonInventory::unavailable(),
+        ],
+        deadline,
+        INVENTORY_MAX_BYTES,
+        crate::probe::ProbeEnv::Cleared {
+            path: minimal.as_os_str(),
+        },
+    );
+    let Ok(output) = outcome else {
+        return PythonInventory {
+            available: false,
+            resolved_path: Some(resolved_text),
+            version: None,
+            isolated_no_site: false,
+        };
     };
-    let version = String::from_utf8(output.stdout)
-        .ok()
-        .map(|value| value.trim().chars().take(32).collect::<String>());
+    let version = if output.truncated {
+        None
+    } else {
+        Some(output.stdout.trim().chars().take(32).collect::<String>())
+    };
     let supported = version
         .as_deref()
         .and_then(|value| value.split('.').next())
         .and_then(|major| major.parse::<u32>().ok())
         .is_some_and(|major| major == 3);
+    let usable = output.success && supported;
     PythonInventory {
-        available: output.status.success() && supported,
-        resolved_path: Some(resolved.to_string_lossy().into_owned()),
+        available: usable,
+        resolved_path: Some(resolved_text),
         version,
-        isolated_no_site: output.status.success() && supported,
+        isolated_no_site: usable,
     }
 }
 
@@ -163,5 +182,72 @@ mod tests {
             assert!(inventory.isolated_no_site);
             assert!(inventory.version.as_deref().unwrap_or("").starts_with("3."));
         }
+    }
+
+    // Plan 19 W08: the inventory probe is bounded; a hanging, flooding, or
+    // failing interpreter means an unavailable inventory, never an
+    // unbounded wait.
+
+    fn python_shim(name: &str, body: &str) -> (tempfile::TempDir, std::ffi::OsString) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path_env = std::env::join_paths([dir.path()]).unwrap();
+        (dir, path_env)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_runtime_a_sleeping_python_shim_is_unavailable_quickly() {
+        let (_dir, path_env) = python_shim("python3", "#!/bin/sh\nsleep 30\n");
+        let started = std::time::Instant::now();
+        let inventory = inventory_from(Some(path_env.as_os_str()));
+        assert!(!inventory.available);
+        assert!(!inventory.isolated_no_site);
+        assert!(inventory.resolved_path.is_some());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "a sleeping shim blocked inventory for {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_runtime_excessive_python_output_is_unavailable() {
+        let (_dir, path_env) = python_shim(
+            "python3",
+            "#!/bin/sh\ni=0\nwhile [ $i -lt 3000 ]; do echo padding-$i; i=$((i+1)); done\n",
+        );
+        let started = std::time::Instant::now();
+        let inventory = inventory_from(Some(path_env.as_os_str()));
+        assert!(!inventory.available, "{inventory:?}");
+        // Excessive output specifically: the cap dropped the version instead
+        // of parsing flood text, and the resolved path is still recorded.
+        assert!(
+            inventory.version.is_none(),
+            "truncated output must yield no version: {inventory:?}"
+        );
+        assert!(inventory.resolved_path.is_some(), "{inventory:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "a flooding shim blocked inventory for {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_runtime_a_failing_or_malformed_python_is_unavailable() {
+        let failing = python_shim("python3", "#!/bin/sh\nexit 1\n");
+        let inventory = inventory_from(Some(failing.1.as_os_str()));
+        assert!(!inventory.available);
+
+        let malformed = python_shim("python3", "#!/bin/sh\necho not-a-version\n");
+        let inventory = inventory_from(Some(malformed.1.as_os_str()));
+        assert!(!inventory.available);
+        assert!(!inventory.isolated_no_site);
     }
 }

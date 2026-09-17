@@ -286,10 +286,33 @@ pub fn validate_manifest_bytes(bytes: &[u8], now_unix: u64) -> Result<(), String
     validate_manifest_entries(&manifest, now_unix)
 }
 
+/// Manifest action kinds are a closed set: a wire tool name that was never
+/// mapped to a canonical kind is rejected instead of silently mismatching
+/// every runtime action.
+fn validate_entry_action_kinds(entry: &QualificationEntry) -> Result<(), String> {
+    for kind in &entry.permitted_action_types {
+        if !crate::model_selection::executable_action_kind(kind) {
+            return Err(format!("permits unknown action kind {kind:?}"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_manifest_entries(
     manifest: &QualificationManifest,
     now_unix: u64,
 ) -> Result<(), String> {
+    // Action-kind validation runs before the corpus gate: a wire-name
+    // manifest must fail with the kind error, not only in environments
+    // where the holdout is sealed.
+    for entry in &manifest.entries {
+        validate_entry_action_kinds(entry).map_err(|error| {
+            format!(
+                "qualification entry for {}:{}: {error}",
+                entry.provider, entry.model
+            )
+        })?;
+    }
     let expected_corpus =
         qualification_corpus_hash().ok_or("qualification holdout commitment is not sealed")?;
     let mut selected_by_class = BTreeMap::<String, usize>::new();
@@ -437,12 +460,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exact_match_rejects_stale_or_changed_fingerprint_inputs() {
-        let candidate = ModelCandidate {
-            provider: ProviderId::Openai,
-            model: "immutable-model".into(),
-        };
+    #[cfg(test)]
+    fn exact_match_entry(now: u64) -> QualificationEntry {
+        let provider = ProviderId::Openai;
+        let model = "immutable-model".to_string();
         let class = RequestClass {
             route: "ask".into(),
             stdin_present: false,
@@ -451,14 +472,13 @@ mod tests {
             follow_up: "none".into(),
             runtime_available: true,
         };
-        let now = 2_000_000_000;
-        let entry = QualificationEntry {
+        QualificationEntry {
             selected: true,
-            provider: candidate.provider,
-            api_family: candidate.provider.adapter().api_family().into(),
-            endpoint: candidate.provider.adapter().endpoint().into(),
-            model: candidate.model.clone(),
-            resolved_model: candidate.model.clone(),
+            provider,
+            api_family: provider.adapter().api_family().into(),
+            endpoint: provider.adapter().endpoint().into(),
+            model: model.clone(),
+            resolved_model: model.clone(),
             resolved_fingerprint: "revision-1".into(),
             prompt_version: crate::prompt::PROMPT_VERSION,
             action_schema_version: crate::prompt::ACTION_SCHEMA_VERSION,
@@ -516,7 +536,26 @@ mod tests {
             evaluated_at_unix: now,
             reviewed: true,
             qualified: true,
+        }
+    }
+
+    #[test]
+    fn exact_match_rejects_stale_or_changed_fingerprint_inputs() {
+        let candidate = ModelCandidate {
+            provider: ProviderId::Openai,
+            model: "immutable-model".into(),
         };
+        let class = RequestClass {
+            route: "ask".into(),
+            stdin_present: false,
+            local_input: false,
+            input_format: None,
+            follow_up: "none".into(),
+            runtime_available: true,
+        };
+        let now = 2_000_000_000;
+        let entry = exact_match_entry(now);
+
         let mut manifest = QualificationManifest {
             version: 1,
             policy_version: 1,
@@ -543,5 +582,48 @@ mod tests {
     #[test]
     fn unavailable_holdout_prevents_runtime_evidence_selection() {
         assert_eq!(qualification_corpus_hash(), None);
+    }
+
+    // Plan 19 W10: manifest action kinds are a closed set; wire tool names
+    // that were never mapped are rejected instead of guessed.
+
+    #[test]
+    fn audit19_qualification_manifest_rejects_unmapped_action_kinds() {
+        let now = 2_000_000_000;
+        let unmapped = audit19_manifest(now, &["run_shell"]);
+        let error = validate_entry_action_kinds(&unmapped.entries[0]).unwrap_err();
+        assert!(error.contains("unknown action kind"), "{error}");
+        // Through the real entry point the wiring is pinned even before the
+        // corpus gate: an unmapped kind fails with the kind error, while a
+        // mapped manifest proceeds to the (unsealed-holdout) corpus gate.
+        let entry_error = validate_manifest_entries(&unmapped, now).unwrap_err();
+        assert!(entry_error.contains("unknown action kind"), "{entry_error}");
+        let mapped = audit19_manifest(
+            now,
+            &[
+                "shell",
+                "answer",
+                "clarification",
+                "program",
+                "parent_shell",
+            ],
+        );
+        assert!(validate_entry_action_kinds(&mapped.entries[0]).is_ok());
+        let corpus_error = validate_manifest_entries(&mapped, now).unwrap_err();
+        assert!(
+            corpus_error.contains("holdout commitment is not sealed"),
+            "a mapped manifest must pass the kind gate: {corpus_error}"
+        );
+    }
+
+    fn audit19_manifest(now: u64, kinds: &[&str]) -> QualificationManifest {
+        let mut entry = exact_match_entry(now);
+        entry.permitted_action_types = kinds.iter().map(|kind| (*kind).into()).collect();
+        QualificationManifest {
+            version: 1,
+            policy_version: 1,
+            policy_hash: policy_hash(),
+            entries: vec![entry],
+        }
     }
 }

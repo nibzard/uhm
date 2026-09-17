@@ -23,6 +23,7 @@ mod input;
 mod model_selection;
 mod outcome;
 mod parent_shell;
+mod probe;
 #[allow(dead_code)]
 mod program;
 mod prompt;
@@ -401,6 +402,9 @@ fn run(argv: Vec<String>) -> i32 {
         Some("recover") => "recover",
         _ => "auto",
     };
+    // One bounded inventory result serves both request-class selection and
+    // the request snapshot; the normal path never probes Python twice.
+    let python = runtime::inventory();
     let request_class = capabilities::RequestClass {
         route: route.into(),
         stdin_present: stdin.is_piped(),
@@ -411,7 +415,7 @@ fn run(argv: Vec<String>) -> i32 {
         } else {
             "none".into()
         },
-        runtime_available: runtime::inventory().available,
+        runtime_available: python.available,
     };
     let selection = match model_selection::resolve(&config, &request_class) {
         Ok(value) => value,
@@ -464,6 +468,7 @@ fn run(argv: Vec<String>) -> i32 {
         route,
         &stdin,
         disclosure_marker,
+        &python,
         &mut interaction,
         preset_action,
         related_run_id.as_deref(),

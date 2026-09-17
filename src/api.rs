@@ -205,14 +205,8 @@ fn request_action_with(
             safe_attempts.clone()
         },
     })?;
-    let profile_allowed = !config
-        .permitted_action_types
-        .as_ref()
-        .is_some_and(|allowed| {
-            !allowed
-                .iter()
-                .any(|value| value == crate::model_selection::action_type(&action))
-        });
+    let profile_allowed =
+        crate::model_selection::action_permitted(config.permitted_action_types.as_ref(), &action);
     safe_attempts.push(response_attempt(
         attempts,
         &response,

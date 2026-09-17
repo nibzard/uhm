@@ -88,6 +88,20 @@ pub struct RecoveryItem {
     pub modified_seconds: i64,
     pub modified_nanoseconds: i64,
     pub state: ItemState,
+    /// For a pending creation removal, the exact private sibling name the
+    /// destination was moved into, persisted before the move so an
+    /// interrupted removal can finish deliberately instead of leaving an
+    /// untraceable file. Absent on every manifest written before this field
+    /// existed; older binaries reject manifests that carry it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine: Option<String>,
+    /// Exact identity authorized for deletion when `quarantine` was recorded.
+    /// New writers always persist both fields; their absence preserves reading
+    /// older schema-v1 manifests, which fall back to the recorded postimage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarantine_mode: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,7 +210,6 @@ struct PreparedItem {
 #[derive(Debug)]
 pub struct Coordinator {
     data_dir: PathBuf,
-    run_dir: PathBuf,
     manifest: RecoveryManifest,
     prepared: Vec<PreparedItem>,
     // A live coordinator owns the recovery inventory until commit or Drop.
@@ -326,7 +339,7 @@ pub fn exclusive_guard(data: &Path) -> Result<File, String> {
     lock(data)
 }
 
-fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_private_atomic(operation: &'static str, path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("private file has no parent")?;
     dirs::ensure_private_dir(parent)?;
     let mut temporary = tempfile::Builder::new()
@@ -344,10 +357,12 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .as_file()
         .sync_all()
         .map_err(|error| error.to_string())?;
-    temporary
-        .persist(path)
-        .map_err(|error| format!("publish recovery file: {}", error.error))?;
-    sync_parent(parent)
+    durability_barrier(operation, path, move || {
+        temporary
+            .persist(path)
+            .map_err(|error| format!("publish recovery file: {}", error.error))?;
+        sync_parent(parent)
+    })
 }
 
 fn sync_parent(parent: &Path) -> Result<(), String> {
@@ -356,9 +371,105 @@ fn sync_parent(parent: &Path) -> Result<(), String> {
         .map_err(|error| format!("sync recovery directory {}: {error}", parent.display()))
 }
 
+// Names of the durability barriers crash-consistency depends on, shared by the
+// wrapped call sites and the test probe below.
+mod barrier_ops {
+    pub const ANCESTRY_DIR: &str = "ancestry-dir-sync";
+    pub const SNAPSHOT_FILE: &str = "snapshot-file-sync";
+    pub const SNAPSHOT_DIR: &str = "snapshot-dir-sync";
+    pub const STAGED_FILE: &str = "staged-file-sync";
+    pub const DESTINATION_DIR: &str = "destination-dir-sync";
+    pub const MANIFEST_PUBLISH: &str = "manifest-publish";
+    pub const MARKER_PUBLISH: &str = "marker-publish";
+}
+
+/// Test-only observation of the durability barriers: every attempted barrier
+/// under a subtree, in order, plus fault injection scoped to one subtree so
+/// concurrent tests cannot affect each other. Faults and events accumulate for
+/// the life of the process; every query is filtered by a unique root path.
+#[cfg(test)]
+pub(crate) mod durability_probe {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static EVENTS: Mutex<Vec<(&'static str, PathBuf)>> = Mutex::new(Vec::new());
+    static FAULTS: Mutex<Vec<(&'static str, PathBuf)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn fail_on(operation: &'static str, under: &Path) {
+        FAULTS
+            .lock()
+            .unwrap()
+            .push((operation, under.to_path_buf()));
+    }
+
+    /// Drop every fault scoped under `under` without touching other tests'.
+    pub(crate) fn clear_faults(under: &Path) {
+        FAULTS
+            .lock()
+            .unwrap()
+            .retain(|(_, prefix)| !under.starts_with(prefix));
+    }
+
+    pub(crate) fn note(operation: &'static str, path: &Path) {
+        EVENTS.lock().unwrap().push((operation, path.to_path_buf()));
+    }
+
+    pub(crate) fn raise(operation: &'static str, path: &Path) -> Result<(), String> {
+        let inject = FAULTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(fault, prefix)| *fault == operation && path.starts_with(prefix));
+        if inject {
+            return Err(format!("injected durability fault: {operation}"));
+        }
+        Ok(())
+    }
+
+    /// Ordered barrier names recorded under `under`.
+    pub(crate) fn ops(under: &Path) -> Vec<&'static str> {
+        EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.starts_with(under))
+            .map(|(operation, _)| *operation)
+            .collect()
+    }
+
+    /// Ordered (operation, path) pairs recorded under `under`.
+    pub(crate) fn pairs(under: &Path) -> Vec<(&'static str, PathBuf)> {
+        EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.starts_with(under))
+            .map(|(operation, path)| (*operation, path.clone()))
+            .collect()
+    }
+}
+
+/// Run one durability operation under its barrier name. Production executes
+/// the operation directly; tests observe the ordering and can inject a
+/// failure at this exact barrier.
+fn durability_barrier(
+    operation: &'static str,
+    path: &Path,
+    perform: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    #[cfg(test)]
+    durability_probe::note(operation, path);
+    #[cfg(test)]
+    durability_probe::raise(operation, path)?;
+    #[cfg(not(test))]
+    let _ = (operation, path);
+    perform()
+}
+
 fn write_manifest(data: &Path, manifest: &RecoveryManifest) -> Result<(), String> {
     validate_manifest_shape(data, manifest)?;
     write_private_atomic(
+        barrier_ops::MANIFEST_PUBLISH,
         &manifest_path(data, &manifest.run_id),
         &serde_json::to_vec_pretty(manifest).map_err(|error| error.to_string())?,
     )
@@ -406,6 +517,28 @@ fn validate_manifest_shape(data: &Path, manifest: &RecoveryManifest) -> Result<(
                 return Err("recovery snapshot escapes its run".into());
             }
         }
+        if let Some(name) = &item.quarantine {
+            // Only a pending creation removal may name a quarantined sibling,
+            // and only this item's own prefixed private leaf name: the linkage
+            // must never point at an arbitrary file.
+            let suffix = name
+                .strip_prefix(format!(".uhm-quarantine-{}-", item.id).as_str())
+                .unwrap_or_default();
+            if item.existed
+                || suffix.is_empty()
+                || suffix.len() > 32
+                || !suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            {
+                return Err("invalid recovery quarantine linkage".into());
+            }
+            if item.quarantine_hash.is_some() != item.quarantine_mode.is_some() {
+                return Err("incomplete recovery quarantine identity".into());
+            }
+        } else if item.quarantine_hash.is_some() || item.quarantine_mode.is_some() {
+            return Err("recovery quarantine identity has no linkage".into());
+        }
     }
     Ok(())
 }
@@ -432,13 +565,21 @@ pub fn capture_requested(data: &Path, config: &RecoveryConfig, one_job: bool) ->
 pub fn enable(data: &Path) -> Result<(), String> {
     let _guard = lock(data)?;
     let _ = std::fs::remove_file(data.join(DISABLED_MARKER));
-    write_private_atomic(&data.join(ENABLED_MARKER), b"recovery-consent-v1\n")
+    write_private_atomic(
+        barrier_ops::MARKER_PUBLISH,
+        &data.join(ENABLED_MARKER),
+        b"recovery-consent-v1\n",
+    )
 }
 
 pub fn disable(data: &Path) -> Result<(), String> {
     let _guard = lock(data)?;
     let _ = std::fs::remove_file(data.join(ENABLED_MARKER));
-    write_private_atomic(&data.join(DISABLED_MARKER), b"recovery-disabled-v1\n")
+    write_private_atomic(
+        barrier_ops::MARKER_PUBLISH,
+        &data.join(DISABLED_MARKER),
+        b"recovery-disabled-v1\n",
+    )
 }
 
 pub fn classify(
@@ -583,6 +724,12 @@ pub fn prepare_with_lease(
     if outputs.is_empty() || outputs.len() > 16 {
         return Err("recovery capture requires 1..16 managed outputs".into());
     }
+    // Record which recovery ancestors already exist before anything below can
+    // create them, so newly created ones are durably linked into their
+    // parents. The check must precede the prune and lock, both of which may
+    // create the data root.
+    let data_existed = data.exists();
+    let runs_existed = runs_dir(data).exists();
     // Enforce age before admitting another capture. The subsequent locked
     // usage calculation still fails closed if another process changes usage
     // between this prune and our lock acquisition.
@@ -616,6 +763,22 @@ pub fn prepare_with_lease(
     if manifest_path(data, run).exists() {
         return Err("a recovery manifest already exists for this run".into());
     }
+    // Durably link the recovery ancestry before anything below names it: the
+    // run directory into `runs` (always new for this run), and each ancestor
+    // this capture created into its own parent. Publication of the first
+    // manifest then syncs the run directory itself, which links the snapshots
+    // entry and the manifest entry.
+    if !data_existed {
+        if let Some(owner) = data.parent() {
+            durability_barrier(barrier_ops::ANCESTRY_DIR, owner, || sync_parent(owner))?;
+        }
+    }
+    if !runs_existed {
+        durability_barrier(barrier_ops::ANCESTRY_DIR, data, || sync_parent(data))?;
+    }
+    durability_barrier(barrier_ops::ANCESTRY_DIR, &runs_dir(data), || {
+        sync_parent(&runs_dir(data))
+    })?;
     let now = crate::history::now_secs();
     let mut manifest = RecoveryManifest {
         schema_version: SCHEMA_VERSION,
@@ -680,6 +843,9 @@ pub fn prepare_with_lease(
                     modified_seconds: identity.modified_seconds,
                     modified_nanoseconds: identity.modified_nanoseconds,
                     state: ItemState::Preparing,
+                    quarantine: None,
+                    quarantine_hash: None,
+                    quarantine_mode: None,
                 });
                 (Some(identity), Some(file))
             }
@@ -701,6 +867,9 @@ pub fn prepare_with_lease(
                     modified_seconds: 0,
                     modified_nanoseconds: 0,
                     state: ItemState::Preparing,
+                    quarantine: None,
+                    quarantine_hash: None,
+                    quarantine_mode: None,
                 });
                 (None, None)
             }
@@ -733,6 +902,11 @@ pub fn prepare_with_lease(
                 return Err("snapshot hash verification failed".into());
             }
             manifest.items[index].preimage_hash = Some(hash);
+            // The snapshot's directory entry is durable before the manifest
+            // calls the snapshot ready.
+            durability_barrier(barrier_ops::SNAPSHOT_DIR, &snapshots, || {
+                sync_parent(&snapshots)
+            })?;
         }
         manifest.items[index].state = ItemState::SnapshotReady;
         manifest.updated_at = crate::history::now_secs();
@@ -748,7 +922,6 @@ pub fn prepare_with_lease(
     write_manifest(data, &manifest)?;
     Ok(Coordinator {
         data_dir: data.into(),
-        run_dir: run_path,
         manifest,
         prepared,
         ownership_guard: Some(ownership_guard),
@@ -879,7 +1052,18 @@ impl Coordinator {
                 )?;
                 return Err("staged artifacts exceed the workspace byte limit".into());
             }
-            let hash = hash_file(staged, max_total)?;
+            let hash = hash_file(
+                staged.try_clone().map_err(|error| error.to_string())?,
+                max_total,
+            )?;
+            // The staged bytes are durable before any destination rename can
+            // publish them; the sync uses the validated descriptor itself,
+            // never a path reopen.
+            durability_barrier(
+                barrier_ops::STAGED_FILE,
+                &self.manifest.items[index].staging,
+                || staged.sync_all().map_err(|error| error.to_string()),
+            )?;
             self.manifest.items[index].staged_hash = Some(hash);
             self.manifest.items[index].postimage_mode = Some(identity.mode);
             self.manifest.items[index].state = ItemState::Staged;
@@ -933,14 +1117,15 @@ impl Coordinator {
             self.manifest.items[index].postimage_mode = Some(identity.mode);
             self.manifest.items[index].state = ItemState::Committed;
             self.manifest.updated_at = crate::history::now_secs();
-            sync_directory_handle(&prepared.parent)?;
+            durability_barrier(barrier_ops::DESTINATION_DIR, &prepared.parent_path, || {
+                sync_directory_handle(&prepared.parent)
+            })?;
             write_manifest(&self.data_dir, &self.manifest)?;
             committed.push(self.manifest.items[index].destination.clone());
         }
         transition(&mut self.manifest, RecoveryState::Available)?;
         self.manifest.reason = None;
         write_manifest(&self.data_dir, &self.manifest)?;
-        let _ = sync_parent(&self.run_dir);
         Ok(committed)
     }
 
@@ -1191,6 +1376,23 @@ fn current_hash(item: &RecoveryItem, max: u64) -> Result<Option<String>, String>
     }
 }
 
+/// Whether a created destination is verifiably absent. Only `NotFound`
+/// counts: any other open failure means something occupies the path that
+/// could not be examined, which the caller must treat as a conflict.
+fn destination_absent(item: &RecoveryItem) -> Result<bool, String> {
+    let parent_path = item
+        .destination
+        .parent()
+        .ok_or("destination has no parent")?;
+    let parent = open_parent(parent_path)?;
+    let name = leaf_name(&item.destination)?;
+    match openat_read(&parent, &name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(format!("inspect current recovery destination: {error}")),
+        Ok(_) => Ok(false),
+    }
+}
+
 fn current_mode(item: &RecoveryItem, max: u64) -> Result<Option<u32>, String> {
     let parent_path = item
         .destination
@@ -1244,6 +1446,172 @@ fn item_conflict(
     }
 }
 
+/// How an unresolved item's undo should proceed. Shared by preview and the
+/// mutation path so the CLI cannot refuse at preview what reconciliation
+/// would resolve under the lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UndoOutcome {
+    /// The destination still shows its recorded postimage (or a creation is
+    /// still present): the ordinary verified mutation applies.
+    Ordinary,
+    /// The undo's filesystem effect already happened — a replacement already
+    /// equals its retained preimage bytes and mode, or a created file is
+    /// already absent. Reconcile from evidence; do not rewrite anything.
+    AlreadyApplied,
+}
+
+/// Classify one unresolved item. `Err` carries the conflict message.
+///
+/// An item whose undo was durably started (published as `UndoPending` in a
+/// manifest that left `available`) may have been interrupted after its
+/// filesystem effect but before that effect was journaled. For exactly that
+/// case, a destination matching the retained preimage evidence — or a created
+/// destination that is absent — is recognized as completed work instead of a
+/// conflict. A preimage match in a manifest that never recorded undo intent
+/// is still an ordinary conflict, and forced provenance is never granted by
+/// reconciliation.
+fn classify_pending(
+    data: &Path,
+    manifest: &RecoveryManifest,
+    item: &RecoveryItem,
+    max: u64,
+) -> Result<UndoOutcome, String> {
+    let conflict = item_conflict(data, manifest, item, max);
+    let undo_started =
+        item.state == ItemState::UndoPending && !matches!(manifest.state, RecoveryState::Available);
+    if conflict.is_none() || !undo_started {
+        return match conflict {
+            None => Ok(UndoOutcome::Ordinary),
+            Some(message) => Err(message),
+        };
+    }
+    let effect_applied = if item.existed {
+        snapshot_path(data, manifest, item).is_ok()
+            && current_hash(item, max).ok().flatten().as_deref() == item.preimage_hash.as_deref()
+            && current_mode(item, max).ok().flatten() == item.preimage_mode
+    } else {
+        // Only a verified absent destination counts as completed. An
+        // unopenable occupant — a symlink or an unreadable file — is not
+        // absence: it keeps the conflict so it is never journaled as a
+        // verified removal.
+        let absent = destination_absent(item)?;
+        if absent && item.quarantine.is_some() {
+            let parent = open_parent(
+                item.destination
+                    .parent()
+                    .ok_or("destination has no parent")?,
+            )?;
+            validate_linked_quarantine(&parent, item, max)?;
+        }
+        absent
+    };
+    if effect_applied {
+        Ok(UndoOutcome::AlreadyApplied)
+    } else {
+        Err(conflict.unwrap_or_default())
+    }
+}
+
+/// Verify the exact file authorized for deletion by a persisted quarantine
+/// linkage. Legacy schema-v1 manifests did not record a separate identity, so
+/// they retain their original postimage fallback.
+fn validate_linked_quarantine(
+    parent: &File,
+    item: &RecoveryItem,
+    max: u64,
+) -> Result<bool, String> {
+    let Some(name) = item.quarantine.as_deref() else {
+        return Ok(false);
+    };
+    let expected_hash = item
+        .quarantine_hash
+        .as_deref()
+        .or(item.postimage_hash.as_deref())
+        .ok_or("quarantined output has no recorded hash")?;
+    let expected_mode = item
+        .quarantine_mode
+        .or(item.postimage_mode)
+        .ok_or("quarantined output has no recorded mode")?;
+    let quarantine = CString::new(name).map_err(|_| "invalid quarantine name")?;
+    let file = match openat_read(parent, &quarantine) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("inspect quarantined output: {error}")),
+    };
+    let identity = validate_staged_file(&file)?;
+    if identity.len > max {
+        return Err("quarantined output exceeds the configured recovery bound".into());
+    }
+    let hash = hash_file(file, max)?;
+    if hash != expected_hash || identity.mode != expected_mode {
+        return Err(format!(
+            "quarantined output {} no longer matches its recorded bytes or mode; evidence retained",
+            item.destination.display()
+        ));
+    }
+    Ok(true)
+}
+
+/// Finish an undo whose filesystem effect already happened but was never
+/// journaled: complete any known quarantine removal, verify a created file's
+/// absence, and mark the item complete. Nothing is rewritten, and nothing
+/// outside this item's own persisted linkage is touched.
+fn reconcile_completed_effect(
+    parent: &File,
+    parent_path: &Path,
+    manifest: &mut RecoveryManifest,
+    index: usize,
+    config: &RecoveryConfig,
+) -> Result<(), String> {
+    let item = manifest.items[index].clone();
+    if item.existed {
+        // The replacement already equals the retained preimage. Make its
+        // directory state durable — the interruption may have landed between
+        // the rename and its directory sync — and journal the completion.
+        durability_barrier(barrier_ops::DESTINATION_DIR, parent_path, || {
+            sync_directory_handle(parent)
+        })?;
+        manifest.items[index].state = ItemState::Restored;
+    } else {
+        if validate_linked_quarantine(parent, &item, config.max_file_bytes)? {
+            let quarantine = CString::new(item.quarantine.as_deref().unwrap())
+                .map_err(|_| "invalid quarantine name")?;
+            unlinkat(parent, &quarantine)?;
+        }
+        // The rename or unlink may already have reached disk while the
+        // manifest still says pending. Sync even when the linked quarantine
+        // is now absent, then journal the completed removal.
+        durability_barrier(barrier_ops::DESTINATION_DIR, parent_path, || {
+            sync_directory_handle(parent)
+        })?;
+        // Without a persisted linkage nothing is deleted by guesswork: only
+        // a verified absent destination completes the removal. An occupant
+        // that cannot be opened is not absence — it is preserved as a
+        // refusal so an unexamined file is never certified as removed.
+        let name = leaf_name(&item.destination)?;
+        match openat_read(parent, &name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "inspect created output {} before reconciling its removal: {error}",
+                    item.destination.display()
+                ));
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "created output {} reappeared while reconciling its removal",
+                    item.destination.display()
+                ));
+            }
+        }
+        manifest.items[index].state = ItemState::Removed;
+    }
+    manifest.items[index].quarantine = None;
+    manifest.items[index].quarantine_hash = None;
+    manifest.items[index].quarantine_mode = None;
+    Ok(())
+}
+
 pub fn preview_restore(
     data: &Path,
     selected: &str,
@@ -1275,7 +1643,7 @@ pub fn preview_restore(
                 "remove_created_file"
             },
             snapshot_bytes: item.preimage_bytes,
-            conflict: item_conflict(data, &manifest, item, config.max_file_bytes),
+            conflict: classify_pending(data, &manifest, item, config.max_file_bytes).err(),
         })
         .collect();
     Ok(RestorePreview {
@@ -1373,6 +1741,7 @@ pub fn restore(
             let complete = if item.state == ItemState::Restored {
                 current_hash(item, config.max_file_bytes)?.as_deref()
                     == item.preimage_hash.as_deref()
+                    && current_mode(item, config.max_file_bytes)? == item.preimage_mode
             } else {
                 current_hash(item, config.max_file_bytes)?.is_none()
             };
@@ -1384,6 +1753,14 @@ pub fn restore(
             }
             continue;
         }
+        if !item.existed && item.quarantine.is_some() {
+            let parent = open_parent(
+                item.destination
+                    .parent()
+                    .ok_or("destination has no parent")?,
+            )?;
+            validate_linked_quarantine(&parent, item, config.max_file_bytes)?;
+        }
         if forced {
             current_hash(item, config.max_file_bytes).map_err(|error| {
                 format!(
@@ -1392,7 +1769,7 @@ pub fn restore(
                 )
             })?;
         }
-        if let Some(conflict) = item_conflict(data, &manifest, item, config.max_file_bytes) {
+        if let Err(conflict) = classify_pending(data, &manifest, item, config.max_file_bytes) {
             conflicts.push(format!("{}: {conflict}", item.destination.display()));
         }
     }
@@ -1441,14 +1818,38 @@ pub fn restore(
             continue;
         }
         let item = manifest.items[index].clone();
-        let parent = open_parent(
-            item.destination
-                .parent()
-                .ok_or("destination has no parent")?,
-        )?;
+        let parent_path = item
+            .destination
+            .parent()
+            .ok_or("destination has no parent")?;
+        let parent = open_parent(parent_path)?;
         supported_filesystem(&parent)?;
         let destination = leaf_name(&item.destination)?;
-        if item.existed {
+        // Re-classify under the lock immediately before acting: an item whose
+        // undo effect already happened is reconciled from evidence and never
+        // rewritten. Under force an ordinary conflict is not a refusal; the
+        // arms below keep their own explicit checks.
+        if !item.existed && item.quarantine.is_some() {
+            validate_linked_quarantine(&parent, &item, config.max_file_bytes)?;
+        }
+        let classification = classify_pending(data, &manifest, &item, config.max_file_bytes);
+        if !forced {
+            if let Err(conflict) = classification {
+                manifest.items[index].state = ItemState::Conflicted;
+                transition(&mut manifest, RecoveryState::Conflicted)?;
+                manifest.reason = Some(format!("{}: {conflict}", item.destination.display()));
+                write_manifest(data, &manifest)?;
+                return Err(manifest.reason.clone().unwrap());
+            }
+        }
+        if classification == Ok(UndoOutcome::AlreadyApplied) {
+            reconcile_completed_effect(&parent, parent_path, &mut manifest, index, config)?;
+            if item.existed {
+                restored += 1;
+            } else {
+                removed += 1;
+            }
+        } else if item.existed {
             let snapshot = snapshot_path(data, &manifest, &item)?;
             let temporary = create_restore_temporary(&parent, &item, &snapshot)?;
             if !forced {
@@ -1482,30 +1883,49 @@ pub fn restore(
         } else {
             match openat_read(&parent, &destination) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    durability_barrier(barrier_ops::DESTINATION_DIR, parent_path, || {
+                        sync_directory_handle(&parent)
+                    })?;
                     manifest.items[index].state = ItemState::Removed;
                     removed += 1;
                 }
                 Err(error) => return Err(format!("open created output for removal: {error}")),
-                Ok(_) => {
-                    let quarantine = CString::new(format!(
-                        ".uhm-quarantine-{}-{}",
-                        item.id,
-                        std::process::id()
-                    ))
-                    .map_err(|_| "invalid quarantine name")?;
+                Ok(file) => {
+                    let identity = validate_staged_file(&file)?;
+                    if identity.len > config.max_file_bytes {
+                        return Err("created output exceeds the configured recovery bound".into());
+                    }
+                    let hash = hash_file(file, config.max_file_bytes)?;
+                    let name = format!(".uhm-quarantine-{}-{}", item.id, std::process::id());
+                    let quarantine =
+                        CString::new(name.clone()).map_err(|_| "invalid quarantine name")?;
+                    // The removal intent is durable before the move, so an
+                    // interruption can finish it by exact name instead of
+                    // leaving an untraceable private sibling.
+                    manifest.items[index].quarantine = Some(name);
+                    manifest.items[index].quarantine_hash = Some(hash);
+                    manifest.items[index].quarantine_mode = Some(identity.mode);
+                    manifest.updated_at = crate::history::now_secs();
+                    write_manifest(data, &manifest)?;
                     rename_no_replace(&parent, &destination, &quarantine)?;
-                    let quarantined = openat_read(&parent, &quarantine)
-                        .map_err(|error| format!("open quarantined output: {error}"))?;
-                    let hash = hash_file(quarantined, config.max_file_bytes)?;
-                    if !forced && Some(hash.as_str()) != item.postimage_hash.as_deref() {
-                        let restore_result = rename_no_replace(&parent, &quarantine, &destination);
+                    if let Err(error) = validate_linked_quarantine(
+                        &parent,
+                        &manifest.items[index],
+                        config.max_file_bytes,
+                    ) {
+                        let restore_error =
+                            rename_no_replace(&parent, &quarantine, &destination).err();
                         manifest.items[index].state = ItemState::Conflicted;
+                        if restore_error.is_none() {
+                            manifest.items[index].quarantine = None;
+                            manifest.items[index].quarantine_hash = None;
+                            manifest.items[index].quarantine_mode = None;
+                        }
                         transition(&mut manifest, RecoveryState::Conflicted)?;
                         manifest.reason = Some(format!(
-                            "{} changed while quarantined{}",
+                            "{} changed while quarantined: {error}{}",
                             item.destination.display(),
-                            restore_result
-                                .err()
+                            restore_error
                                 .map(|e| format!(
                                     "; quarantine retained because restore failed: {e}"
                                 ))
@@ -1515,11 +1935,16 @@ pub fn restore(
                         return Err(manifest.reason.clone().unwrap());
                     }
                     unlinkat(&parent, &quarantine)?;
-                    sync_directory_handle(&parent)?;
+                    durability_barrier(barrier_ops::DESTINATION_DIR, parent_path, || {
+                        sync_directory_handle(&parent)
+                    })?;
                     if openat_read(&parent, &destination).is_ok() {
                         return Err("created output still exists after recovery removal".into());
                     }
                     manifest.items[index].state = ItemState::Removed;
+                    manifest.items[index].quarantine = None;
+                    manifest.items[index].quarantine_hash = None;
+                    manifest.items[index].quarantine_mode = None;
                     removed += 1;
                 }
             }
@@ -1695,20 +2120,29 @@ pub fn resume_commit(
             continue;
         }
         let item = manifest.items[index].clone();
-        let parent = open_parent(
-            item.destination
-                .parent()
-                .ok_or("destination has no parent")?,
-        )?;
+        let parent_path = item
+            .destination
+            .parent()
+            .ok_or("destination has no parent")?
+            .to_path_buf();
+        let parent = open_parent(&parent_path)?;
         let staging_name = leaf_name(&item.staging)?;
+        let staged_hash = item
+            .staged_hash
+            .as_deref()
+            .ok_or("commit_partial item is missing its staged hash")?;
+        let postimage_mode = item
+            .postimage_mode
+            .ok_or("commit_partial item is missing its postimage mode")?;
         match openat_read(&parent, &staging_name) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let observed = current_hash(&item, config.max_file_bytes)?;
                 let mode = current_mode(&item, config.max_file_bytes)?;
-                if observed.as_deref() == item.staged_hash.as_deref() && mode == item.postimage_mode
-                {
-                    sync_directory_handle(&parent)?;
+                if observed.as_deref() == Some(staged_hash) && mode == Some(postimage_mode) {
+                    durability_barrier(barrier_ops::DESTINATION_DIR, &parent_path, || {
+                        sync_directory_handle(&parent)
+                    })?;
                     manifest.items[index].postimage_hash = observed;
                     manifest.items[index].state = ItemState::Committed;
                     write_manifest(data, &manifest)?;
@@ -1733,14 +2167,21 @@ pub fn resume_commit(
         supported_filesystem(&parent)?;
         let destination_name = leaf_name(&item.destination)?;
         let staging_name = leaf_name(&item.staging)?;
-        let preimage = item.existed.then_some(Identity {
-            device: item.device,
-            inode: item.inode,
-            len: item.preimage_bytes,
-            mode: item.preimage_mode.ok_or("preimage mode is missing")?,
-            modified_seconds: item.modified_seconds,
-            modified_nanoseconds: item.modified_nanoseconds,
-        });
+        // A creation has no preimage; its restore evidence is absence plus
+        // the postimage. Only a replacement needs complete preimage metadata,
+        // so construct the identity lazily per kind instead of eagerly.
+        let preimage = if item.existed {
+            Some(Identity {
+                device: item.device,
+                inode: item.inode,
+                len: item.preimage_bytes,
+                mode: item.preimage_mode.ok_or("preimage mode is missing")?,
+                modified_seconds: item.modified_seconds,
+                modified_nanoseconds: item.modified_nanoseconds,
+            })
+        } else {
+            None
+        };
         let value = PreparedItem {
             parent_path,
             parent,
@@ -1750,16 +2191,26 @@ pub fn resume_commit(
             preimage_file: None,
         };
         if item.state == ItemState::Committed {
+            let postimage_hash = item
+                .postimage_hash
+                .as_deref()
+                .ok_or("committed recovery item is missing its postimage hash")?;
+            let postimage_mode = item
+                .postimage_mode
+                .ok_or("committed recovery item is missing its postimage mode")?;
             let observed = current_hash(item, config.max_file_bytes)?;
             let mode = current_mode(item, config.max_file_bytes)?;
-            if observed.as_deref() != item.postimage_hash.as_deref() || mode != item.postimage_mode
-            {
+            if observed.as_deref() != Some(postimage_hash) || mode != Some(postimage_mode) {
                 return Err(format!(
                     "already committed output {} changed; resume refused",
                     item.destination.display()
                 ));
             }
         } else {
+            let staged_hash = item
+                .staged_hash
+                .as_deref()
+                .ok_or("commit_partial item is missing its staged hash")?;
             precommit_matches(&value, item)?;
             let staged = openat_read(&value.parent, &value.staging_name)
                 .map_err(|error| format!("resume staging file is unavailable: {error}"))?;
@@ -1767,10 +2218,18 @@ pub fn resume_commit(
             if identity.len > config.max_total_bytes {
                 return Err("resume staging file exceeds the configured recovery bound".into());
             }
-            let hash = hash_file(staged, config.max_total_bytes)?;
-            if Some(hash.as_str()) != item.staged_hash.as_deref() {
+            let hash = hash_file(
+                staged.try_clone().map_err(|error| error.to_string())?,
+                config.max_total_bytes,
+            )?;
+            if hash != staged_hash {
                 return Err("resume staging hash differs from the preflighted staged hash".into());
             }
+            // Same ordering as a first commit: the surviving staged evidence
+            // is durable before the rename loop can publish it.
+            durability_barrier(barrier_ops::STAGED_FILE, &item.staging, || {
+                staged.sync_all().map_err(|error| error.to_string())
+            })?;
         }
         prepared.push(value);
     }
@@ -1804,7 +2263,9 @@ pub fn resume_commit(
         }
         manifest.items[index].postimage_hash = Some(observed);
         manifest.items[index].state = ItemState::Committed;
-        sync_directory_handle(&prepared.parent)?;
+        durability_barrier(barrier_ops::DESTINATION_DIR, &prepared.parent_path, || {
+            sync_directory_handle(&prepared.parent)
+        })?;
         write_manifest(data, &manifest)?;
     }
     transition(&mut manifest, RecoveryState::Available)?;
@@ -2414,7 +2875,9 @@ fn copy_snapshot(source: &mut File, destination: &Path, max: u64) -> Result<Stri
             .write_all(&buffer[..count])
             .map_err(|error| error.to_string())?;
     }
-    output.sync_all().map_err(|error| error.to_string())?;
+    durability_barrier(barrier_ops::SNAPSHOT_FILE, destination, || {
+        output.sync_all().map_err(|error| error.to_string())
+    })?;
     Ok(hasher.finalize().to_hex().to_string())
 }
 
@@ -3798,5 +4261,1121 @@ mod tests {
         );
         assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
         eprintln!("8 MiB capture, commit, and undo: {elapsed:?}");
+    }
+
+    // Plan 19 W02: durability barriers are ordered before the mutations they
+    // guard, and a failed required sync never produces a success receipt.
+
+    #[test]
+    fn audit19_durability_commit_orders_barriers_before_each_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let (doc, doc_stage) = paths(root.path(), "doc.txt");
+        let (made, made_stage) = paths(root.path(), "made.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            "run-00000021",
+            &config,
+            &[
+                (doc.clone(), doc_stage.clone()),
+                (made.clone(), made_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&doc_stage, b"new one").unwrap();
+        std::fs::write(&made_stage, b"new two").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+
+        let ops = durability_probe::ops(root.path());
+        // The recovery ancestry is durably linked before anything names it.
+        let first_publish = ops
+            .iter()
+            .position(|op| *op == barrier_ops::MANIFEST_PUBLISH)
+            .unwrap();
+        assert!(
+            ops[..first_publish]
+                .iter()
+                .all(|op| *op == barrier_ops::ANCESTRY_DIR),
+            "ancestry must be synced before the first publication: {ops:?}"
+        );
+        // Each snapshot file is synced, then its containing directory, then
+        // the manifest that calls it ready.
+        let file_sync = ops
+            .iter()
+            .position(|op| *op == barrier_ops::SNAPSHOT_FILE)
+            .unwrap();
+        let dir_sync = ops
+            .iter()
+            .position(|op| *op == barrier_ops::SNAPSHOT_DIR)
+            .unwrap();
+        assert!(file_sync < dir_sync, "{ops:?}");
+        assert_eq!(
+            ops.get(dir_sync + 1),
+            Some(&barrier_ops::MANIFEST_PUBLISH),
+            "the snapshot-ready publication follows its directory sync: {ops:?}"
+        );
+        // Every staged output is file-synced before the first rename takes
+        // effect; the first destination-directory sync follows a rename.
+        assert_eq!(
+            ops.iter()
+                .filter(|op| **op == barrier_ops::STAGED_FILE)
+                .count(),
+            2,
+            "both staged outputs must be file-synced: {ops:?}"
+        );
+        let last_staged_sync = ops
+            .iter()
+            .rposition(|op| *op == barrier_ops::STAGED_FILE)
+            .unwrap();
+        let first_rename_effect = ops
+            .iter()
+            .position(|op| *op == barrier_ops::DESTINATION_DIR)
+            .unwrap();
+        assert!(
+            last_staged_sync < first_rename_effect,
+            "all staged evidence is synced before the first rename: {ops:?}"
+        );
+        assert_eq!(
+            ops.get(first_rename_effect - 1),
+            Some(&barrier_ops::MANIFEST_PUBLISH),
+            "the commit-partial intent is published after the staged syncs: {ops:?}"
+        );
+        assert_eq!(
+            ops.get(first_rename_effect + 1),
+            Some(&barrier_ops::MANIFEST_PUBLISH),
+            "each rename is followed by its directory sync and publication: {ops:?}"
+        );
+        assert_eq!(
+            *ops.last().unwrap(),
+            barrier_ops::MANIFEST_PUBLISH,
+            "the available manifest is the final publication: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn audit19_durability_staged_file_sync_precedes_every_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            "run-00000022",
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        durability_probe::fail_on(barrier_ops::STAGED_FILE, &second_stage);
+        let error = coordinator.commit(config.max_total_bytes).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        // No destination moved, even though the first staging file was fine:
+        // every staged output is synced before the first rename.
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        drop(coordinator);
+        // No commit intent was published; the durable capture honestly says
+        // it never left preparation.
+        assert_eq!(
+            read_manifest(&data, "run-00000022").unwrap().state,
+            RecoveryState::Preparing
+        );
+    }
+
+    #[test]
+    fn audit19_durability_destination_dir_sync_failure_stays_resumable() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000023";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"before").unwrap();
+        let mut coordinator =
+            prepare(&data, run, &config, &[(doc.clone(), stage.clone())]).unwrap();
+        std::fs::write(&stage, b"after").unwrap();
+        durability_probe::fail_on(barrier_ops::DESTINATION_DIR, root.path());
+        let error = coordinator.commit(config.max_total_bytes).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        drop(coordinator);
+        // The rename already happened but no completion was published, so the
+        // journal stays resumable instead of claiming success.
+        assert_eq!(std::fs::read(&doc).unwrap(), b"after");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::CommitPartial);
+        assert_eq!(manifest.items[0].state, ItemState::Staged);
+        durability_probe::clear_faults(root.path());
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(&doc).unwrap(), b"after");
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::Available
+        );
+    }
+
+    #[test]
+    fn audit19_durability_snapshot_dir_sync_failure_fails_capture_honestly() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000024";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        durability_probe::fail_on(barrier_ops::SNAPSHOT_DIR, root.path());
+        let error = prepare(&data, run, &config, &[(doc.clone(), stage)]).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        // The original destination is untouched and the durable manifest
+        // honestly reports an incomplete capture.
+        assert_eq!(std::fs::read(&doc).unwrap(), b"one");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Preparing);
+        assert_eq!(manifest.items[0].state, ItemState::Preparing);
+    }
+
+    #[test]
+    fn audit19_durability_capture_links_new_ancestry_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000025";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        let mut coordinator =
+            prepare(&data, run, &config, &[(doc.clone(), stage.clone())]).unwrap();
+        std::fs::write(&stage, b"after").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::Available
+        );
+        // A fresh data root must durably link every ancestor it created —
+        // the data root into its owner, runs into the data root, and this
+        // run into runs — before the first publication.
+        let pairs = durability_probe::pairs(root.path());
+        let first_publish = pairs
+            .iter()
+            .position(|(op, _)| *op == barrier_ops::MANIFEST_PUBLISH)
+            .unwrap();
+        let ancestry: Vec<&PathBuf> = pairs[..first_publish]
+            .iter()
+            .map(|(_, path)| path)
+            .collect();
+        assert!(
+            pairs[..first_publish]
+                .iter()
+                .all(|(op, _)| *op == barrier_ops::ANCESTRY_DIR),
+            "every pre-publication barrier is an ancestry sync: {pairs:?}"
+        );
+        let synced: Vec<PathBuf> = ancestry.into_iter().cloned().collect();
+        assert!(
+            synced.contains(&runs_dir(&data)),
+            "this run's entry in runs is durably linked: {synced:?}"
+        );
+        assert!(
+            synced.contains(&data),
+            "the runs directory is durably linked into the data root: {synced:?}"
+        );
+        assert!(
+            synced.contains(&data.parent().unwrap().to_path_buf()),
+            "a newly created data root is linked into its owner: {synced:?}"
+        );
+    }
+
+    #[test]
+    fn audit19_durability_manifest_publication_failure_leaves_destinations_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        durability_probe::fail_on(barrier_ops::MANIFEST_PUBLISH, root.path());
+        let error = prepare(&data, "run-00000026", &config, &[(doc.clone(), stage)]).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        assert_eq!(std::fs::read(&doc).unwrap(), b"one");
+        assert!(
+            !manifest_path(&data, "run-00000026").exists(),
+            "a failed publication must leave no manifest behind"
+        );
+    }
+
+    #[test]
+    fn audit19_durability_resumed_commit_syncs_staged_evidence_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000027";
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        for (index, stage) in [&first_stage, &second_stage].iter().enumerate() {
+            coordinator.manifest.items[index].staged_hash =
+                Some(hash_file(File::open(stage).unwrap(), config.max_total_bytes).unwrap());
+            coordinator.manifest.items[index].postimage_mode =
+                Some(std::fs::metadata(stage).unwrap().permissions().mode() & 0o7777);
+            coordinator.manifest.items[index].state = ItemState::Staged;
+        }
+        transition(&mut coordinator.manifest, RecoveryState::CommitPartial).unwrap();
+        write_manifest(&data, &coordinator.manifest).unwrap();
+        let prepared = &coordinator.prepared[0];
+        rename_replace(
+            &prepared.parent,
+            &prepared.staging_name,
+            &prepared.destination_name,
+        )
+        .unwrap();
+        drop(coordinator);
+
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(first).unwrap(), b"new one");
+        assert_eq!(std::fs::read(second).unwrap(), b"new two");
+        // The resume suffix, in order: reconcile the already-renamed item
+        // (directory sync, publication), file-sync the surviving staged
+        // evidence, then rename it (directory sync, publication), then
+        // publish the available manifest.
+        let ops = durability_probe::ops(root.path());
+        let suffix = [
+            barrier_ops::DESTINATION_DIR,
+            barrier_ops::MANIFEST_PUBLISH,
+            barrier_ops::STAGED_FILE,
+            barrier_ops::DESTINATION_DIR,
+            barrier_ops::MANIFEST_PUBLISH,
+            barrier_ops::MANIFEST_PUBLISH,
+        ];
+        assert!(
+            ops.ends_with(&suffix),
+            "resumed commit barrier order: {ops:?}"
+        );
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::Available
+        );
+    }
+
+    #[test]
+    fn audit19_durability_staged_sync_failure_in_resume_refuses_before_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000028";
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        for (index, stage) in [&first_stage, &second_stage].iter().enumerate() {
+            coordinator.manifest.items[index].staged_hash =
+                Some(hash_file(File::open(stage).unwrap(), config.max_total_bytes).unwrap());
+            coordinator.manifest.items[index].postimage_mode =
+                Some(std::fs::metadata(stage).unwrap().permissions().mode() & 0o7777);
+            coordinator.manifest.items[index].state = ItemState::Staged;
+        }
+        transition(&mut coordinator.manifest, RecoveryState::CommitPartial).unwrap();
+        write_manifest(&data, &coordinator.manifest).unwrap();
+        let prepared = &coordinator.prepared[0];
+        rename_replace(
+            &prepared.parent,
+            &prepared.staging_name,
+            &prepared.destination_name,
+        )
+        .unwrap();
+        drop(coordinator);
+
+        durability_probe::fail_on(barrier_ops::STAGED_FILE, &second_stage);
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        assert_eq!(std::fs::read(first).unwrap(), b"new one");
+        assert_eq!(std::fs::read(second).unwrap(), b"two");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::CommitPartial);
+        assert_eq!(manifest.items[1].state, ItemState::Staged);
+    }
+
+    // Plan 19 W03: resuming a partial commit must work for outputs that
+    // create files, without inventing preimage metadata for them.
+
+    /// Build a durable CommitPartial manifest whose items are Staged, with
+    /// valid staged hashes and modes, as if the process died after the
+    /// commit intent was published but before any item completion.
+    fn partial_commit_state(
+        data: &Path,
+        run: &str,
+        config: &RecoveryConfig,
+        outputs: &[(PathBuf, PathBuf)],
+    ) {
+        let mut coordinator = prepare(data, run, config, outputs).unwrap();
+        for (index, (_, staging)) in outputs.iter().enumerate() {
+            coordinator.manifest.items[index].staged_hash =
+                Some(hash_file(File::open(staging).unwrap(), config.max_total_bytes).unwrap());
+            coordinator.manifest.items[index].postimage_mode =
+                Some(std::fs::metadata(staging).unwrap().permissions().mode() & 0o7777);
+            coordinator.manifest.items[index].state = ItemState::Staged;
+        }
+        transition(&mut coordinator.manifest, RecoveryState::CommitPartial).unwrap();
+        write_manifest(data, &coordinator.manifest).unwrap();
+        coordinator.ownership_guard = None;
+    }
+
+    #[test]
+    fn audit19_resume_creation_only_completes_before_any_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000031";
+        let (made, stage) = paths(root.path(), "made.txt");
+        std::fs::write(&stage, b"created content").unwrap();
+        partial_commit_state(&data, run, &config, &[(made.clone(), stage.clone())]);
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(&made).unwrap(), b"created content");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Available);
+        assert_eq!(manifest.items[0].state, ItemState::Committed);
+        assert_eq!(manifest.items[0].preimage_mode, None);
+    }
+
+    #[test]
+    fn audit19_resume_mixed_completes_after_first_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000032";
+        let (doc, doc_stage) = paths(root.path(), "doc.txt");
+        let (made, made_stage) = paths(root.path(), "made.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        std::fs::write(&doc_stage, b"new one").unwrap();
+        std::fs::write(&made_stage, b"new two").unwrap();
+        // Crash after the replacement's rename but before its item completion
+        // and before the creation ran at all.
+        partial_commit_state(
+            &data,
+            run,
+            &config,
+            &[
+                (doc.clone(), doc_stage.clone()),
+                (made.clone(), made_stage.clone()),
+            ],
+        );
+        let parent = open_parent(root.path()).unwrap();
+        rename_replace(
+            &parent,
+            &CString::new(".uhm-stage-doc.txt").unwrap(),
+            &CString::new("doc.txt").unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(&doc).unwrap(), b"new one");
+        assert_eq!(std::fs::read(&made).unwrap(), b"new two");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Available);
+        assert!(manifest
+            .items
+            .iter()
+            .all(|item| item.state == ItemState::Committed));
+        // The creation never gains invented preimage evidence.
+        assert_eq!(manifest.items[1].preimage_mode, None);
+        assert_eq!(manifest.items[1].preimage_hash, None);
+        assert_eq!(manifest.items[1].snapshot_file, None);
+    }
+
+    #[test]
+    fn audit19_resume_refuses_a_concurrently_created_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000033";
+        let (made, stage) = paths(root.path(), "made.txt");
+        std::fs::write(&stage, b"created content").unwrap();
+        partial_commit_state(&data, run, &config, &[(made.clone(), stage)]);
+        // Someone else created the destination while the process was down.
+        std::fs::write(&made, b"unrelated bytes").unwrap();
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(
+            error.contains("concurrent writer created the destination"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&made).unwrap(), b"unrelated bytes");
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::CommitPartial
+        );
+    }
+
+    #[test]
+    fn audit19_resume_refuses_changed_staging_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000034";
+        let (made, stage) = paths(root.path(), "made.txt");
+        std::fs::write(&stage, b"created content").unwrap();
+        partial_commit_state(&data, run, &config, &[(made.clone(), stage.clone())]);
+        std::fs::write(&stage, b"tampered staging").unwrap();
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(
+            error.contains("staging hash differs from the preflighted staged hash"),
+            "{error}"
+        );
+        assert!(!made.exists(), "no destination may appear");
+    }
+
+    #[test]
+    fn audit19_resume_refuses_a_changed_completed_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000035";
+        let (doc, doc_stage) = paths(root.path(), "doc.txt");
+        let (made, made_stage) = paths(root.path(), "made.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        std::fs::write(&doc_stage, b"new one").unwrap();
+        std::fs::write(&made_stage, b"new two").unwrap();
+        partial_commit_state(
+            &data,
+            run,
+            &config,
+            &[(doc.clone(), doc_stage), (made.clone(), made_stage)],
+        );
+        // The replacement was renamed and journaled complete, then edited.
+        let parent = open_parent(root.path()).unwrap();
+        rename_replace(
+            &parent,
+            &CString::new(".uhm-stage-doc.txt").unwrap(),
+            &CString::new("doc.txt").unwrap(),
+        )
+        .unwrap();
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.items[0].postimage_hash =
+            Some(hash_file(File::open(&doc).unwrap(), config.max_total_bytes).unwrap());
+        manifest.items[0].state = ItemState::Committed;
+        write_manifest(&data, &manifest).unwrap();
+        std::fs::write(&doc, b"edited after commit").unwrap();
+
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(
+            error.contains("already committed output") && error.contains("changed"),
+            "{error}"
+        );
+        assert!(!made.exists(), "the pending creation must not run");
+        assert_eq!(
+            std::fs::read(&doc).unwrap(),
+            b"edited after commit",
+            "refusal must not rewrite anything"
+        );
+    }
+
+    #[test]
+    fn audit19_resume_refuses_a_replacement_without_preimage_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000036";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        std::fs::write(&stage, b"new one").unwrap();
+        partial_commit_state(&data, run, &config, &[(doc.clone(), stage)]);
+        // A replacement without recorded preimage mode has unusable restore
+        // evidence and must be refused, exactly like a legacy creation was.
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.items[0].preimage_mode = None;
+        write_manifest(&data, &manifest).unwrap();
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(error.contains("preimage mode is missing"), "{error}");
+        assert_eq!(std::fs::read(&doc).unwrap(), b"one");
+    }
+
+    #[test]
+    fn audit19_resume_refuses_creation_without_staged_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000037";
+        let (made, stage) = paths(root.path(), "made.txt");
+        std::fs::write(&stage, b"created content").unwrap();
+        partial_commit_state(&data, run, &config, &[(made.clone(), stage.clone())]);
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.items[0].staged_hash = None;
+        manifest.items[0].postimage_mode = None;
+        write_manifest(&data, &manifest).unwrap();
+        std::fs::remove_file(stage).unwrap();
+
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(error.contains("missing its staged hash"), "{error}");
+        assert!(!made.exists());
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::CommitPartial
+        );
+    }
+
+    // Plan 19 W04: an authorized undo interrupted after its filesystem effect
+    // must resume from evidence instead of reporting a false conflict.
+
+    /// Mark a committed run as an interrupted undo: the manifest is durable
+    /// in UndoInProgress with every unresolved item still UndoPending. The
+    /// caller simulates the filesystem effects of the interrupted mutations.
+    fn interrupted_undo(data: &Path, run: &str) {
+        let mut manifest = read_manifest(data, run).unwrap();
+        transition(&mut manifest, RecoveryState::UndoPreflight).unwrap();
+        for item in &mut manifest.items {
+            if !matches!(item.state, ItemState::Restored | ItemState::Removed) {
+                item.state = ItemState::UndoPending;
+            }
+        }
+        write_manifest(data, &manifest).unwrap();
+        transition(&mut manifest, RecoveryState::UndoInProgress).unwrap();
+        write_manifest(data, &manifest).unwrap();
+    }
+
+    /// Rewrite one destination to exactly its retained preimage bytes and
+    /// mode, as the interrupted verified rename would have left it.
+    fn apply_preimage(data: &Path, run: &str, index: usize, destination: &Path) {
+        let manifest = read_manifest(data, run).unwrap();
+        let item = &manifest.items[index];
+        let snapshot = run_dir(data, run)
+            .join(SNAPSHOTS)
+            .join(item.snapshot_file.as_ref().unwrap());
+        let bytes = std::fs::read(&snapshot).unwrap();
+        std::fs::write(destination, bytes).unwrap();
+        std::fs::set_permissions(
+            destination,
+            std::fs::Permissions::from_mode(item.preimage_mode.unwrap()),
+        )
+        .unwrap();
+    }
+
+    /// Commit a run whose single output creates `name`, and return the data
+    /// directory plus the created destination.
+    fn committed_creation(
+        root: &Path,
+        name: &str,
+        run: &str,
+    ) -> (PathBuf, PathBuf, RecoveryConfig) {
+        let data = root.join("data");
+        let config = RecoveryConfig::default();
+        let (destination, staging) = paths(root, name);
+        std::fs::write(&staging, b"created bytes").unwrap();
+        let mut coordinator =
+            prepare(&data, run, &config, &[(destination.clone(), staging)]).unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        (data, destination, config)
+    }
+
+    #[test]
+    fn audit19_undo_resume_replacement_interrupted_after_mutation() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        interrupted_undo(&data, &run);
+        apply_preimage(&data, &run, 0, &destination);
+        // Preview shares the classification, so it must not report the
+        // completed work as a conflict.
+        let preview = preview_restore(&data, &run, &config, false).unwrap();
+        assert!(
+            preview.items[0].conflict.is_none(),
+            "{:?}",
+            preview.items[0].conflict
+        );
+        let report = restore(&data, &run, "undo-00000041", &config, false).unwrap();
+        assert_eq!(report.outcome, "verified_restore");
+        assert_eq!(report.restored, 1);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"before");
+        let manifest = read_manifest(&data, &run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Restored);
+        assert_eq!(manifest.items[0].state, ItemState::Restored);
+    }
+
+    #[test]
+    fn audit19_undo_resume_creation_interrupted_after_unlink() {
+        let root = tempfile::tempdir().unwrap();
+        let (data, destination, config) =
+            committed_creation(root.path(), "made.txt", "run-00000042");
+        std::fs::remove_file(&destination).unwrap();
+        interrupted_undo(&data, "run-00000042");
+        let report = restore(&data, "run-00000042", "undo-00000042", &config, false).unwrap();
+        assert_eq!(report.outcome, "verified_restore");
+        assert_eq!(report.removed, 1);
+        assert!(!destination.exists());
+        let manifest = read_manifest(&data, "run-00000042").unwrap();
+        assert_eq!(manifest.state, RecoveryState::Restored);
+        assert_eq!(manifest.items[0].state, ItemState::Removed);
+    }
+
+    #[test]
+    fn audit19_undo_resume_legacy_quarantine_orphan_is_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let (data, destination, config) =
+            committed_creation(root.path(), "made.txt", "run-00000043");
+        // Legacy interruption: the destination was moved to a pid-named
+        // quarantine and the process died before anything else happened.
+        let orphan = ".uhm-quarantine-output-000-999999";
+        let parent = open_parent(root.path()).unwrap();
+        rename_no_replace(
+            &parent,
+            &CString::new("made.txt").unwrap(),
+            &CString::new(orphan).unwrap(),
+        )
+        .unwrap();
+        interrupted_undo(&data, "run-00000043");
+        let report = restore(&data, "run-00000043", "undo-00000043", &config, false).unwrap();
+        assert_eq!(report.removed, 1);
+        assert!(!destination.exists());
+        // No scan deletes files the run cannot prove it owns.
+        assert!(root.path().join(orphan).exists());
+        assert_eq!(
+            std::fs::read(root.path().join(orphan)).unwrap(),
+            b"created bytes"
+        );
+    }
+
+    #[test]
+    fn audit19_undo_resume_finishes_a_linked_quarantine() {
+        let root = tempfile::tempdir().unwrap();
+        let (data, destination, config) =
+            committed_creation(root.path(), "made.txt", "run-00000044");
+        let name = ".uhm-quarantine-output-000-424242";
+        let parent = open_parent(root.path()).unwrap();
+        rename_no_replace(
+            &parent,
+            &CString::new("made.txt").unwrap(),
+            &CString::new(name).unwrap(),
+        )
+        .unwrap();
+        interrupted_undo(&data, "run-00000044");
+        let mut manifest = read_manifest(&data, "run-00000044").unwrap();
+        manifest.items[0].quarantine = Some(name.into());
+        write_manifest(&data, &manifest).unwrap();
+        let report = restore(&data, "run-00000044", "undo-00000044", &config, false).unwrap();
+        assert_eq!(report.removed, 1);
+        assert!(!destination.exists());
+        assert!(
+            !root.path().join(name).exists(),
+            "the linked quarantine must be removed after validation"
+        );
+        let manifest = read_manifest(&data, "run-00000044").unwrap();
+        assert_eq!(manifest.items[0].state, ItemState::Removed);
+        assert_eq!(manifest.items[0].quarantine, None);
+    }
+
+    #[test]
+    fn audit19_undo_resume_linked_quarantine_already_unlinked() {
+        let root = tempfile::tempdir().unwrap();
+        let (data, destination, config) =
+            committed_creation(root.path(), "made.txt", "run-00000045");
+        std::fs::remove_file(&destination).unwrap();
+        interrupted_undo(&data, "run-00000045");
+        let mut manifest = read_manifest(&data, "run-00000045").unwrap();
+        manifest.items[0].quarantine = Some(".uhm-quarantine-output-000-424242".into());
+        write_manifest(&data, &manifest).unwrap();
+        durability_probe::fail_on(barrier_ops::DESTINATION_DIR, root.path());
+        let error = restore(&data, "run-00000045", "undo-00000045", &config, false).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        assert_eq!(
+            read_manifest(&data, "run-00000045").unwrap().items[0].state,
+            ItemState::UndoPending,
+            "completion must not be journaled before the directory barrier"
+        );
+        durability_probe::clear_faults(root.path());
+        let report = restore(&data, "run-00000045", "undo-00000045", &config, false).unwrap();
+        assert_eq!(report.removed, 1);
+        let manifest = read_manifest(&data, "run-00000045").unwrap();
+        assert_eq!(manifest.items[0].state, ItemState::Removed);
+        assert_eq!(manifest.items[0].quarantine, None);
+    }
+
+    #[test]
+    fn audit19_undo_resume_refuses_a_mismatched_linked_quarantine() {
+        let root = tempfile::tempdir().unwrap();
+        let (data, destination, config) =
+            committed_creation(root.path(), "made.txt", "run-00000046");
+        let name = ".uhm-quarantine-output-000-424242";
+        let quarantine_path = root.path().join(name);
+        std::fs::remove_file(&destination).unwrap();
+        std::fs::write(&quarantine_path, b"tampered bytes").unwrap();
+        std::fs::set_permissions(&quarantine_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        interrupted_undo(&data, "run-00000046");
+        let mut manifest = read_manifest(&data, "run-00000046").unwrap();
+        manifest.items[0].quarantine = Some(name.into());
+        write_manifest(&data, &manifest).unwrap();
+        let error = restore(&data, "run-00000046", "undo-00000046", &config, false).unwrap_err();
+        assert!(
+            error.contains("no longer matches its recorded bytes or mode"),
+            "{error}"
+        );
+        // Evidence is preserved for inspection.
+        assert_eq!(std::fs::read(&quarantine_path).unwrap(), b"tampered bytes");
+        assert_eq!(
+            read_manifest(&data, "run-00000046").unwrap().state,
+            RecoveryState::UndoInProgress
+        );
+    }
+
+    #[test]
+    fn audit19_undo_preflights_all_linked_quarantines_before_mutating() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000046b";
+        let (replacement, replacement_stage) = paths(root.path(), "first.txt");
+        let (creation, creation_stage) = paths(root.path(), "second.txt");
+        std::fs::write(&replacement, b"before").unwrap();
+        std::fs::write(&replacement_stage, b"after").unwrap();
+        std::fs::write(&creation_stage, b"created bytes").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (replacement.clone(), replacement_stage),
+                (creation.clone(), creation_stage),
+            ],
+        )
+        .unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        interrupted_undo(&data, run);
+
+        let quarantine_name = ".uhm-quarantine-output-001-424242";
+        std::fs::rename(&creation, root.path().join(quarantine_name)).unwrap();
+        std::fs::write(root.path().join(quarantine_name), b"tampered").unwrap();
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.items[1].quarantine = Some(quarantine_name.into());
+        write_manifest(&data, &manifest).unwrap();
+
+        let error = restore(&data, run, "undo-00000046b", &config, false).unwrap_err();
+        assert!(
+            error.contains("no longer matches its recorded bytes or mode"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&replacement).unwrap(),
+            b"after",
+            "the earlier replacement must remain untouched"
+        );
+    }
+
+    #[test]
+    fn audit19_forced_creation_retry_uses_the_authorized_quarantine_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let (data, destination, config) =
+            committed_creation(root.path(), "made.txt", "run-00000046c");
+        std::fs::write(&destination, b"changed but force-authorized").unwrap();
+        interrupted_undo(&data, "run-00000046c");
+        let name = ".uhm-quarantine-output-000-424242";
+        let quarantine = root.path().join(name);
+        std::fs::rename(&destination, &quarantine).unwrap();
+        let identity = validate_staged_file(&File::open(&quarantine).unwrap()).unwrap();
+        let hash = hash_file(File::open(&quarantine).unwrap(), config.max_file_bytes).unwrap();
+        let mut manifest = read_manifest(&data, "run-00000046c").unwrap();
+        manifest.forced_restore = true;
+        manifest.items[0].quarantine = Some(name.into());
+        manifest.items[0].quarantine_hash = Some(hash);
+        manifest.items[0].quarantine_mode = Some(identity.mode);
+        write_manifest(&data, &manifest).unwrap();
+
+        let report = restore(&data, "run-00000046c", "undo-00000046c", &config, false).unwrap();
+        assert_eq!(report.outcome, "forced_restore");
+        assert!(!quarantine.exists());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn audit19_undo_resume_rejects_a_forged_quarantine_linkage() {
+        let (root, data, _config, run) = committed_replacement();
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        // A linkage that names another item's prefix, or any non-leaf or
+        // off-format name, must never reach the filesystem layer.
+        manifest.items[0].quarantine = Some(".uhm-quarantine-output-001-1".into());
+        let error = write_manifest(&data, &manifest).unwrap_err();
+        assert!(
+            error.contains("invalid recovery quarantine linkage"),
+            "{error}"
+        );
+        manifest.items[0].quarantine = Some(".uhm-quarantine-output-000-../../etc".into());
+        let error = write_manifest(&data, &manifest).unwrap_err();
+        assert!(
+            error.contains("invalid recovery quarantine linkage"),
+            "{error}"
+        );
+        assert!(!root.path().join("etc").exists());
+    }
+
+    #[test]
+    fn audit19_undo_resume_mixed_output_with_first_mutation_complete() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000047";
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        interrupted_undo(&data, run);
+        // Only the first item's replacement happened before the crash.
+        apply_preimage(&data, run, 0, &first);
+        let report = restore(&data, run, "undo-00000047", &config, false).unwrap();
+        assert_eq!(report.outcome, "verified_restore");
+        assert_eq!(report.restored, 2);
+        assert_eq!(std::fs::read(first).unwrap(), b"one");
+        assert_eq!(std::fs::read(second).unwrap(), b"two");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Restored);
+        assert!(manifest
+            .items
+            .iter()
+            .all(|item| item.state == ItemState::Restored));
+    }
+
+    #[test]
+    fn audit19_undo_resume_mode_mismatch_still_conflicts() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        interrupted_undo(&data, &run);
+        apply_preimage(&data, &run, 0, &destination);
+        // Bytes match the preimage but the mode drifted: not provably the
+        // interrupted rename's work.
+        let mode = read_manifest(&data, &run).unwrap().items[0]
+            .preimage_mode
+            .unwrap();
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(mode ^ 0o100))
+            .unwrap();
+        let error = restore(&data, &run, "undo-00000048", &config, false).unwrap_err();
+        assert!(error.contains("verified undo refused"), "{error}");
+        assert_eq!(
+            read_manifest(&data, &run).unwrap().state,
+            RecoveryState::Conflicted
+        );
+    }
+
+    #[test]
+    fn audit19_undo_resume_symlink_swap_still_conflicts() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        interrupted_undo(&data, &run);
+        apply_preimage(&data, &run, 0, &destination);
+        std::fs::remove_file(&destination).unwrap();
+        symlink("/tmp/uhm-audit19-target", &destination).unwrap();
+        let error = restore(&data, &run, "undo-00000049", &config, false).unwrap_err();
+        assert!(error.contains("verified undo refused"), "{error}");
+        // Evidence is preserved untouched.
+        assert!(std::fs::symlink_metadata(&destination)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn audit19_undo_resume_forced_provenance_stays_sticky() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        manifest.forced_restore = true;
+        write_manifest(&data, &manifest).unwrap();
+        interrupted_undo(&data, &run);
+        apply_preimage(&data, &run, 0, &destination);
+        // A resumed ordinary undo never converts forced provenance.
+        let report = restore(&data, &run, "undo-00000050", &config, false).unwrap();
+        assert_eq!(report.outcome, "forced_restore");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"before");
+        assert!(read_manifest(&data, &run).unwrap().forced_restore);
+    }
+
+    #[test]
+    fn audit19_undo_resume_repeated_retry_is_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000051";
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        interrupted_undo(&data, run);
+        // The first item's mutation and its completion were both journaled;
+        // the second item's mutation happened but its completion was not.
+        apply_preimage(&data, run, 0, &first);
+        let mut manifest = read_manifest(&data, run).unwrap();
+        manifest.items[0].state = ItemState::Restored;
+        write_manifest(&data, &manifest).unwrap();
+        apply_preimage(&data, run, 1, &second);
+        let report = restore(&data, run, "undo-00000051", &config, false).unwrap();
+        assert_eq!(report.outcome, "verified_restore");
+        assert_eq!(report.restored, 1, "only the unresolved item is reconciled");
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Restored);
+        // Retrying a finished undo needs no force and repeats nothing.
+        let error = restore(&data, run, "undo-00000051b", &config, false).unwrap_err();
+        assert!(error.contains("not restorable"), "{error}");
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+    }
+
+    #[test]
+    fn audit19_undo_resume_completed_item_drift_refuses() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        interrupted_undo(&data, &run);
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        manifest.items[0].state = ItemState::Restored;
+        write_manifest(&data, &manifest).unwrap();
+        apply_preimage(&data, &run, 0, &destination);
+        // Then someone edits the supposedly restored bytes.
+        std::fs::write(&destination, b"edited after restore").unwrap();
+        let error = restore(&data, &run, "undo-00000052", &config, false).unwrap_err();
+        assert!(
+            error.contains("no longer matches its recorded final state"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"edited after restore"
+        );
+    }
+
+    #[test]
+    fn audit19_undo_resume_completed_item_mode_drift_refuses() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        interrupted_undo(&data, &run);
+        let mut manifest = read_manifest(&data, &run).unwrap();
+        manifest.items[0].state = ItemState::Restored;
+        write_manifest(&data, &manifest).unwrap();
+        apply_preimage(&data, &run, 0, &destination);
+        let mode = manifest.items[0].preimage_mode.unwrap();
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(mode ^ 0o100))
+            .unwrap();
+
+        let error = restore(&data, &run, "undo-00000052b", &config, false).unwrap_err();
+        assert!(
+            error.contains("no longer matches its recorded final state"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn audit19_undo_resume_available_manifest_never_reconciles() {
+        let (root, data, config, run) = committed_replacement();
+        let destination = root.path().join("document.txt");
+        // The bytes happen to equal the preimage, but no undo was ever
+        // recorded: this is an ordinary conflict, not completed work.
+        apply_preimage(&data, &run, 0, &destination);
+        let preview = preview_restore(&data, &run, &config, false).unwrap();
+        assert!(preview.items[0].conflict.is_some());
+        let error = restore(&data, &run, "undo-00000053", &config, false).unwrap_err();
+        assert!(error.contains("verified undo refused"), "{error}");
+    }
+
+    #[test]
+    fn audit19_undo_resume_manifests_stay_schema_v1_compatible() {
+        let (_root, data, _config, run) = committed_replacement();
+        let raw = std::fs::read_to_string(manifest_path(&data, &run)).unwrap();
+        assert!(
+            !raw.contains("quarantine"),
+            "a manifest with no pending removal must stay byte-compatible with older binaries"
+        );
+        // The additive field stays absent, so a schema-v1 item parses
+        // unchanged whether the reader knows the field or not.
+        assert!(read_manifest(&data, &run).is_ok());
+    }
+
+    #[test]
+    fn audit19_undo_resume_refuses_an_unopenable_created_destination() {
+        use std::os::unix::fs::PermissionsExt;
+        // An occupant that cannot be examined is not absence: an interrupted
+        // creation-undo must refuse rather than journal a verified removal.
+        for occupant in ["symlink", "write-only"] {
+            let root = tempfile::tempdir().unwrap();
+            let (data, destination, config) =
+                committed_creation(root.path(), "made.txt", "run-00000060");
+            std::fs::remove_file(&destination).unwrap();
+            match occupant {
+                "symlink" => {
+                    symlink("/tmp/uhm-audit19-occupied", &destination).unwrap();
+                }
+                _ => {
+                    std::fs::write(&destination, b"occupied").unwrap();
+                    std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o200))
+                        .unwrap();
+                }
+            }
+            interrupted_undo(&data, "run-00000060");
+            let preview = preview_restore(&data, "run-00000060", &config, false).unwrap();
+            assert!(
+                preview.items[0].conflict.is_some(),
+                "{occupant}: an unopenable occupant must stay a conflict, got {:?}",
+                preview.items[0].conflict
+            );
+            let error =
+                restore(&data, "run-00000060", "undo-00000060", &config, false).unwrap_err();
+            assert!(
+                error.contains("verified undo refused") || error.contains("inspect"),
+                "{occupant}: {error}"
+            );
+            assert!(
+                std::fs::symlink_metadata(&destination).is_ok(),
+                "{occupant}: the occupant must remain untouched"
+            );
+            assert_eq!(
+                read_manifest(&data, "run-00000060").unwrap().items[0].state,
+                ItemState::UndoPending,
+                "{occupant}: no verified removal may be journaled"
+            );
+        }
     }
 }

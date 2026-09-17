@@ -4,10 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub const POLICY_VERSION: u32 = 5;
+pub const POLICY_VERSION: u32 = 6;
 pub const DISCLOSURE_VERSION: u32 = 4;
 pub const TOOL_CATALOG: &[&str] = &[
     "sh", "bash", "zsh", "fish", "git", "rg", "fd", "jq", "yq", "fzf", "gh", "python3", "node",
@@ -62,6 +61,19 @@ pub fn disclosure_payload() -> Value {
 
 pub fn gather(mode: Mode, shell: &str, timeout_ms: u64) -> Snapshot {
     let program_runtime = crate::runtime::inventory();
+    gather_with_inventory(mode, shell, timeout_ms, &program_runtime)
+}
+
+/// `gather` with an inventory the caller already obtained, so a request path
+/// that classified itself against the runtime reuses one bounded result
+/// instead of probing Python again.
+pub fn gather_with_inventory(
+    mode: Mode,
+    shell: &str,
+    timeout_ms: u64,
+    program_runtime: &crate::runtime::PythonInventory,
+) -> Snapshot {
+    let program_runtime = program_runtime.clone();
     if mode == Mode::Minimal {
         return Snapshot {
             policy_version: POLICY_VERSION,
@@ -75,7 +87,7 @@ pub fn gather(mode: Mode, shell: &str, timeout_ms: u64) -> Snapshot {
     let normalized = normalize_cwd(&cwd);
     let tools = tool_presence();
     let entries = entry_names(&cwd, 40, 4096);
-    let git = git_summary(deadline);
+    let git = git_summary(deadline, &path_entries());
     let mut machine = json!({
         "os":{"family":std::env::consts::OS,"version":os_version(deadline)},
         "architecture":std::env::consts::ARCH,
@@ -242,15 +254,35 @@ fn tool_versions(
         })
         .collect()
 }
-fn git_summary(deadline: Instant) -> Value {
-    let branch = run(&["git", "rev-parse", "--abbrev-ref", "HEAD"], deadline);
-    if branch.is_none() {
+fn git_summary(deadline: Instant, search: &[PathBuf]) -> Value {
+    let Some(git) = resolve_in(search, "git") else {
         return Value::Null;
-    }
-    let dirty = run(&["git", "status", "--porcelain"], deadline)
-        .map(|s| s.lines().take(101).count())
-        .unwrap_or(0);
-    json!({"branch":branch,"dirty":dirty>0,"changed_count":dirty.min(100)})
+    };
+    let git = git.to_string_lossy().into_owned();
+    let branch = run(&[&git, "rev-parse", "--abbrev-ref", "HEAD"], deadline);
+    let Some(branch) = branch else {
+        return Value::Null;
+    };
+    // A failed status probe is unavailable evidence: the git context reads
+    // null instead of asserting a clean tree. Valid empty status stays clean
+    // and valid nonempty status stays dirty.
+    let Some(status) = crate::probe::run(
+        &[&git, "status", "--porcelain"],
+        deadline,
+        4096,
+        crate::probe::ProbeEnv::Inherit,
+    )
+    .ok()
+    .filter(|outcome| outcome.success) else {
+        return Value::Null;
+    };
+    // A truncated capture is bounded evidence, never an exact file count.
+    let changed = if status.truncated {
+        100
+    } else {
+        status.stdout.lines().take(101).count()
+    };
+    json!({"branch":branch,"dirty":changed>0,"changed_count":changed.min(100)})
 }
 fn os_version(deadline: Instant) -> Option<String> {
     if cfg!(target_os = "macos") {
@@ -259,38 +291,17 @@ fn os_version(deadline: Instant) -> Option<String> {
         run(&["uname", "-r"], deadline)
     }
 }
-/// Run a bounded, inert probe: direct argv with no shell, stdin closed, stderr
-/// discarded, stdout capped, killed at the deadline. Output is returned only for
-/// a successful exit.
+/// Run a bounded, inert probe: direct argv with no shell, stdin closed,
+/// stderr discarded, stdout drained while the child runs and capped, the
+/// owned process group terminated at the deadline. Output is returned only
+/// for a successful exit.
 pub(crate) fn run(argv: &[&str], deadline: Instant) -> Option<String> {
     if argv.is_empty() || Instant::now() >= deadline {
         return None;
     }
-    let mut child = Command::new(argv[0])
-        .args(&argv[1..])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .ok()?;
-    loop {
-        if let Some(status) = child.try_wait().ok()? {
-            let mut out = String::new();
-            use std::io::Read;
-            child
-                .stdout
-                .take()?
-                .take(4096)
-                .read_to_string(&mut out)
-                .ok()?;
-            return status.success().then(|| out.trim().into());
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(2));
+    match crate::probe::run(argv, deadline, 4096, crate::probe::ProbeEnv::Inherit) {
+        Ok(output) if output.success => Some(output.stdout.trim().to_string()),
+        _ => None,
     }
 }
 
@@ -301,6 +312,71 @@ mod tests {
     fn minimal_has_no_machine_fields() {
         let s = gather(Mode::Minimal, "/bin/sh", 50);
         assert_eq!(s.machine, json!({}));
+    }
+
+    // Plan 19 W08: a failed Git-status probe is unavailable evidence, never
+    // an assertion that the tree is clean, and a truncated capture is bounded
+    // evidence rather than an exact count.
+
+    fn fake_git(status_behavior: &str) -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("git");
+        let script = format!(
+            "#!/bin/sh\ncase \"$1\" in\n\
+             \trev-parse) echo main; exit 0;;\n\
+             \tstatus) {status_behavior};;\n\
+             \t*) exit 1;;\n\
+             esac\n"
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        dir
+    }
+
+    fn audit19_deadline() -> Instant {
+        Instant::now() + Duration::from_secs(10)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_probe_git_clean_and_dirty_statuses_project_honestly() {
+        let clean = fake_git("exit 0");
+        let summary = git_summary(audit19_deadline(), &[clean.path().to_path_buf()]);
+        assert_eq!(summary["branch"], "main");
+        assert_eq!(summary["dirty"], false);
+        assert_eq!(summary["changed_count"], 0);
+
+        let dirty = fake_git("printf ' M a.txt\\n M b.txt\\n'; exit 0");
+        let summary = git_summary(audit19_deadline(), &[dirty.path().to_path_buf()]);
+        assert_eq!(summary["dirty"], true);
+        assert_eq!(summary["changed_count"], 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_probe_a_failed_git_status_is_unavailable_not_clean() {
+        let failing = fake_git("exit 128");
+        let summary = git_summary(audit19_deadline(), &[failing.path().to_path_buf()]);
+        assert_eq!(
+            summary,
+            Value::Null,
+            "a failed status probe must not claim a clean tree"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_probe_a_truncated_git_status_is_bounded_evidence() {
+        let flooding = fake_git(
+            "i=0\nwhile [ $i -lt 2000 ]; do printf ' M file-%s.txt\\n' $i; i=$((i+1)); done\nexit 0",
+        );
+        let summary = git_summary(audit19_deadline(), &[flooding.path().to_path_buf()]);
+        assert_eq!(summary["dirty"], true);
+        assert_eq!(
+            summary["changed_count"], 100,
+            "a truncated capture reports the saturated bound, never an exact count"
+        );
     }
     #[test]
     fn minimal_carries_no_observed_tool_help() {

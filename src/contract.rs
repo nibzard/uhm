@@ -134,15 +134,38 @@ pub fn decode_and_validate(tool: &str, arguments: Value) -> Result<ProposedActio
     action.validate()
 }
 
+/// The closed mapping from wire tool names to canonical runtime action
+/// kinds. Rust is authoritative: external tooling consumes this table from
+/// `describe` instead of keeping a second handwritten one. `probe_subcommand`
+/// is a routing step, never an executable evidence profile entry, and is
+/// deliberately absent.
+pub fn tool_to_action_kind(tool: &str) -> Option<&'static str> {
+    match tool {
+        "return_answer" => Some("answer"),
+        "request_clarification" => Some("clarification"),
+        "run_shell" => Some("shell"),
+        "run_program" => Some("program"),
+        "require_parent_shell" => Some("parent_shell"),
+        _ => None,
+    }
+}
+
 pub fn description() -> Value {
     json!({
-        "contract_version": 1,
+        "contract_version": 2,
         "prompt_version": crate::prompt::PROMPT_VERSION,
         "action_schema_version": crate::prompt::ACTION_SCHEMA_VERSION,
         "context_policy_version": CONTEXT_POLICY_VERSION,
         "program_contract": PROGRAM_CONTRACT,
         "developer_instructions": crate::prompt::DEVELOPER_INSTRUCTIONS,
         "tools": crate::prompt::tools(),
+        "tool_to_action_kind": {
+            "return_answer": "answer",
+            "request_clarification": "clarification",
+            "run_shell": "shell",
+            "run_program": "program",
+            "require_parent_shell": "parent_shell",
+        },
     })
 }
 
@@ -198,5 +221,59 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(rejection_code(&error), "invalid_requirement");
+    }
+
+    // Plan 19 W10: Rust owns the wire-tool to action-kind mapping; external
+    // tooling consumes it from describe instead of a second table.
+
+    #[test]
+    fn audit19_qualification_tool_to_action_kind_matches_canonical_actions() {
+        for (tool, expected) in [
+            ("return_answer", "answer"),
+            ("request_clarification", "clarification"),
+            ("run_shell", "shell"),
+            ("run_program", "program"),
+            ("require_parent_shell", "parent_shell"),
+        ] {
+            let kind = tool_to_action_kind(tool).unwrap_or_else(|| panic!("{tool} unmapped"));
+            assert_eq!(kind, expected);
+            // Every mapped pair ties to the decoded canonical action and the
+            // runtime action type of that action.
+            let envelope = match tool {
+                "return_answer" => serde_json::json!({"text":"done"}),
+                "request_clarification" => serde_json::json!({"question":"which?"}),
+                "run_shell" => {
+                    serde_json::json!({"command":"true","summary":"s","assumptions":[],"effects":["read_local"],"requirements":[],"stdin_mode":"none"})
+                }
+                "run_program" => {
+                    serde_json::json!({"runtime":"python3","contract":"uhm_helper_v1","source":"pass","summary":"s","assumptions":[],"stdin_mode":"none","files":[],"effects":["read_local"]})
+                }
+                _ => {
+                    serde_json::json!({"kind":"set_environment","name":"UHM_X","value":"1","summary":"s","assumptions":[],"effects":["shell_state"]})
+                }
+            };
+            let action = decode_and_validate(tool, envelope)
+                .unwrap_or_else(|error| panic!("{tool} must decode: {error}"));
+            assert_eq!(
+                crate::model_selection::action_type(&action),
+                kind,
+                "{tool} decoded action must map to its kind"
+            );
+        }
+    }
+
+    #[test]
+    fn audit19_qualification_unknown_wire_names_are_rejected() {
+        for tool in ["run_shell_command", "probe_subcommand", "run_shell ", ""] {
+            assert!(
+                tool_to_action_kind(tool).is_none(),
+                "{tool:?} must not map to an action kind"
+            );
+        }
+        let described = description();
+        let mapping = &described["tool_to_action_kind"];
+        assert_eq!(described["contract_version"], 2);
+        assert_eq!(mapping.as_object().unwrap().len(), 5);
+        assert!(mapping.get("probe_subcommand").is_none());
     }
 }

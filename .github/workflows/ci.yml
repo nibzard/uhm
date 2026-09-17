@@ -120,6 +120,9 @@ jobs:
           cache: npm
           cache-dependency-path: telemetry-worker/package-lock.json
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Worker dependencies
         run: npm ci
         working-directory: telemetry-worker
@@ -127,6 +130,15 @@ jobs:
       - name: Test strict ingestion gateway
         run: npm test
         working-directory: telemetry-worker
+
+      - name: Build CLI for the telemetry contract
+        run: cargo build --locked --bin uhm
+
+      - name: Check real CLI payload against the local Worker
+        run: node scripts/test-telemetry-contract.mjs target/debug/uhm
+
+      - name: Check documentation drift
+        run: python3 scripts/check-docs.py
 
   provider-runner:
     name: Provider runner contract
@@ -141,11 +153,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install runner dependencies
         run: python -m pip install --disable-pip-version-check jsonschema
 
       - name: Check offline runner contract
         run: python3 scripts/provider-bakeoff.py --self-test
+
+      - name: Run offline Python contracts
+        run: >
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest
+          benchmark/test_benchmark.py benchmark/test_containment.py
 
   demo-assets:
     name: Demo assets

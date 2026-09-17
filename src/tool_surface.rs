@@ -123,12 +123,47 @@ fn is_ubiquitous(name: &str) -> bool {
     UBIQUITOUS_TOOLS.contains(&name) || crate::context::TOOL_CATALOG.contains(&name)
 }
 
-/// Flags tried in order. The first successful, non-empty response wins. Every
-/// one is a request for self-description, never an operand.
-const HELP_FLAGS: [&str; 3] = ["--help", "help", "-h"];
+/// The only argv used to request a tool's self-description. Consent discloses
+/// exactly `--help`; a positional operand (`help`) or a short flag (`-h`) is a
+/// convention some tools honor, not a generic help request, so a tool that
+/// does not answer `--help` contributes no help rather than risk running an
+/// undisclosed operand.
+const HELP_FLAGS: [&str; 1] = ["--help"];
 
-const STORE_VERSION: u32 = 1;
+const STORE_VERSION: u32 = 2;
+const LEGACY_STORE_VERSION: u32 = 1;
 const STORE_FILE: &str = "tool-surface.json";
+
+/// A human's answer to one consent prompt, or the fact that nobody could
+/// answer. `Unavailable` is never a user's decision: it authorizes nothing
+/// and is never persisted, so an unanswered first encounter is re-asked the
+/// next time instead of being remembered as a decline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Consent {
+    Allow,
+    Decline,
+    Unavailable,
+}
+
+/// Machine-time budget shared by every probe of one request. Waiting for a
+/// human consent answer suspends the accounting; each probe's absolute
+/// deadline is created after its consent from whatever remains, and a slow
+/// probe spends the budget that later tools would have used.
+pub struct ProbeBudget {
+    remaining: std::time::Duration,
+}
+
+impl ProbeBudget {
+    pub fn new(total: std::time::Duration) -> Self {
+        Self { remaining: total }
+    }
+    fn next_deadline(&mut self) -> std::time::Instant {
+        std::time::Instant::now() + self.remaining
+    }
+    fn consume(&mut self, used: std::time::Duration) {
+        self.remaining = self.remaining.saturating_sub(used);
+    }
+}
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Store {
@@ -140,7 +175,10 @@ struct Store {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct Record {
-    allowed: bool,
+    /// The persisted human decision: `Some(true)` allowed, `Some(false)`
+    /// declined. `None` is an unresolved encounter and authorizes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decision: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     help: Option<String>,
     /// Plan 18: help observed for named subcommands of this tool, in the order
@@ -149,6 +187,22 @@ struct Record {
     /// binary is a different identity key, so these never carry across versions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subcommands: Vec<SubcommandHelp>,
+}
+
+/// The store shape before consent answers distinguished a decline from an
+/// unanswered prompt, kept only for one-time migration.
+#[derive(serde::Deserialize)]
+struct LegacyRecord {
+    allowed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    subcommands: Vec<SubcommandHelp>,
+}
+
+#[derive(serde::Deserialize)]
+struct LegacyStore {
+    tools: std::collections::BTreeMap<String, LegacyRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -165,40 +219,83 @@ pub struct Observed {
 }
 
 fn load(data_dir: &Path) -> Store {
-    std::fs::read_to_string(data_dir.join(STORE_FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Store>(&text).ok())
-        .filter(|store| store.version == STORE_VERSION)
-        .unwrap_or_else(|| Store {
-            version: STORE_VERSION,
-            tools: Default::default(),
-        })
+    let text = std::fs::read_to_string(data_dir.join(STORE_FILE)).ok();
+    let store = (|| {
+        let text = text?;
+        let version = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()?
+            .get("version")?
+            .as_u64()?;
+        match version {
+            value if value == STORE_VERSION as u64 => serde_json::from_str::<Store>(&text).ok(),
+            value if value == LEGACY_STORE_VERSION as u64 => {
+                serde_json::from_str::<LegacyStore>(&text)
+                    .ok()
+                    .map(migrate_legacy)
+            }
+            // An unknown future version resets to an empty store: no
+            // remembered answer can silently authorize a probe.
+            _ => None,
+        }
+    })();
+    store.unwrap_or_else(|| Store {
+        version: STORE_VERSION,
+        tools: Default::default(),
+    })
+}
+
+/// One-time migration from the boolean store. A legacy `false` has
+/// unknowable provenance — nobody may ever have answered — so it drops to
+/// unknown and is re-asked the next time a human is available; a legacy
+/// allow and its retained help stay valid.
+fn migrate_legacy(legacy: LegacyStore) -> Store {
+    Store {
+        version: STORE_VERSION,
+        tools: legacy
+            .tools
+            .into_iter()
+            .map(|(key, record)| {
+                (
+                    key,
+                    Record {
+                        decision: record.allowed.then_some(true),
+                        help: record.help,
+                        subcommands: record.subcommands,
+                    },
+                )
+            })
+            .collect(),
+    }
 }
 
 fn save(data_dir: &Path, store: &Store) -> Result<(), String> {
+    use std::io::Write as _;
     crate::dirs::ensure_private_dir(data_dir)?;
     let bytes =
         serde_json::to_vec(store).map_err(|e| format!("serialize tool surface store: {e}"))?;
     let path = data_dir.join(STORE_FILE);
-    let temporary = data_dir.join(format!("{STORE_FILE}.tmp"));
-    write_private(&temporary, &bytes)?;
-    std::fs::rename(&temporary, &path).map_err(|e| format!("publish tool surface store: {e}"))
-}
-
-fn write_private(path: &Path, contents: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    // A unique private same-directory temporary, never a fixed shared name:
+    // concurrent invocations cannot collide on or clobber each other's answer.
+    let temporary = tempfile::Builder::new()
+        .prefix(".uhm-tool-surface-")
+        .tempfile_in(data_dir)
+        .map_err(|e| format!("create tool surface store temporary: {e}"))?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt;
+        temporary
+            .as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("secure tool surface store temporary: {e}"))?;
     }
-    let mut file = options
-        .open(path)
-        .map_err(|e| format!("open {}: {e}", path.display()))?;
-    file.write_all(contents)
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    temporary
+        .as_file()
+        .write_all(&bytes)
+        .map_err(|e| format!("write tool surface store: {e}"))?;
+    temporary
+        .persist(&path)
+        .map_err(|e| format!("publish tool surface store: {}", e.error))?;
+    Ok(())
 }
 
 fn probe(identity: &Identity, deadline: std::time::Instant) -> Option<String> {
@@ -215,11 +312,16 @@ fn probe(identity: &Identity, deadline: std::time::Instant) -> Option<String> {
 /// Ubiquitous standard tools are skipped before resolution: they are never
 /// probed, never prompted about, and never occupy one of the `MAX_TOOLS` slots.
 ///
-/// `ask` is consulted at most once per distinct binary and its answer is
-/// persisted, so an allowed tool is probed silently afterwards and a declined
-/// one is never asked about again until its bytes change. Probing runs local
-/// programs, so a caller without a terminal must pass an `ask` that declines;
-/// already-allowed tools still resolve from the record.
+/// `ask` is consulted at most once per distinct binary and only an actual
+/// `Allow` or `Decline` is persisted, so an allowed tool is probed silently
+/// afterwards and a declined one is never asked about again until its bytes
+/// change. A caller that cannot prompt returns `Unavailable`: nothing runs,
+/// nothing is remembered, and the tool is re-asked when a human is present.
+///
+/// `budget` is the shared machine time for every probe of this request. Each
+/// probe's absolute deadline is created after its consent answer, so waiting
+/// for the human never spends the budget, and slow probes leave less for the
+/// remaining tools.
 ///
 /// `search` is the directory list to resolve names against, passed in rather
 /// than read from the environment so behavior is explicit and testable.
@@ -227,8 +329,8 @@ pub fn surface(
     intent: &str,
     data_dir: &Path,
     search: &[PathBuf],
-    deadline: std::time::Instant,
-    ask: &mut dyn FnMut(&Identity) -> bool,
+    budget: &mut ProbeBudget,
+    ask: &mut dyn FnMut(&Identity) -> Consent,
 ) -> Vec<Observed> {
     let identities: Vec<Identity> = tokens(intent)
         .into_iter()
@@ -249,35 +351,55 @@ pub fn surface(
     for identity in identities {
         let key = identity.key();
         let known = store.tools.get(&key);
-        let allowed = match known {
-            Some(record) => record.allowed,
-            None => {
-                let answer = ask(&identity);
-                store.tools.insert(
-                    key.clone(),
-                    Record {
-                        allowed: answer,
-                        help: None,
-                        subcommands: Vec::new(),
-                    },
-                );
-                dirty = true;
-                answer
-            }
+        let allowed = match known.and_then(|record| record.decision) {
+            Some(allowed) => allowed,
+            None => match ask(&identity) {
+                Consent::Allow => {
+                    store.tools.insert(
+                        key.clone(),
+                        Record {
+                            decision: Some(true),
+                            help: None,
+                            subcommands: Vec::new(),
+                        },
+                    );
+                    dirty = true;
+                    true
+                }
+                Consent::Decline => {
+                    store.tools.insert(
+                        key.clone(),
+                        Record {
+                            decision: Some(false),
+                            help: None,
+                            subcommands: Vec::new(),
+                        },
+                    );
+                    dirty = true;
+                    false
+                }
+                // Nobody could answer: run nothing, persist nothing.
+                Consent::Unavailable => continue,
+            },
         };
         if !allowed {
             continue;
         }
         // Ensure the top-level help is retained, probing once per identity.
         // Mutate in place so any retained subcommands survive a fresh top-level
-        // probe instead of being replaced by a bare Record.
+        // probe instead of being replaced by a bare Record. The deadline is
+        // created here, after consent, from the remaining machine budget.
         if store
             .tools
             .get(&key)
             .and_then(|record| record.help.clone())
             .is_none()
         {
-            match probe(&identity, deadline) {
+            let deadline = budget.next_deadline();
+            let started = std::time::Instant::now();
+            let fresh = probe(&identity, deadline);
+            budget.consume(started.elapsed());
+            match fresh {
                 Some(fresh) => {
                     if let Some(record) = store.tools.get_mut(&key) {
                         record.help = Some(fresh);
@@ -415,7 +537,7 @@ pub fn probe_subcommand(
     let Some(record) = store.tools.get(&identity.key()) else {
         return ProbeResult::Invalid;
     };
-    if !record.allowed {
+    if record.decision != Some(true) {
         return ProbeResult::Invalid;
     }
     // Rule: the subcommand must appear verbatim as a word in the retained
@@ -633,10 +755,10 @@ mod tests {
             "run probeme now",
             data.path(),
             &search,
-            deadline(),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
             &mut |_| {
                 asked += 1;
-                true
+                Consent::Allow
             },
         );
         assert_eq!(asked, 1);
@@ -649,10 +771,10 @@ mod tests {
             "run probeme now",
             data.path(),
             &search,
-            deadline(),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
             &mut |_| {
                 asked += 1;
-                true
+                Consent::Allow
             },
         );
         assert_eq!(asked, 1, "an allowed tool must not be asked about again");
@@ -671,10 +793,10 @@ mod tests {
                 "use nope please",
                 data.path(),
                 &search,
-                deadline(),
+                &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
                 &mut |_| {
                     asked += 1;
-                    false
+                    Consent::Decline
                 },
             );
             assert!(observed.is_empty(), "{observed:?}");
@@ -695,17 +817,29 @@ mod tests {
         let search = vec![dir.path().to_path_buf()];
         let data = tempfile::tempdir().unwrap();
         let mut asked = 0;
-        let before = surface("call drifty", data.path(), &search, deadline(), &mut |_| {
-            asked += 1;
-            true
-        });
+        let before = surface(
+            "call drifty",
+            data.path(),
+            &search,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| {
+                asked += 1;
+                Consent::Allow
+            },
+        );
         assert!(before[0].help.contains("drifty one"));
         std::fs::write(&path, "#!/bin/sh\necho 'usage: drifty two, rewritten'\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let after = surface("call drifty", data.path(), &search, deadline(), &mut |_| {
-            asked += 1;
-            true
-        });
+        let after = surface(
+            "call drifty",
+            data.path(),
+            &search,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| {
+                asked += 1;
+                Consent::Allow
+            },
+        );
         assert_eq!(asked, 2, "a rewritten binary is a different tool");
         assert!(after[0].help.contains("rewritten"), "{after:?}");
     }
@@ -716,9 +850,13 @@ mod tests {
         let (dir, _) = fake_tool("silent", "#!/bin/sh\nexit 3\n");
         let search = vec![dir.path().to_path_buf()];
         let data = tempfile::tempdir().unwrap();
-        let observed = surface("run silent", data.path(), &search, deadline(), &mut |_| {
-            true
-        });
+        let observed = surface(
+            "run silent",
+            data.path(),
+            &search,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
+        );
         assert!(observed.is_empty(), "{observed:?}");
     }
 
@@ -735,7 +873,7 @@ mod tests {
             "mv drive to blaxel-drive",
             data.path(),
             &search,
-            deadline(),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
             &mut |identity| panic!("a ubiquitous tool must not prompt: {}", identity.name),
         );
         assert!(observed.is_empty(), "{observed:?}");
@@ -755,7 +893,7 @@ mod tests {
             "git status please",
             data.path(),
             &search,
-            deadline(),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
             &mut |identity| panic!("a catalog tool must not prompt: {}", identity.name),
         );
         assert!(observed.is_empty(), "{observed:?}");
@@ -776,8 +914,8 @@ mod tests {
             "mv grep sed alfa bravo charlie",
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
-            &mut |_| true,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
         );
         let names: Vec<&str> = observed.iter().map(|item| item.name.as_str()).collect();
         assert_eq!(
@@ -796,10 +934,10 @@ mod tests {
             "summarize the quarterly report",
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
             &mut |_| {
                 asked += 1;
-                true
+                Consent::Allow
             },
         );
         assert!(observed.is_empty());
@@ -826,8 +964,8 @@ mod tests {
             "bulkone bulktwo bulkthree",
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
-            &mut |_| true,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
         );
         let total: usize = observed.iter().map(|item| item.help.len()).sum();
         assert!(total <= MAX_TOTAL_BYTES, "{total} exceeded the ceiling");
@@ -853,10 +991,10 @@ mod tests {
             &names.join(" "),
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
             &mut |_| {
                 asked += 1;
-                true
+                Consent::Allow
             },
         );
         assert_eq!(observed.len(), MAX_TOOLS);
@@ -913,8 +1051,8 @@ mod tests {
             &format!("run {name} now"),
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
-            &mut |_| true,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
         );
         (dir, data)
     }
@@ -979,8 +1117,8 @@ mod tests {
             "run nope now",
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
-            &mut |_| false,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Decline,
         );
         let outcome = probe_subcommand(
             data.path(),
@@ -1021,7 +1159,7 @@ mod tests {
         assert!(load(data.path())
             .tools
             .values()
-            .any(|record| record.allowed && record.help.is_none()));
+            .any(|record| record.decision == Some(true) && record.help.is_none()));
         let outcome = probe_subcommand(
             data.path(),
             &[dir.path().to_path_buf()],
@@ -1043,8 +1181,8 @@ mod tests {
             "run drifty now",
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
-            &mut |_| true,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
         );
         // Rewrite the binary: a different identity key, so the old consent no
         // longer matches and the probe is refused rather than run silently.
@@ -1094,7 +1232,11 @@ mod tests {
         );
         // The deeper help is retained for the subcommand exactly once.
         let store = load(data.path());
-        let record = store.tools.values().find(|record| record.allowed).unwrap();
+        let record = store
+            .tools
+            .values()
+            .find(|record| record.decision == Some(true))
+            .unwrap();
         assert_eq!(record.subcommands.len(), 1);
         assert_eq!(record.subcommands[0].subcommand, "sessions");
         assert!(record.subcommands[0].help.contains("list"));
@@ -1105,7 +1247,7 @@ mod tests {
             "run probeme sessions",
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
             &mut |_| panic!("a warm store must not ask for consent again"),
         );
         assert_eq!(observed.len(), 1);
@@ -1123,8 +1265,222 @@ mod tests {
         );
         assert_eq!(again, ProbeResult::Probed);
         let store = load(data.path());
-        let record = store.tools.values().find(|record| record.allowed).unwrap();
+        let record = store
+            .tools
+            .values()
+            .find(|record| record.decision == Some(true))
+            .unwrap();
         assert_eq!(record.subcommands.len(), 1, "upsert must not duplicate");
+    }
+
+    /// Install a probeable fake tool that appends the argv of every invocation
+    /// to `argv.log` beside it, so tests can prove exactly what ran.
+    #[cfg(unix)]
+    fn logging_tool(name: &str, body: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        let log = dir.path().join("argv.log");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}",
+            log.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, path)
+    }
+
+    /// One line per invocation of the logging tool: its exact argv.
+    #[cfg(unix)]
+    fn argv_log(dir: &tempfile::TempDir) -> Vec<String> {
+        std::fs::read_to_string(dir.path().join("argv.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_nonzero_exit_does_not_fall_back_to_positional_help() {
+        let (dir, _) = logging_tool(
+            "gotcha",
+            "if [ \"$1\" = \"--help\" ]; then exit 1; fi\n\
+             if [ \"$1\" = \"help\" ]; then echo 'usage: gotcha positional action'; exit 0; fi\n\
+             if [ \"$1\" = \"-h\" ]; then echo 'usage: gotcha short flag'; exit 0; fi\n\
+             exit 5\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "run gotcha now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
+        );
+        assert!(
+            observed.is_empty(),
+            "a failing --help must yield no surface: {observed:?}"
+        );
+        assert_eq!(
+            argv_log(&dir),
+            vec!["--help"],
+            "only the disclosed --help argv may run"
+        );
+        let store = load(data.path());
+        assert!(
+            store.tools.values().all(|record| record.help.is_none()),
+            "a positional fallback must not be retained as help"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_empty_stdout_does_not_fall_back_to_positional_help() {
+        // `--help` succeeds with empty output; only guessed operands answer.
+        let (dir, _) = logging_tool(
+            "gotcha",
+            "if [ \"$1\" = \"help\" ]; then echo 'usage: gotcha positional action'; exit 0; fi\n\
+             if [ \"$1\" = \"-h\" ]; then echo 'usage: gotcha short flag'; exit 0; fi\n\
+             exit 0\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "run gotcha now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
+        );
+        assert!(observed.is_empty(), "{observed:?}");
+        assert_eq!(argv_log(&dir), vec!["--help"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_working_help_is_retained_from_the_disclosed_flag_alone() {
+        let (dir, _) = logging_tool(
+            "probeme",
+            "if [ \"$1\" = \"--help\" ]; then echo 'usage: probeme <command>'; exit 0; fi\n\
+             echo 'an action operand ran'; exit 0\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "run probeme now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
+        );
+        assert_eq!(observed.len(), 1, "{observed:?}");
+        assert!(observed[0].help.contains("usage: probeme"));
+        assert!(!observed[0].help.contains("an action operand ran"));
+        assert_eq!(argv_log(&dir), vec!["--help"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_subcommand_probe_never_tries_a_positional_operand() {
+        let (dir, _) = logging_tool(
+            "probeme",
+            "if [ \"$1\" = \"--help\" ]; then echo 'usage: probeme sessions'; exit 0; fi\n\
+             if [ \"$1\" = \"sessions\" ]; then\n\
+             \tif [ \"$2\" = \"--help\" ]; then exit 1; fi\n\
+             \tif [ \"$2\" = \"help\" ]; then echo 'usage: probeme sessions positional'; exit 0; fi\n\
+             \tif [ \"$2\" = \"-h\" ]; then echo 'usage: probeme sessions short'; exit 0; fi\n\
+             fi\n\
+             exit 3\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        surface(
+            "run probeme now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
+        );
+        let outcome = probe_subcommand(
+            data.path(),
+            &[dir.path().to_path_buf()],
+            "probeme",
+            "sessions",
+            deadline(),
+            &mut |_| {},
+        );
+        assert_eq!(outcome, ProbeResult::Empty);
+        assert_eq!(
+            argv_log(&dir),
+            vec!["--help", "sessions --help"],
+            "the subcommand probe may use only the disclosed --help argv"
+        );
+        let store = load(data.path());
+        let record = store
+            .tools
+            .values()
+            .find(|record| record.decision == Some(true))
+            .unwrap();
+        assert!(
+            record.subcommands.is_empty(),
+            "a positional fallback must not persist: {:?}",
+            record.subcommands
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_subcommand_working_help_still_probes() {
+        let (dir, _) = logging_tool(
+            "probeme",
+            "if [ \"$1\" = \"--help\" ]; then echo 'usage: probeme sessions'; exit 0; fi\n\
+             if [ \"$1\" = \"sessions\" ] && [ \"$2\" = \"--help\" ]; then\n\
+             \techo 'usage: probeme sessions <verb>'; exit 0\n\
+             fi\n\
+             echo 'an action operand ran'; exit 0\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        surface(
+            "run probeme now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
+        );
+        let outcome = probe_subcommand(
+            data.path(),
+            &[dir.path().to_path_buf()],
+            "probeme",
+            "sessions",
+            deadline(),
+            &mut |_| {},
+        );
+        assert_eq!(outcome, ProbeResult::Probed);
+        assert_eq!(argv_log(&dir), vec!["--help", "sessions --help"]);
+        let store = load(data.path());
+        let record = store
+            .tools
+            .values()
+            .find(|record| record.decision == Some(true))
+            .unwrap();
+        assert_eq!(record.subcommands.len(), 1);
+        assert!(record.subcommands[0].help.contains("<verb>"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_a_declined_tool_is_never_executed() {
+        let (dir, _) = logging_tool("nope", "echo 'usage: nope'; exit 0\n");
+        let data = tempfile::tempdir().unwrap();
+        surface(
+            "run nope now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Decline,
+        );
+        assert!(
+            argv_log(&dir).is_empty(),
+            "a declined tool must not run at all"
+        );
     }
 
     #[cfg(unix)]
@@ -1150,15 +1506,282 @@ mod tests {
             "run probeme sessions",
             data.path(),
             &[dir.path().to_path_buf()],
-            deadline(),
-            &mut |_| true,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |_| Consent::Allow,
         );
         assert_eq!(observed.len(), 1);
         let store = load(data.path());
-        let record = store.tools.values().find(|record| record.allowed).unwrap();
+        let record = store
+            .tools
+            .values()
+            .find(|record| record.decision == Some(true))
+            .unwrap();
         assert!(
             record.subcommands.is_empty(),
             "an empty probe must not persist"
+        );
+    }
+
+    // Plan 19 W09: a consent answer is a human decision; a missing prompt is
+    // not, and machine time does not include the time a human spends thinking.
+
+    fn audit19_budget() -> ProbeBudget {
+        ProbeBudget::new(std::time::Duration::from_secs(10))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_consent_unavailable_is_not_persisted_and_is_reasked() {
+        let (dir, _) = fake_tool("probeme", "#!/bin/sh\necho 'usage: probeme <command>'\n");
+        let search = vec![dir.path().to_path_buf()];
+        let data = tempfile::tempdir().unwrap();
+        // First encounter without a prompt: nothing runs, nothing persists.
+        let observed = surface(
+            "run probeme now",
+            data.path(),
+            &search,
+            &mut audit19_budget(),
+            &mut |_| Consent::Unavailable,
+        );
+        assert!(observed.is_empty());
+        assert!(
+            !data.path().join(STORE_FILE).exists(),
+            "an unanswered prompt must not persist a decision"
+        );
+        // The same identity is asked again once a human is present, and only
+        // that actual answer persists.
+        let mut asked = 0;
+        let observed = surface(
+            "run probeme now",
+            data.path(),
+            &search,
+            &mut audit19_budget(),
+            &mut |_| {
+                asked += 1;
+                Consent::Allow
+            },
+        );
+        assert_eq!(asked, 1);
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0].help.contains("usage: probeme"));
+        let store = load(data.path());
+        assert_eq!(store.version, STORE_VERSION);
+        assert!(store
+            .tools
+            .values()
+            .all(|record| record.decision == Some(true)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_consent_explicit_answers_are_remembered() {
+        // A decline is remembered and never re-asked or probed.
+        let (dir, _) = logging_tool("nope", "#!/bin/sh\necho 'usage: nope'\n");
+        let search = vec![dir.path().to_path_buf()];
+        let data = tempfile::tempdir().unwrap();
+        let mut asked = 0;
+        for _ in 0..2 {
+            let observed = surface(
+                "use nope please",
+                data.path(),
+                &search,
+                &mut audit19_budget(),
+                &mut |_| {
+                    asked += 1;
+                    Consent::Decline
+                },
+            );
+            assert!(observed.is_empty());
+        }
+        assert_eq!(asked, 1, "a declined tool must not be re-asked");
+        assert!(argv_log(&dir).is_empty(), "a declined tool must never run");
+        let store = load(data.path());
+        assert!(store
+            .tools
+            .values()
+            .all(|record| record.decision == Some(false)));
+
+        // An explicit allow is remembered across reloads.
+        let (dir, _) = fake_tool("yesme", "#!/bin/sh\necho 'usage: yesme'\n");
+        let search = vec![dir.path().to_path_buf()];
+        let data = tempfile::tempdir().unwrap();
+        let first = surface(
+            "use yesme please",
+            data.path(),
+            &search,
+            &mut audit19_budget(),
+            &mut |_| Consent::Allow,
+        );
+        let second = surface(
+            "use yesme please",
+            data.path(),
+            &search,
+            &mut audit19_budget(),
+            &mut |_| panic!("an allowed tool must not be re-asked"),
+        );
+        assert_eq!(first, second);
+        // New explicit declines survive a reload too.
+        let store = load(data.path());
+        assert_eq!(store.version, STORE_VERSION);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_consent_a_delayed_affirmative_still_probes() {
+        // The human spends longer than the whole machine budget answering;
+        // the probe deadline must start after the answer, not before it. The
+        // margins keep the ordering decisive on a loaded test host: a
+        // deadline created before the answer is long dead when the probe
+        // runs, while one created after it still has the full budget.
+        let (dir, _) = fake_tool("probeme", "#!/bin/sh\necho 'usage: probeme fast'\n");
+        let search = vec![dir.path().to_path_buf()];
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "run probeme now",
+            data.path(),
+            &search,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(3)),
+            &mut |_| {
+                std::thread::sleep(std::time::Duration::from_secs(6));
+                Consent::Allow
+            },
+        );
+        assert_eq!(observed.len(), 1, "{observed:?}");
+        assert!(observed[0].help.contains("usage: probeme fast"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_consent_slow_probes_exhaust_the_shared_budget() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        for name in ["slowme", "fastme"] {
+            let body = if name == "slowme" {
+                "#!/bin/sh\nsleep 2\necho 'usage: slowme'\n"
+            } else {
+                "#!/bin/sh\necho 'usage: fastme'\n"
+            };
+            let path = dir.path().join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let observed = surface(
+            "slowme fastme",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            &mut ProbeBudget::new(std::time::Duration::from_millis(300)),
+            &mut |_| Consent::Allow,
+        );
+        // The slow first probe spent the whole shared budget; the fast second
+        // tool gets no fresh budget of its own.
+        assert!(
+            observed.is_empty(),
+            "a slow probe must exhaust the shared budget: {observed:?}"
+        );
+        let store = load(data.path());
+        assert!(store
+            .tools
+            .values()
+            .all(|record| record.decision == Some(true) && record.help.is_none()));
+    }
+
+    #[test]
+    fn audit19_consent_store_migrates_v1_and_drops_legacy_declines() {
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(
+            data.path().join(STORE_FILE),
+            concat!(
+                "{\"version\":1,\"tools\":{",
+                "\"allowed-key\":{\"allowed\":true,\"help\":\"usage: kept\"},",
+                "\"declined-key\":{\"allowed\":false},",
+                "\"unhelped-key\":{\"allowed\":true}",
+                "}}"
+            ),
+        )
+        .unwrap();
+        let store = load(data.path());
+        assert_eq!(store.version, STORE_VERSION);
+        let allowed = store.tools.get("allowed-key").unwrap();
+        assert_eq!(allowed.decision, Some(true));
+        assert_eq!(allowed.help.as_deref(), Some("usage: kept"));
+        // A legacy false cannot be distinguished from an unanswered prompt:
+        // it drops to unknown and authorizes nothing.
+        assert_eq!(store.tools.get("declined-key").unwrap().decision, None);
+        assert_eq!(
+            store.tools.get("unhelped-key").unwrap().decision,
+            Some(true)
+        );
+        assert_eq!(
+            store.tools.get("unhelped-key").unwrap().help,
+            None,
+            "no help is invented during migration"
+        );
+    }
+
+    #[test]
+    fn audit19_consent_store_rejects_unknown_versions_and_corruption_conservatively() {
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(
+            data.path().join(STORE_FILE),
+            "{\"version\":9,\"tools\":{\"k\":{\"decision\":true}}}",
+        )
+        .unwrap();
+        let store = load(data.path());
+        assert!(
+            store.tools.is_empty(),
+            "an unknown version authorizes nothing"
+        );
+        std::fs::write(data.path().join(STORE_FILE), "not json").unwrap();
+        let store = load(data.path());
+        assert!(store.tools.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_consent_a_forged_or_stale_decision_cannot_authorize_a_probe() {
+        // A decision that is not an explicit allow — unknown, declined, or a
+        // migrated legacy false — refuses the machine-answered deepening too.
+        // The store record is planted under the tool's real identity key so
+        // the gate itself is exercised, not just the lookup path.
+        let (dir, path) = fake_tool("probeme", "#!/bin/sh\necho 'usage: probeme sessions'\n");
+        let data = tempfile::tempdir().unwrap();
+        let identity = Identity::resolve("probeme", &path).unwrap();
+        let key = identity.key();
+        for planted in [
+            // Unresolved encounter: no decision field at all.
+            format!("{{\"version\":2,\"tools\":{{\"{key}\":{{}}}}}}"),
+            // Explicit decline for the real identity.
+            format!("{{\"version\":2,\"tools\":{{\"{key}\":{{\"decision\":false}}}}}}"),
+        ] {
+            std::fs::write(data.path().join(STORE_FILE), planted.clone()).unwrap();
+            let outcome = probe_subcommand(
+                data.path(),
+                &[dir.path().to_path_buf()],
+                "probeme",
+                "sessions",
+                deadline(),
+                &mut |_| panic!("a non-allow decision must not narrate"),
+            );
+            assert_eq!(outcome, ProbeResult::Invalid, "planted store: {planted}");
+        }
+    }
+
+    #[test]
+    fn audit19_consent_save_leaves_no_fixed_temporary_name() {
+        let data = tempfile::tempdir().unwrap();
+        save(
+            data.path(),
+            &Store {
+                version: STORE_VERSION,
+                tools: Default::default(),
+            },
+        )
+        .unwrap();
+        assert!(data.path().join(STORE_FILE).exists());
+        assert!(
+            !data.path().join(format!("{STORE_FILE}.tmp")).exists(),
+            "publication must use a unique temporary, not a fixed shared name"
         );
     }
 }

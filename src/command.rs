@@ -90,6 +90,25 @@ impl Budget {
     }
 }
 
+fn tool_probe_consent(
+    interactive: bool,
+    identity_name: &str,
+    ask_user: &mut dyn FnMut(&str) -> bool,
+) -> tool_surface::Consent {
+    if !interactive {
+        return tool_surface::Consent::Unavailable;
+    }
+    let prompt = format!(
+        "Run `{} --help` to learn its interface? [y/N] ",
+        ansi::sanitize_untrusted_inline(identity_name)
+    );
+    if ask_user(&prompt) {
+        tool_surface::Consent::Allow
+    } else {
+        tool_surface::Consent::Decline
+    }
+}
+
 /// Why a shell-route job can never be verified-restorable: recorded on its
 /// history event and rendered on the proposal block.
 const SHELL_RECOVERY_REASON: &str = "shell execution has a receipt but no controlled preimage";
@@ -106,6 +125,7 @@ pub fn handle(
     route: &str,
     stdin: &crate::input::Spool,
     disclosure_marker: &str,
+    python: &crate::runtime::PythonInventory,
     interaction: &mut telemetry::Interaction,
     preset_action: Option<ProposedAction>,
     related_run_id: Option<&str>,
@@ -154,13 +174,14 @@ pub fn handle(
     let local_alias = alias.is_some();
     let mut snapshot = if local_alias {
         interaction.suppress();
-        context::gather(
+        context::gather_with_inventory(
             context::Mode::Minimal,
             &shell_name,
             config.context_timeout_ms,
+            python,
         )
     } else {
-        context::gather(mode, &shell_name, config.context_timeout_ms)
+        context::gather_with_inventory(mode, &shell_name, config.context_timeout_ms, python)
     };
     // Plan 18: the names actually shown in this request's surface. A later
     // probe may only name one of these, so an unconsented binary is unreachable.
@@ -168,20 +189,20 @@ pub fn handle(
     if !local_alias && mode != context::Mode::Minimal {
         // Probing runs a local program, so consent is required before the first
         // probe of a binary and is then remembered. Without a terminal there is
-        // nobody to ask, so only tools already allowed contribute.
+        // nobody to ask — that is an unanswered prompt, not a decline, so only
+        // tools already allowed contribute and nothing is persisted. The
+        // machine budget suspends while a human answers; each probe deadline
+        // is created after consent from what remains.
         let interactive = tty_available() && !args.json;
+        let mut ask_tool = |prompt: &str| ask(prompt);
+        let mut budget =
+            tool_surface::ProbeBudget::new(Duration::from_millis(config.context_timeout_ms));
         let observed = tool_surface::surface(
             request,
             &config.paths.data_dir,
             &context::path_entries(),
-            Instant::now() + Duration::from_millis(config.context_timeout_ms),
-            &mut |identity| {
-                interactive
-                    && ask(&format!(
-                        "Run `{} --help` to learn its interface? [y/N] ",
-                        ansi::sanitize_untrusted_inline(&identity.name)
-                    ))
-            },
+            &mut budget,
+            &mut |identity| tool_probe_consent(interactive, &identity.name, &mut ask_tool),
         );
         named_tool_names = observed.iter().map(|item| item.name.clone()).collect();
         context::add_tool_surface(&mut snapshot, &observed);
@@ -428,7 +449,7 @@ pub fn handle(
                     request,
                     &snapshot,
                     stdin.model_value_for(args.local_input, args.input_format.as_deref()),
-                    Some(json!({"kind":"clarification","answer":answer})),
+                    Some(clarification_follow_up(&question, &answer)),
                     &shell_name,
                     &run_id,
                     mode,
@@ -1766,8 +1787,12 @@ pub fn handle(
                             request,
                             &config.paths.data_dir,
                             &context::path_entries(),
-                            Instant::now() + Duration::from_millis(config.context_timeout_ms),
-                            &mut |_| false,
+                            &mut tool_surface::ProbeBudget::new(Duration::from_millis(
+                                config.context_timeout_ms,
+                            )),
+                            // No human is prompted mid-request; an unresolved
+                            // identity here is unanswered, never a decline.
+                            &mut |_| tool_surface::Consent::Unavailable,
                         );
                         context::add_tool_surface(&mut snapshot, &deepened);
                         budget.set_expansion_outcome("probed");
@@ -2088,15 +2113,10 @@ fn propose(
             api_config.provider,
         ) {
             if let Ok(action) = api::parse_response(api_config, &raw) {
-                let profile_allowed =
-                    api_config
-                        .permitted_action_types
-                        .as_ref()
-                        .is_none_or(|allowed| {
-                            allowed
-                                .iter()
-                                .any(|value| value == model_selection::action_type(&action))
-                        });
+                let profile_allowed = model_selection::action_permitted(
+                    api_config.permitted_action_types.as_ref(),
+                    &action,
+                );
                 if args.verbose {
                     eprintln!("uhm: cache hit {}", &key[..8]);
                 }
@@ -2417,23 +2437,36 @@ fn write_command(mut out: impl Write, command: &str, terminal: bool) -> std::io:
     }
     out.flush()
 }
-fn clarification(args: &Args, q: &str) -> i32 {
+/// The follow-up payload for a clarification answer. The model's question
+/// travels with the user's answer — a free-text answer is meaningless without
+/// the question it answers — and both stay in the untrusted data layer, never
+/// in the developer instructions.
+fn clarification_follow_up(question: &str, answer: &str) -> serde_json::Value {
+    json!({"kind":"clarification","question":question,"answer":answer})
+}
+
+/// The exact line `clarification` prints: the question itself in plain
+/// mode, or the machine-readable outcome envelope under `--json`. Never a
+/// prompt — a clarification that cannot be answered is information, not an
+/// invitation.
+fn clarification_output(args: &Args, q: &str) -> String {
     if args.json {
-        println!(
-            "{}",
-            Outcome {
-                namespace: "uhm",
-                outcome: "clarification_required",
-                exit_code: outcome::CLARIFICATION,
-                executed: false,
-                command: None,
-                message: Some(q)
-            }
-            .json()
-        )
+        Outcome {
+            namespace: "uhm",
+            outcome: "clarification_required",
+            exit_code: outcome::CLARIFICATION,
+            executed: false,
+            command: None,
+            message: Some(q),
+        }
+        .json()
     } else {
-        println!("{}", ansi::sanitize_untrusted(q))
+        ansi::sanitize_untrusted(q)
     }
+}
+
+fn clarification(args: &Args, q: &str) -> i32 {
+    println!("{}", clarification_output(args, q));
     outcome::CLARIFICATION
 }
 fn not_executed(args: &Args, command: &str, message: &str) -> i32 {
@@ -2549,6 +2582,40 @@ fn normalize_shell(requested: &str, detected: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit19_command_consent_distinguishes_unavailable_declined_and_allowed() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        let mut ask_user = |prompt: &str| {
+            calls.borrow_mut().push(prompt.to_owned());
+            true
+        };
+        assert_eq!(
+            tool_probe_consent(false, "unsafe\u{7}name", &mut ask_user),
+            tool_surface::Consent::Unavailable
+        );
+        assert!(
+            calls.borrow().is_empty(),
+            "a noninteractive request must not prompt"
+        );
+        assert_eq!(
+            tool_probe_consent(true, "unsafe\u{7}name", &mut ask_user),
+            tool_surface::Consent::Allow
+        );
+        assert_eq!(
+            *calls.borrow(),
+            ["Run `unsafe\\u{7}name --help` to learn its interface? [y/N] "]
+        );
+
+        fn decline(_: &str) -> bool {
+            false
+        }
+        assert_eq!(
+            tool_probe_consent(true, "git", &mut decline),
+            tool_surface::Consent::Decline
+        );
+    }
+
     #[test]
     fn local_input_repair_payload_cannot_contain_child_diagnostics() {
         let proposal = crate::action::ProgramProposal {
@@ -2795,6 +2862,7 @@ mod tests {
                 "run",
                 &crate::input::Spool::default(),
                 crate::first_run::RENDERED_MARKER,
+                &crate::runtime::PythonInventory::unavailable(),
                 &mut without,
                 Some(proposal.clone()),
                 None,
@@ -2821,6 +2889,7 @@ mod tests {
             "run",
             &crate::input::Spool::default(),
             crate::first_run::RENDERED_MARKER,
+            &crate::runtime::PythonInventory::unavailable(),
             &mut interaction,
             Some(proposal),
             None,
@@ -2890,6 +2959,7 @@ mod tests {
             "run",
             &crate::input::Spool::default(),
             crate::first_run::RENDERED_MARKER,
+            &crate::runtime::PythonInventory::unavailable(),
             &mut interaction,
             Some(proposal),
             None,
@@ -3199,5 +3269,205 @@ mod tests {
             Value::String("the subcommand is `sessions`, not `session`".into())
         );
         assert_eq!(guided["exit_code"], Value::from(2));
+    }
+
+    // Plan 19 W07: the model's question travels with the user's answer.
+
+    fn audit19_clarification_config(provider: crate::provider::ProviderId) -> api::ApiConfig {
+        api::ApiConfig {
+            provider,
+            model: "test".into(),
+            key: "unused".into(),
+            max_tokens: 8192,
+            reasoning_effort: "low".into(),
+            request_max_bytes: 256 * 1024,
+            response_max_bytes: 2 * 1024 * 1024,
+            alternate: None,
+            fallback_on: Vec::new(),
+            selection_mode: crate::config::SelectionMode::Fixed,
+            permitted_action_types: None,
+            resolved_fingerprint: None,
+            resolved_model: None,
+        }
+    }
+
+    fn audit19_clarification_input(question: &str, answer: &str) -> String {
+        let follow_up = clarification_follow_up(question, answer);
+        let spool = crate::input::Spool::from_bytes(Vec::new());
+        prompt::proposal_input(
+            "auto",
+            "resize the banner image",
+            json!({}),
+            spool.model_value_for(false, None),
+            Some(follow_up),
+        )
+    }
+
+    #[test]
+    fn audit19_clarification_follow_up_carries_the_question_in_every_adapter_request() {
+        let question = "Should the banner target the shop page or the landing page?";
+        let answer = "the second one";
+        let input = audit19_clarification_input(question, answer);
+        for provider in [
+            crate::provider::ProviderId::Openai,
+            crate::provider::ProviderId::Cerebras,
+            crate::provider::ProviderId::Deepseek,
+        ] {
+            let body = api::request_body(&audit19_clarification_config(provider), &input, false);
+            assert!(
+                body.contains("Should the banner target"),
+                "{provider:?}: the question is missing from the request"
+            );
+            assert!(
+                body.contains("the second one"),
+                "{provider:?}: the answer is missing from the request"
+            );
+            assert!(
+                body.contains("resize the banner image"),
+                "{provider:?}: the original intent is missing from the request"
+            );
+            // Developer instructions are byte-identical, compared on the
+            // parsed body because the wire encodes them as an escaped string.
+            let parsed: Value = serde_json::from_str(&body).unwrap();
+            let instructions = if provider == crate::provider::ProviderId::Cerebras {
+                parsed["messages"][0]["content"].as_str()
+            } else {
+                parsed["instructions"].as_str()
+            };
+            assert_eq!(
+                instructions,
+                Some(prompt::DEVELOPER_INSTRUCTIONS),
+                "{provider:?}: developer instructions must be unchanged"
+            );
+            if provider != crate::provider::ProviderId::Cerebras {
+                assert_eq!(
+                    parsed["store"],
+                    Value::from(false),
+                    "{provider:?}: Responses adapters keep store disabled"
+                );
+            }
+        }
+        // The follow-up payload itself is exactly the untrusted data layer:
+        // kind, question, answer, and nothing else.
+        let follow_up = clarification_follow_up(question, answer);
+        assert_eq!(
+            serde_json::from_str::<Value>(follow_up.to_string().as_str()).unwrap(),
+            json!({
+                "kind": "clarification",
+                "question": "Should the banner target the shop page or the landing page?",
+                "answer": "the second one"
+            })
+        );
+    }
+
+    #[test]
+    fn audit19_clarification_answers_travel_verbatim() {
+        for answer in [
+            "y",
+            "2",
+            "the second one.",
+            "第二个",
+            "bell\u{7} stays one field",
+        ] {
+            let follow_up = clarification_follow_up("Alpha or Beta?", answer);
+            assert_eq!(follow_up["kind"], "clarification");
+            assert_eq!(follow_up["question"], "Alpha or Beta?");
+            assert_eq!(follow_up["answer"], Value::from(answer));
+            // Control characters stay structurally intact in the wire JSON.
+            let input = audit19_clarification_input("Alpha or Beta?", answer);
+            let body = api::request_body(
+                &audit19_clarification_config(crate::provider::ProviderId::Openai),
+                &input,
+                false,
+            );
+            let outer: Value = serde_json::from_str(&body).unwrap();
+            let inner: Value = serde_json::from_str(outer["input"].as_str().unwrap()).unwrap();
+            assert_eq!(inner["follow_up"]["answer"], Value::from(answer));
+            assert_eq!(inner["follow_up"]["question"], "Alpha or Beta?");
+        }
+    }
+
+    #[test]
+    fn audit19_clarification_production_call_site_uses_the_constructor() {
+        // The clarification arm needs a live terminal answer and a provider,
+        // so no offline test can drive it end to end. This pins the wiring
+        // instead: the payload handle() sends must be the tested constructor
+        // that carries the question. If the arm is ever reverted to a bare
+        // answer-only json! payload, this fails.
+        let source = include_str!("command.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("command module has a production section");
+        assert!(
+            production.contains("Some(clarification_follow_up(&question, &answer))"),
+            "the clarification follow-up must be built by clarification_follow_up"
+        );
+    }
+
+    #[test]
+    fn audit19_clarification_request_overflow_is_rejected_before_any_transport() {
+        struct RefusesTransport;
+        impl crate::provider::Transport for RefusesTransport {
+            fn post(
+                &self,
+                _: crate::provider::HttpRequest,
+            ) -> Result<crate::provider::HttpResponse, crate::provider::ProviderError> {
+                panic!("an oversized follow-up request must never reach a transport");
+            }
+        }
+        let question = "Should the banner target the shop page or the landing page?";
+        let input = audit19_clarification_input(question, "the second one");
+        let config = audit19_clarification_config(crate::provider::ProviderId::Openai);
+        let adapter = config.provider.adapter();
+        let invocation = crate::provider::Invocation {
+            model: "test",
+            authorization: crate::provider::Authorization::bearer("dummy"),
+            input: &input,
+            stream: false,
+            max_tokens: config.max_tokens,
+            reasoning_effort: "low",
+            request_max_bytes: input.len() - 1,
+            response_max_bytes: config.response_max_bytes,
+        };
+        let error =
+            crate::provider::invoke_with(adapter, &RefusesTransport, &invocation).unwrap_err();
+        assert_eq!(
+            error.kind,
+            crate::provider::ProviderErrorKind::RequestRejected
+        );
+        assert!(error.to_string().contains("exceeds configured"), "{error}");
+    }
+
+    #[test]
+    fn audit19_clarification_without_a_terminal_prints_the_question_instead_of_prompting() {
+        let args = Args::default();
+        // The exact rendered output carries the question in both modes and
+        // never a "uhm› " prompt.
+        let plain = clarification_output(&args, "Alpha or Beta?");
+        assert!(plain.contains("Alpha or Beta?"), "{plain}");
+        assert!(!plain.contains("uhm› "), "{plain}");
+        let json = clarification_output(
+            &Args {
+                json: true,
+                ..Args::default()
+            },
+            "Alpha or Beta?",
+        );
+        let parsed: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["outcome"], "clarification_required");
+        assert_eq!(parsed["message"], "Alpha or Beta?");
+        let code = clarification(&args, "Alpha or Beta?");
+        assert_eq!(code, outcome::CLARIFICATION);
+        // A clarification spends the one replacement slot, so a later
+        // replacement of any kind is refused.
+        let mut budget = Budget::default();
+        assert!(budget.can_replace());
+        assert!(budget.replace_with_model(Replacement::Clarification));
+        assert!(
+            !budget.can_replace(),
+            "the clarification answer consumes exactly the one slot"
+        );
+        assert!(!budget.replace_with_model(Replacement::Revision));
     }
 }

@@ -23,6 +23,7 @@ mod input;
 pub mod model_selection;
 mod outcome;
 mod parent_shell;
+mod probe;
 pub mod program;
 pub mod prompt;
 pub mod provider;

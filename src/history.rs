@@ -442,6 +442,28 @@ fn sync_history_directory(directory: &Path) -> Result<(), String> {
         .map_err(|error| format!("sync history directory {}: {error}", directory.display()))
 }
 
+/// Publish a private export file into a directory the user chose. The file
+/// is created in the same directory, synced, and moved into place, and the
+/// directory entry is synced after publication. Unlike the journal writer,
+/// an existing directory is never made private: only directories this call
+/// creates get 0700.
+fn write_export_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("history export path has no parent")?;
+    dirs::create_private_new(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| e.to_string())?;
+    }
+    tmp.write_all(bytes).map_err(|e| e.to_string())?;
+    tmp.as_file().sync_all().map_err(|e| e.to_string())?;
+    tmp.persist(path).map_err(|e| e.error.to_string())?;
+    sync_history_directory(parent)
+}
+
 fn append_locked(data: &Path, mut event: Event) -> Result<(), String> {
     let path = journal_path(data);
     let journal_was_present = path
@@ -1484,7 +1506,7 @@ pub fn export(data: &Path, output: &Path, include_content: bool) -> Result<usize
         serde_json::to_writer(&mut bytes, value).map_err(|e| e.to_string())?;
         bytes.push(b'\n');
     }
-    write_private_atomic(output, &bytes)?;
+    write_export_atomic(output, &bytes)?;
     Ok(values.len())
 }
 
@@ -2068,6 +2090,120 @@ mod tests {
         assert!(!text.contains("/secret"));
         assert!(!text.contains("checksum"));
         assert!(!text.contains("intent_hash"));
+    }
+
+    // Plan 19 W05: privacy applies to the export file and directories this
+    // code creates, never to a directory the user already owns and uses.
+
+    /// Mode of `path` restricted to the permission bits.
+    #[cfg(unix)]
+    fn dir_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_export_preserves_existing_parent_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = tempfile::tempdir().unwrap();
+        record_request(
+            data.path(),
+            &cfg(HistoryDetail::Full),
+            "abcdefgh1234",
+            "run_shell",
+            "auto",
+            "minimal",
+            "export probe",
+            None,
+        )
+        .unwrap();
+        for mode in [0o755u32, 0o770] {
+            let out_root = tempfile::tempdir().unwrap();
+            let dir = out_root.path().join("exports");
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            let output = dir.join("uhm-history.jsonl");
+            let count = export(data.path(), &output, false).unwrap();
+            assert!(count > 0);
+            assert_eq!(
+                dir_mode(&dir),
+                mode,
+                "an existing directory the user chose keeps its permissions"
+            );
+            assert_eq!(dir_mode(&output), 0o600);
+            for line in std::fs::read_to_string(&output).unwrap().lines() {
+                assert!(serde_json::from_str::<Value>(line).is_ok());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_export_through_a_directory_symlink_keeps_the_real_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = tempfile::tempdir().unwrap();
+        record_request(
+            data.path(),
+            &cfg(HistoryDetail::Full),
+            "abcdefgh1234",
+            "run_shell",
+            "auto",
+            "minimal",
+            "export probe",
+            None,
+        )
+        .unwrap();
+        let out_root = tempfile::tempdir().unwrap();
+        let real = out_root.path().join("real-dir");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&real, out_root.path().join("link-dir")).unwrap();
+        let output = out_root.path().join("link-dir").join("uhm-history.jsonl");
+        export(data.path(), &output, false).unwrap();
+        assert_eq!(dir_mode(&real), 0o755, "the real directory keeps its mode");
+        assert!(real.join("uhm-history.jsonl").exists());
+        assert_eq!(dir_mode(&real.join("uhm-history.jsonl")), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_export_creates_missing_parents_privately_and_fails_safely() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = tempfile::tempdir().unwrap();
+        record_request(
+            data.path(),
+            &cfg(HistoryDetail::Full),
+            "abcdefgh1234",
+            "run_shell",
+            "auto",
+            "minimal",
+            "export probe",
+            None,
+        )
+        .unwrap();
+        let out_root = tempfile::tempdir().unwrap();
+        let deep = out_root.path().join("made/one/two");
+        let output = deep.join("uhm-history.jsonl");
+        export(data.path(), &output, false).unwrap();
+        for created in [out_root.path().join("made"), deep.clone()] {
+            assert_eq!(dir_mode(&created), 0o700, "a new directory is private");
+        }
+        assert_eq!(dir_mode(&output), 0o600);
+        // Replacing an existing output stays atomic and keeps the old bytes
+        // on failure: make the directory writable-only, then fail.
+        std::fs::write(&output, b"previous export\n").unwrap();
+        std::fs::set_permissions(&deep, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let error = export(data.path(), &output, false).unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&output).unwrap(),
+            "previous export\n",
+            "a failed export must not truncate the old output"
+        );
+        assert_eq!(dir_mode(&deep), 0o555, "the failure changed no permissions");
+        // Restore write permission so the temporary root can clean itself up.
+        std::fs::set_permissions(&deep, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     #[test]
     fn list_row_renders_outcome_and_local_time_from_allowlisted_fields() {

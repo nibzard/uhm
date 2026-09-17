@@ -1408,6 +1408,95 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     finally: os.close(descriptor)
 
 
+# Fields a judgment event may add to an already-recorded candidate record.
+# The candidate evidence itself is immutable across the pause: anything
+# outside this set changing between events is a resume conflict.
+DERIVED_JUDGMENT_FIELDS = frozenset({"judgments", "synthetic_outcome", "semantic_acceptable"})
+
+
+def semantic_verdict(judgments: list[dict[str, Any]]) -> bool:
+    """The derived semantic verdict, recomputed from its judgments exactly as
+    the judge phase derives it, so excluding the stored field from the resume
+    comparison cannot permit a tampered verdict."""
+    valid = [value for value in judgments if value.get("valid") and not value.get("synthetic")]
+    return bool(valid and all(value.get("verdict") in {"pass", "minor"} and not value.get("critical_error") for value in valid))
+
+
+def resume_conflict(candidate: dict[str, Any], judged: dict[str, Any]) -> str | None:
+    """Why a judged record cannot extend its recorded candidate record, or
+    None when it can. The comparison is exact over the candidate projection:
+    only the supported judgment-derived fields may differ, and a semantic
+    record's derived verdict must agree with its own judgments."""
+    base = {name: value for name, value in candidate.items() if name not in DERIVED_JUDGMENT_FIELDS}
+    judged_base = {name: value for name, value in judged.items() if name not in DERIVED_JUDGMENT_FIELDS}
+    if base != judged_base:
+        return "candidate evidence changed between events"
+    if judged.get("stratum") != "semantic":
+        return None
+    client_valid = bool(judged.get("client_valid"))
+    if not client_valid:
+        # The judge runner never submits client-invalid candidates. They may
+        # only carry the synthetic outcome written by that eligibility path;
+        # accepting judgments here could promote an unqualified fixture.
+        if "semantic_acceptable" in judged or judged.get("judgments"):
+            return "client-invalid semantic record carries ineligible judgments"
+        if not judged.get("synthetic_outcome"):
+            return "client-invalid semantic record lacks its synthetic outcome"
+        return None
+    if judged.get("synthetic_outcome"):
+        return "client-valid semantic record carries an ineligible synthetic outcome"
+    if "semantic_acceptable" in judged:
+        if bool(judged["semantic_acceptable"]) != semantic_verdict(judged.get("judgments", [])):
+            return "derived semantic verdict is inconsistent with its judgments"
+        return None
+    return "semantic judgment record lacks its derived verdict"
+
+
+def job_key(job: tuple) -> tuple:
+    """The resume identity of one candidate job: (task, trial, provider, model)."""
+    trial, task, candidate = job
+    return (task["id"], trial, candidate[0], candidate[1])
+
+
+def pending_candidate_jobs(jobs: list[tuple], completed_candidate_keys: set[tuple]) -> list[tuple]:
+    """The jobs a resume must still run; completed ones never call a provider again."""
+    return [job for job in jobs if job_key(job) not in completed_candidate_keys]
+
+
+def pending_judge_jobs(judge_jobs: list[tuple], judged_keys: set[tuple]) -> list[tuple]:
+    """The judged records a resume must still judge; judged ones are never re-judged."""
+    record_key = lambda record: (record["task_id"], record["trial"], record["candidate"]["provider"], record["candidate"]["model"])
+    return [(record, task) for record, task in judge_jobs if record_key(record) not in judged_keys]
+
+
+def rebuild_resume_state(prior_events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], set[tuple], set[tuple]]:
+    """Reconstruct (records, judged_keys, completed_candidate_keys) from a
+    checkpoint's events: the production resume path. Every
+    candidate/judgment event must extend the previously recorded candidate
+    evidence for the same key; duplicates and conflicts are refused."""
+    latest: dict[tuple, dict[str, Any]] = {}
+    judged_keys: set[tuple] = set()
+    event_keys: set[tuple] = set()
+    for event in prior_events:
+        if event["type"] in {"candidate_completed", "judgment_completed"} and "record" in event["payload"]:
+            record = event["payload"]["record"]
+            key = (record["task_id"], record["trial"], record["candidate"]["provider"], record["candidate"]["model"])
+            typed_key = (event["type"], key)
+            if typed_key in event_keys:
+                raise ValueError(f"duplicate resume event key: {typed_key}")
+            event_keys.add(typed_key)
+            if event["type"] == "judgment_completed" and key not in latest:
+                raise ValueError(f"judgment resume event without its candidate event: {key}")
+            if event["type"] == "judgment_completed":
+                reason = resume_conflict(latest[key], record)
+                if reason:
+                    raise ValueError(f"conflicting resume event key: {key}: {reason}")
+            latest[key] = record
+            if event["type"] == "judgment_completed":
+                judged_keys.add(key)
+    return list(latest.values()), judged_keys, set(latest)
+
+
 def run_self_test() -> None:
     corpus = load_corpus(DEFAULT_CORPUS)
     assert len(corpus["tasks"]) == 120
@@ -1673,29 +1762,11 @@ def main() -> int:
         for candidate in args.candidate
     ]
     random.Random(args.seed).shuffle(jobs)
-    latest = {}
-    judged_keys = set()
-    event_keys = set()
-    for event in prior_events:
-        if event["type"] in {"candidate_completed", "judgment_completed"} and "record" in event["payload"]:
-            record = event["payload"]["record"]
-            key = (record["task_id"], record["trial"], record["candidate"]["provider"], record["candidate"]["model"])
-            typed_key = (event["type"], key)
-            if typed_key in event_keys: raise ValueError(f"duplicate resume event key: {typed_key}")
-            event_keys.add(typed_key)
-            if event["type"] == "judgment_completed" and key in latest:
-                base = {name: value for name, value in latest[key].items() if name not in {"judgments", "synthetic_outcome"}}
-                judged_base = {name: value for name, value in record.items() if name not in {"judgments", "synthetic_outcome"}}
-                if base != judged_base: raise ValueError(f"conflicting resume event key: {key}")
-            latest[key] = record
-            if event["type"] == "judgment_completed": judged_keys.add(key)
-    records: list[dict[str, Any]] = list(latest.values())
-    completed_candidate_keys = set(latest)
+    records, judged_keys, completed_candidate_keys = rebuild_resume_state(prior_events)
     total = len(jobs)
-    for index, (trial, task, (provider, model)) in enumerate(jobs, 1):
+    resumed_jobs = pending_candidate_jobs(jobs, completed_candidate_keys)
+    for index, (trial, task, (provider, model)) in enumerate(resumed_jobs, 1):
         key = (task["id"], trial, provider, model)
-        if key in completed_candidate_keys:
-            continue
         print(
             f"candidate {index}/{total}: {provider}:{model} {task['id']} trial={trial}",
             file=sys.stderr,
@@ -1831,10 +1902,8 @@ def main() -> int:
     total_judgments = sum(eligible(record) for record, _ in judge_jobs) * len(args.judge)
     judge_index = 0
     judge_schema = [judgment_tool()]
-    for record, task in judge_jobs:
+    for record, task in pending_judge_jobs(judge_jobs, judged_keys):
         key = (record["task_id"], record["trial"], record["candidate"]["provider"], record["candidate"]["model"])
-        if key in judged_keys:
-            continue
         if not eligible(record):
             record["synthetic_outcome"] = "invalid_or_unsampled_deterministic_failure"
             save_checkpoint("judgment_completed", {"record": record})
