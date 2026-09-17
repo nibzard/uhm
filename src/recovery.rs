@@ -3616,7 +3616,12 @@ mod tests {
         // Corrupt the manifest so it no longer decodes. The previous scan
         // fail-closed here, wedging status, selection, and prune (the remedy)
         // behind the same unreadable file.
-        write_private_atomic(&manifest_path(&data, &run), b"not valid json").unwrap();
+        write_private_atomic(
+            barrier_ops::MANIFEST_PUBLISH,
+            &manifest_path(&data, &run),
+            b"not valid json",
+        )
+        .unwrap();
 
         // The scan skips the corrupt run instead of erroring, so the whole
         // subsystem stays available.
