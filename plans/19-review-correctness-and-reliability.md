@@ -105,12 +105,37 @@ exist, pass, and are included in the relevant automated gate.
 | W09 | Finding 8a/8b | Correct consent timing and unanswered-consent persistence | P2 | M / LOW | W01, W08 | DONE |
 | W10 | Finding 9a/9b | Repair qualification resume and action-kind interoperability | P2 | M / LOW | Baseline | DONE |
 | W11 | Dependency-scan results | Update rustls and affected Worker development dependencies | P2 | S–M / MED | Baseline | DONE |
-| W12 | All findings | Gate the new boundaries in CI and synchronize documentation | P1 completion gate | M / LOW | W01–W11 | TODO |
+| W12 | All findings | Gate the new boundaries in CI and synchronize documentation | P1 completion gate | M / LOW | W01–W11 | DONE |
 
 Recommended order: W01, W02, W03, W04, W05, W06, W07, W08, W09, W10, W11,
 W12. Independent small fixes may land earlier, but serialize W02–W04 in
 `src/recovery.rs` and W01/W08/W09 in the probing path. W12 must include all
 completed work rather than testing independently passing branches only.
+
+## Execution record (2026-09-17)
+
+All twelve packages completed on branch `fix/review-correctness-v0.6.4`
+from commit `7ee816f`, one conventional commit per package. Every
+reproducer was verified to fail on the unmodified code for its intended
+assertion before the matching fix landed. Final integrated gate, all run
+from the repository root: `cargo fmt -- --check`, `cargo clippy
+--all-targets --locked -- -D warnings`, `cargo test --all-targets
+--locked` (818 executions), `cargo +1.89.0 check --all-targets --locked`,
+`cargo deny --locked check` (all four gates), `python3
+scripts/check-docs.py`, `sh -n docs/install.sh`, `sh
+scripts/test-installer.sh`, `node --test telemetry-worker/test/worker.test.js`
+(12 tests), `node scripts/test-telemetry-contract.mjs target/debug/uhm`,
+`PYTHONDONTWRITEBYTECODE=1 python3 scripts/provider-bakeoff.py
+--self-test`, and the offline Python suite (35 tests, 8 documented opt-in
+Docker skips) — all green; `npm --prefix telemetry-worker audit
+--package-lock-only --ignore-scripts --audit-level=high` reports zero
+findings. No live provider, deployed Worker, or physical power-failure
+test was run. W06 carries a deployment handoff: the backward-compatible
+Worker must be deployed before relying on telemetry from corrected
+releases. One coverage limitation recorded in the W09 commit: CLI-level
+consent flows cannot be driven offline because the consent path sits
+behind credential resolution with no test transport; that boundary is
+covered at the unit level instead.
 
 ### Scope boundaries
 

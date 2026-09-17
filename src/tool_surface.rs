@@ -1630,9 +1630,9 @@ mod tests {
     fn audit19_consent_a_delayed_affirmative_still_probes() {
         // The human spends longer than the whole machine budget answering;
         // the probe deadline must start after the answer, not before it. The
-        // budget stays generous enough for one quick probe on a loaded host,
-        // and the sleep is longer still, so only a deadline created before
-        // the answer can fail this.
+        // margins keep the ordering decisive on a loaded test host: a
+        // deadline created before the answer is long dead when the probe
+        // runs, while one created after it still has the full budget.
         let (dir, _) = fake_tool("probeme", "#!/bin/sh\necho 'usage: probeme fast'\n");
         let search = vec![dir.path().to_path_buf()];
         let data = tempfile::tempdir().unwrap();
@@ -1640,9 +1640,9 @@ mod tests {
             "run probeme now",
             data.path(),
             &search,
-            &mut ProbeBudget::new(std::time::Duration::from_secs(2)),
+            &mut ProbeBudget::new(std::time::Duration::from_secs(3)),
             &mut |_| {
-                std::thread::sleep(std::time::Duration::from_secs(3));
+                std::thread::sleep(std::time::Duration::from_secs(6));
                 Consent::Allow
             },
         );
