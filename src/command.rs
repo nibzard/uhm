@@ -170,19 +170,29 @@ pub fn handle(
     if !local_alias && mode != context::Mode::Minimal {
         // Probing runs a local program, so consent is required before the first
         // probe of a binary and is then remembered. Without a terminal there is
-        // nobody to ask, so only tools already allowed contribute.
+        // nobody to ask — that is an unanswered prompt, not a decline, so only
+        // tools already allowed contribute and nothing is persisted. The
+        // machine budget suspends while a human answers; each probe deadline
+        // is created after consent from what remains.
         let interactive = tty_available() && !args.json;
+        let mut budget =
+            tool_surface::ProbeBudget::new(Duration::from_millis(config.context_timeout_ms));
         let observed = tool_surface::surface(
             request,
             &config.paths.data_dir,
             &context::path_entries(),
-            Instant::now() + Duration::from_millis(config.context_timeout_ms),
+            &mut budget,
             &mut |identity| {
-                interactive
-                    && ask(&format!(
-                        "Run `{} --help` to learn its interface? [y/N] ",
-                        ansi::sanitize_untrusted_inline(&identity.name)
-                    ))
+                if !interactive {
+                    tool_surface::Consent::Unavailable
+                } else if ask(&format!(
+                    "Run `{} --help` to learn its interface? [y/N] ",
+                    ansi::sanitize_untrusted_inline(&identity.name)
+                )) {
+                    tool_surface::Consent::Allow
+                } else {
+                    tool_surface::Consent::Decline
+                }
             },
         );
         named_tool_names = observed.iter().map(|item| item.name.clone()).collect();
@@ -1768,8 +1778,12 @@ pub fn handle(
                             request,
                             &config.paths.data_dir,
                             &context::path_entries(),
-                            Instant::now() + Duration::from_millis(config.context_timeout_ms),
-                            &mut |_| false,
+                            &mut tool_surface::ProbeBudget::new(Duration::from_millis(
+                                config.context_timeout_ms,
+                            )),
+                            // No human is prompted mid-request; an unresolved
+                            // identity here is unanswered, never a decline.
+                            &mut |_| tool_surface::Consent::Unavailable,
                         );
                         context::add_tool_surface(&mut snapshot, &deepened);
                         budget.set_expansion_outcome("probed");
