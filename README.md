@@ -2,6 +2,15 @@
 
 Say what you need. Get the result. **The result, not the command.**
 
+## Quickstart
+
+```sh
+curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
+export OPENAI_API_KEY="your-key"    # https://platform.openai.com/api-keys
+uhm doctor
+uhm list the three biggest files
+```
+
 You know the result you want. The command, the flag, or the one-liner will not come. `uhm` is for that moment — the name is the sound it starts with.
 
 `uhm` is an AI assistant for the terminal. Say the job in plain words. `uhm` picks one way to do it — a shell command or a short Python program — runs it, and prints the real output. Then it exits.
@@ -32,21 +41,14 @@ Six real jobs in under a minute. Watch the [interactive recording](https://nibza
 - **You have run the command before and cannot find it.** History search (Atuin) or cheatsheets (tldr, navi) answer recall faster, without a model or a bill.
 - **The job needs no model at all.** A plain command, an alias, or a shell function is cheaper.
 
-## Install and first run
+## Installation details
+
+The installer downloads the release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin`. It does not edit your shell startup files. Set `UHM_VERSION=v0.6.7` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
+
+For the manual path, download an archive from the [v0.6.7 release](https://github.com/nibzard/uhm/releases/tag/v0.6.7) and follow the checksum steps in the [install guide](docs/install.md). Rust users can build the same binary:
 
 ```sh
-curl -fsSL https://nibzard.github.io/uhm/install.sh | sh
-export OPENAI_API_KEY="your-key"    # https://platform.openai.com/api-keys
-uhm doctor
-uhm list the three biggest files
-```
-
-The installer downloads the release archive for your platform, verifies it against `SHA256SUMS`, and installs `uhm` to `~/.local/bin`. It does not edit your shell startup files. Set `UHM_VERSION=v0.6.6` to pin a release or `UHM_INSTALL_DIR=/some/bin` to choose a different install directory.
-
-For the manual path, download an archive from the [v0.6.6 release](https://github.com/nibzard/uhm/releases/tag/v0.6.6) and follow the checksum steps in the [install guide](docs/install.md). Rust users can build the same binary:
-
-```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.6.6 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.6.7 uhm-cli
 ```
 
 `uhm doctor` prints the resolved private secrets path if the key is missing. Put `OPENAI_API_KEY=...` in that file and `chmod 600 <path>` to keep the key out of your shell environment. `uhm doctor network` checks the selected provider. Cerebras and DeepSeek keys work the same way; see [configure a provider](docs/how-to/configure-providers.md). Before the first outbound request, `uhm` prints a short data notice on stderr. Corporate proxy and certificate setup lives in [troubleshooting](docs/troubleshooting.md#proxy-and-tls-certificate-failures).

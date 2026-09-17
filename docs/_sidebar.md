@@ -47,7 +47,7 @@
     - [Provider adapters & selection](architecture/0005-provider-adapters-and-qualified-selection.md)
 
 - **Project**
-  - [Releases](releases/v0.6.6.md)
+  - [Releases](releases/v0.6.7.md)
   - [Demo ↗](https://nibzard.github.io/uhm/demo/)
   - [Source ↗](https://github.com/nibzard/uhm)
   - **Topic maps**

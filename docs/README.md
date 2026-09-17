@@ -58,7 +58,7 @@ uhm doctor network
 The installer fetches the latest release archive for your platform, verifies `SHA256SUMS`, and installs to `~/.local/bin` by default. Source builds are still supported:
 
 ```sh
-cargo install --locked --git https://github.com/nibzard/uhm --tag v0.6.6 uhm-cli
+cargo install --locked --git https://github.com/nibzard/uhm --tag v0.6.7 uhm-cli
 ```
 
 Prebuilt binaries, version pinning, and manual verification are on the [Install](install.md) page. See the [Quickstart](getting-started.md) for the under-five-minute path.

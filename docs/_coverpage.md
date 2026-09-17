@@ -8,4 +8,4 @@ You know the result you want. The command will not come. Say the job — `uhm` r
 - [Install](install.md)
 - [Watch the demo ↗](https://nibzard.github.io/uhm/demo/)
 
-<p class="cover-meta">v0.6.6 · Linux &amp; macOS · MIT licensed · needs a provider API key</p>
+<p class="cover-meta">v0.6.7 · Linux &amp; macOS · MIT licensed · needs a provider API key</p>
