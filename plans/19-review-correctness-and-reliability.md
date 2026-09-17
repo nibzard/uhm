@@ -103,7 +103,7 @@ exist, pass, and are included in the relevant automated gate.
 | W07 | Finding 5 | Preserve the question in clarification follow-ups | P2 | S / LOW | Baseline | DONE |
 | W08 | Finding 7a/7b | Bound Python inventory and context/help subprocesses | P2 | M / MED | W01 | DONE |
 | W09 | Finding 8a/8b | Correct consent timing and unanswered-consent persistence | P2 | M / LOW | W01, W08 | DONE |
-| W10 | Finding 9a/9b | Repair qualification resume and action-kind interoperability | P2 | M / LOW | Baseline | TODO |
+| W10 | Finding 9a/9b | Repair qualification resume and action-kind interoperability | P2 | M / LOW | Baseline | DONE |
 | W11 | Dependency-scan results | Update rustls and affected Worker development dependencies | P2 | S–M / MED | Baseline | TODO |
 | W12 | All findings | Gate the new boundaries in CI and synchronize documentation | P1 completion gate | M / LOW | W01–W11 | TODO |
 

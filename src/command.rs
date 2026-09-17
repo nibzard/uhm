@@ -2104,15 +2104,10 @@ fn propose(
             api_config.provider,
         ) {
             if let Ok(action) = api::parse_response(api_config, &raw) {
-                let profile_allowed =
-                    api_config
-                        .permitted_action_types
-                        .as_ref()
-                        .is_none_or(|allowed| {
-                            allowed
-                                .iter()
-                                .any(|value| value == model_selection::action_type(&action))
-                        });
+                let profile_allowed = model_selection::action_permitted(
+                    api_config.permitted_action_types.as_ref(),
+                    &action,
+                );
                 if args.verbose {
                     eprintln!("uhm: cache hit {}", &key[..8]);
                 }

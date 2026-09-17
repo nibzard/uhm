@@ -286,6 +286,18 @@ pub fn validate_manifest_bytes(bytes: &[u8], now_unix: u64) -> Result<(), String
     validate_manifest_entries(&manifest, now_unix)
 }
 
+/// Manifest action kinds are a closed set: a wire tool name that was never
+/// mapped to a canonical kind is rejected instead of silently mismatching
+/// every runtime action.
+fn validate_entry_action_kinds(entry: &QualificationEntry) -> Result<(), String> {
+    for kind in &entry.permitted_action_types {
+        if !crate::model_selection::executable_action_kind(kind) {
+            return Err(format!("permits unknown action kind {kind:?}"));
+        }
+    }
+    Ok(())
+}
+
 fn validate_manifest_entries(
     manifest: &QualificationManifest,
     now_unix: u64,
@@ -312,6 +324,8 @@ fn validate_manifest_entries(
                 "qualification entry for {candidate:?} is incompatible"
             ));
         }
+        validate_entry_action_kinds(entry)
+            .map_err(|error| format!("qualification entry for {candidate:?}: {error}"))?;
         let class = serde_json::to_string(&entry.request_class).expect("request class serializes");
         if !identities.insert((class.clone(), entry.provider, entry.model.clone())) {
             return Err(
@@ -437,12 +451,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exact_match_rejects_stale_or_changed_fingerprint_inputs() {
-        let candidate = ModelCandidate {
-            provider: ProviderId::Openai,
-            model: "immutable-model".into(),
-        };
+    #[cfg(test)]
+    fn exact_match_entry(now: u64) -> QualificationEntry {
+        let provider = ProviderId::Openai;
+        let model = "immutable-model".to_string();
         let class = RequestClass {
             route: "ask".into(),
             stdin_present: false,
@@ -451,14 +463,13 @@ mod tests {
             follow_up: "none".into(),
             runtime_available: true,
         };
-        let now = 2_000_000_000;
-        let entry = QualificationEntry {
+        QualificationEntry {
             selected: true,
-            provider: candidate.provider,
-            api_family: candidate.provider.adapter().api_family().into(),
-            endpoint: candidate.provider.adapter().endpoint().into(),
-            model: candidate.model.clone(),
-            resolved_model: candidate.model.clone(),
+            provider,
+            api_family: provider.adapter().api_family().into(),
+            endpoint: provider.adapter().endpoint().into(),
+            model: model.clone(),
+            resolved_model: model.clone(),
             resolved_fingerprint: "revision-1".into(),
             prompt_version: crate::prompt::PROMPT_VERSION,
             action_schema_version: crate::prompt::ACTION_SCHEMA_VERSION,
@@ -516,7 +527,26 @@ mod tests {
             evaluated_at_unix: now,
             reviewed: true,
             qualified: true,
+        }
+    }
+
+    #[test]
+    fn exact_match_rejects_stale_or_changed_fingerprint_inputs() {
+        let candidate = ModelCandidate {
+            provider: ProviderId::Openai,
+            model: "immutable-model".into(),
         };
+        let class = RequestClass {
+            route: "ask".into(),
+            stdin_present: false,
+            local_input: false,
+            input_format: None,
+            follow_up: "none".into(),
+            runtime_available: true,
+        };
+        let now = 2_000_000_000;
+        let entry = exact_match_entry(now);
+
         let mut manifest = QualificationManifest {
             version: 1,
             policy_version: 1,
@@ -543,5 +573,38 @@ mod tests {
     #[test]
     fn unavailable_holdout_prevents_runtime_evidence_selection() {
         assert_eq!(qualification_corpus_hash(), None);
+    }
+
+    // Plan 19 W10: manifest action kinds are a closed set; wire tool names
+    // that were never mapped are rejected instead of guessed.
+
+    #[test]
+    fn audit19_qualification_manifest_rejects_unmapped_action_kinds() {
+        let now = 2_000_000_000;
+        let unmapped = audit19_manifest(now, &["run_shell"]);
+        let error = validate_entry_action_kinds(&unmapped.entries[0]).unwrap_err();
+        assert!(error.contains("unknown action kind"), "{error}");
+        let mapped = audit19_manifest(
+            now,
+            &[
+                "shell",
+                "answer",
+                "clarification",
+                "program",
+                "parent_shell",
+            ],
+        );
+        assert!(validate_entry_action_kinds(&mapped.entries[0]).is_ok());
+    }
+
+    fn audit19_manifest(now: u64, kinds: &[&str]) -> QualificationManifest {
+        let mut entry = exact_match_entry(now);
+        entry.permitted_action_types = kinds.iter().map(|kind| (*kind).into()).collect();
+        QualificationManifest {
+            version: 1,
+            policy_version: 1,
+            policy_hash: policy_hash(),
+            entries: vec![entry],
+        }
     }
 }

@@ -53,6 +53,19 @@ def helper(operation: str, input_text: str | None = None) -> dict:
     return json.loads(process.stdout)
 
 
+def manifest_action_kinds(wire_tools: list[str]) -> list[str]:
+    """Map wire tool names to the runtime's canonical action kinds using the
+    helper's authoritative describe table. Unknown names fail publication."""
+    mapping = helper("describe")["tool_to_action_kind"]
+    kinds = []
+    for tool in wire_tools:
+        kind = mapping.get(tool)
+        if kind is None:
+            raise ValueError(f"qualification profile permits unknown wire tool {tool!r}")
+        kinds.append(kind)
+    return sorted(set(kinds))
+
+
 def load_artifact(path: Path) -> tuple[list[dict], dict, dict, dict]:
     validator = Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")))
     events = []
@@ -263,7 +276,11 @@ def main() -> int:
             "runner_hash": context["runner_hash"],
             "policy_hash": context["policy_hash"],
             "request_class": profile["request_class"],
-            "permitted_action_types": profile["permitted_action_types"],
+            # Profiles carry wire tool names; the runtime compares canonical
+            # action kinds. Map through the helper's authoritative table so a
+            # generated entry the runtime would silently mismatch cannot be
+            # published.
+            "permitted_action_types": manifest_action_kinds(profile["permitted_action_types"]),
             "evidence": runtime_evidence,
             "evaluated_at_unix": evaluated_at,
             "reviewed": True,

@@ -350,5 +350,201 @@ class BenchmarkTests(unittest.TestCase):
                 self.assertFalse(bad["oracle"]["passed"], task["id"])
 
 
+class ResumeTests(unittest.TestCase):
+    """Plan 19 W10: a checkpoint written through the documented audit pause
+    resumes, and only judgment-derived fields may differ between events."""
+
+    FINGERPRINT = "d" * 64
+
+    def checkpoint_event(self, sequence, event_type, payload):
+        event = {"event_version": 1, "type": event_type, "run_fingerprint": self.FINGERPRINT,
+                 "sequence": sequence, "payload": payload}
+        BENCH.schema_validator("run-event.schema.json").validate(event)
+        return event
+
+    def candidate_record(self, task_id="task-a", tool="return_answer", stratum="semantic"):
+        return {
+            "task_id": task_id, "family_id": "family-a", "trial": 1, "variant_id": "0",
+            "candidate": {"provider": "openai", "model": "gpt-5.6-terra"},
+            "type": "result", "stratum": stratum, "transport_success": True,
+            "wire_valid": True, "client_valid": True, "preflight_valid": True,
+            "execution_attempted": False, "execution_started": False,
+            "completed_outcome": False, "oracle_pass": None, "error": None,
+            "execution": None, "route_allowed": True, "route_preferred": True,
+            "action": {"tool": tool, "arguments": {}},
+            "judgments": [], "timing": {"wall_ms": 1},
+        }
+
+    def started_payload(self, task_count=1):
+        return {"started_utc": "2026-01-01T00:00:00Z", "fingerprint_projection": {},
+                "corpus": "fixture", "task_count": task_count, "worker_manifest": None,
+                "git": {}, "host": {}, "docker_version": None}
+
+    def write_checkpoint(self, events):
+        directory = tempfile.mkdtemp()
+        path = Path(directory) / "run.partial"
+        with path.open("w", encoding="utf-8") as handle:
+            for event in events:
+                handle.write(json.dumps(event) + "\n")
+        return path
+
+    def judged(self, record, verdict="pass", semantic=True):
+        judged = copy.deepcopy(record)
+        judged["judgments"] = [
+            {"valid": True, "synthetic": False, "verdict": verdict, "critical_error": False}
+        ]
+        if semantic and record["stratum"] == "semantic":
+            judged["semantic_acceptable"] = verdict in {"pass", "minor"}
+        return judged
+
+    def test_audit_pause_resume_accepts_semantic_judgments(self):
+        # The qualification pause sits between the judgment event and the
+        # resume for both semantic routes.
+        for tool in ("return_answer", "request_clarification"):
+            record = self.candidate_record(tool=tool)
+            events = [
+                self.checkpoint_event(0, "run_started", self.started_payload()),
+                self.checkpoint_event(1, "candidate_completed", {"record": record}),
+                self.checkpoint_event(2, "judgment_completed", {"record": self.judged(record)}),
+            ]
+            path = self.write_checkpoint(events)
+            prior = BENCH.load_checkpoint(path, self.FINGERPRINT)
+            records, judged, completed = BENCH.rebuild_resume_state(prior)
+            self.assertEqual(len(records), 1)
+            self.assertTrue(judged, f"{tool} must resume as judged")
+            self.assertTrue(completed)
+            self.assertTrue(records[0]["semantic_acceptable"])
+
+    def test_resume_rejects_changed_candidate_evidence(self):
+        conflicts = {
+            "action bytes": lambda r: r["action"].update({"arguments": {"changed": True}}),
+            "execution evidence": lambda r: r.update({"execution": {"oracle": {}}}),
+            "route evidence": lambda r: r.update({"route_allowed": False}),
+        }
+        for label, mutate in conflicts.items():
+            record = self.candidate_record()
+            judged = self.judged(record)
+            mutate(judged)
+            with self.assertRaisesRegex(ValueError, "conflicting resume event key", msg=label):
+                BENCH.rebuild_resume_state([
+                    self.checkpoint_event(1, "candidate_completed", {"record": record}),
+                    self.checkpoint_event(2, "judgment_completed", {"record": judged}),
+                ])
+        # Changing the key itself strands the judgment without its candidate.
+        for label, mutate in {
+            "candidate identity": lambda r: r["candidate"].update({"model": "other-model"}),
+            "task": lambda r: r.update({"task_id": "task-z"}),
+            "trial": lambda r: r.update({"trial": 2}),
+        }.items():
+            record = self.candidate_record()
+            judged = self.judged(record)
+            mutate(judged)
+            with self.assertRaisesRegex(ValueError, "without its candidate event", msg=label):
+                BENCH.rebuild_resume_state([
+                    self.checkpoint_event(1, "candidate_completed", {"record": record}),
+                    self.checkpoint_event(2, "judgment_completed", {"record": judged}),
+                ])
+
+    def test_resume_rejects_duplicate_events(self):
+        record = self.candidate_record()
+        with self.assertRaisesRegex(ValueError, "duplicate resume event key"):
+            BENCH.rebuild_resume_state([
+                self.checkpoint_event(1, "candidate_completed", {"record": record}),
+                self.checkpoint_event(2, "candidate_completed", {"record": copy.deepcopy(record)}),
+            ])
+
+    def test_resume_rejects_an_inconsistent_derived_verdict(self):
+        record = self.candidate_record()
+        judged = self.judged(record, verdict="fail")
+        judged["semantic_acceptable"] = True  # tampered: judgments say fail
+        with self.assertRaisesRegex(ValueError, "inconsistent with its judgments"):
+            BENCH.rebuild_resume_state([
+                self.checkpoint_event(1, "candidate_completed", {"record": record}),
+                self.checkpoint_event(2, "judgment_completed", {"record": judged}),
+            ])
+
+    def test_resume_reuses_completed_work_without_new_provider_calls(self):
+        # A mid-judgment checkpoint: both candidates are complete, only the
+        # first is judged. The rebuilt skip sets are exactly what the runner
+        # loops consult, so a resume neither re-calls the provider for the
+        # completed candidate nor re-judges the judged record.
+        first = self.candidate_record(task_id="task-a")
+        second = self.candidate_record(task_id="task-b", stratum="executable", tool="run_shell")
+        first_key = ("task-a", 1, "openai", "gpt-5.6-terra")
+        second_key = ("task-b", 1, "openai", "gpt-5.6-terra")
+        events = [
+            self.checkpoint_event(0, "run_started", self.started_payload(task_count=2)),
+            self.checkpoint_event(1, "candidate_completed", {"record": first}),
+            self.checkpoint_event(2, "candidate_completed", {"record": second}),
+            self.checkpoint_event(3, "judgment_completed", {"record": self.judged(first)}),
+        ]
+        path = self.write_checkpoint(events)
+        prior = BENCH.load_checkpoint(path, self.FINGERPRINT)
+        records, judged, completed = BENCH.rebuild_resume_state(prior)
+        self.assertEqual(completed, {first_key, second_key})
+        self.assertEqual(judged, {first_key})
+        self.assertEqual(len(records), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class QualificationInteroperabilityTests(unittest.TestCase):
+    """Plan 19 W10: Python-generated profiles use the runtime's canonical
+    action kinds, checked against the actual Rust validator and membership
+    predicate rather than a Python approximation."""
+
+    def helper_json(self, operation, payload):
+        process = BENCH.subprocess.run(
+            [str(BENCH.CONTRACT_HELPER), operation],
+            input=json.dumps(payload), text=True, capture_output=True,
+        )
+        self.assertEqual(process.returncode, 0, process.stderr)
+        return json.loads(process.stdout)
+
+    def test_profiles_map_to_runtime_action_kinds(self):
+        records, tasks, candidates, calibration, audit, policy = (
+            BenchmarkTests().qualification_fixture()
+        )
+        summary = BENCH.qualification_policy.evaluate(
+            records, tasks, candidates, calibration, audit, policy, 7
+        )
+        mapping = BENCH.contract_description()["tool_to_action_kind"]
+        self.assertEqual(mapping["run_shell"], "shell")
+        for profile in summary["profiles"]:
+            self.assertIn("run_shell", profile["permitted_action_types"])
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "generator", ROOT / "scripts/provider-qualification-manifest.py")
+        generator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(generator)
+        kinds = generator.manifest_action_kinds(["run_shell", "return_answer"])
+        self.assertEqual(kinds, ["answer", "shell"])
+        with self.assertRaisesRegex(ValueError, "unknown wire tool"):
+            generator.manifest_action_kinds(["run_shell", "not-a-tool"])
+
+    def test_rust_membership_predicate_matches_mapped_profiles(self):
+        permitted = ["answer", "shell"]
+        cases = [("shell", True), ("program", False), ("answer", True),
+                 ("clarification", False), ("parent_shell", False)]
+        for kind, expected in cases:
+            result = self.helper_json("action-permitted", {
+                "permitted": permitted, "action_kind": kind,
+            })
+            self.assertTrue(result["valid"], result)
+            self.assertEqual(result["permitted"], expected, kind)
+        unknown = self.helper_json("action-permitted", {
+            "permitted": permitted, "action_kind": "run_shell",
+        })
+        self.assertFalse(unknown["valid"])
+        # No profile (fixed selection) permits everything.
+        open_profile = self.helper_json("action-permitted", {
+            "permitted": None, "action_kind": "shell",
+        })
+        self.assertTrue(open_profile["valid"] and open_profile["permitted"])
+
+    def test_empty_manifest_stays_fail_closed(self):
+        manifest = json.loads((ROOT / "model-qualification-manifest.json").read_text())
+        self.assertEqual(manifest["entries"], [])
+

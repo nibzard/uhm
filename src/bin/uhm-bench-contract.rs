@@ -19,11 +19,48 @@ struct PreflightEnvelope {
     piped_input_present: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActionPermittedEnvelope {
+    permitted: Option<Vec<String>>,
+    action_kind: String,
+}
+
 fn main() {
     let operation = std::env::args().nth(1).unwrap_or_default();
     let result = match operation.as_str() {
         "describe" => uhm_cli::contract::description(),
         "qualification-context" => uhm_cli::capabilities::qualification_context(),
+        "action-permitted" => {
+            let mut raw = Vec::new();
+            if std::io::stdin()
+                .take(16 * 1024 + 1)
+                .read_to_end(&mut raw)
+                .is_err()
+                || raw.len() > 16 * 1024
+            {
+                json!({"valid":false,"message":"action-permitted envelope exceeds 16384 bytes"})
+            } else {
+                match serde_json::from_slice::<ActionPermittedEnvelope>(&raw) {
+                    Ok(value) => {
+                        if !uhm_cli::model_selection::executable_action_kind(&value.action_kind)
+                            && value.action_kind != "probe_subcommand"
+                        {
+                            json!({"valid":false,"message":"unknown action kind"})
+                        } else {
+                            json!({
+                                "valid": true,
+                                "permitted": uhm_cli::model_selection::kind_permitted(
+                                    value.permitted.as_deref(),
+                                    &value.action_kind,
+                                ),
+                            })
+                        }
+                    }
+                    Err(error) => json!({"valid":false,"message":error.to_string()}),
+                }
+            }
+        }
         "validate-qualification-manifest" => {
             let mut raw = Vec::new();
             let result = std::io::stdin()
@@ -105,7 +142,7 @@ fn main() {
             }
         }
         _ => {
-            eprintln!("usage: uhm-bench-contract describe|qualification-context|validate-qualification-manifest|validate|preflight");
+            eprintln!("usage: uhm-bench-contract describe|qualification-context|action-permitted|validate-qualification-manifest|validate|preflight");
             std::process::exit(2);
         }
     };

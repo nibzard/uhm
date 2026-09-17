@@ -156,6 +156,32 @@ pub fn action_type(action: &crate::action::ProposedAction) -> &'static str {
     }
 }
 
+/// The closed set of executable action kinds an evidence profile may permit.
+/// `probe_subcommand` is excluded by design: it is a routing step and stays
+/// outside executable evidence profiles.
+pub fn executable_action_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "answer" | "clarification" | "shell" | "program" | "parent_shell"
+    )
+}
+
+/// Whether an action kind passes an evidence profile's permitted list.
+/// `None` means no profile applies (fixed selection): everything is
+/// permitted. This is the single membership predicate the request path and
+/// the cached-proposal path share.
+pub fn kind_permitted(permitted: Option<&[String]>, kind: &str) -> bool {
+    permitted.is_none_or(|allowed| allowed.iter().any(|value| value == kind))
+}
+
+/// Whether an action is permitted by an evidence profile's action-kind list.
+pub fn action_permitted(
+    permitted: Option<&Vec<String>>,
+    action: &crate::action::ProposedAction,
+) -> bool {
+    kind_permitted(permitted.map(|list| list.as_slice()), action_type(action))
+}
+
 pub fn provider_status(provider: ProviderId, mode: SelectionMode) -> &'static str {
     match (provider, mode) {
         (_, SelectionMode::Evidence) => "evidence-qualified",
@@ -348,5 +374,50 @@ mod tests {
         });
         config.selection.mode = SelectionMode::Evidence;
         assert!(resolve(&config, &request_class()).is_err());
+    }
+
+    // Plan 19 W10: one shared evidence-profile membership predicate.
+
+    #[test]
+    fn audit19_qualification_permitted_kinds_gate_every_action_kind() {
+        let shell_only = vec!["shell".to_string()];
+        for (kind, allowed) in [
+            ("answer", false),
+            ("clarification", false),
+            ("shell", true),
+            ("program", false),
+            ("parent_shell", false),
+        ] {
+            assert_eq!(
+                kind_permitted(Some(shell_only.as_slice()), kind),
+                allowed,
+                "{kind} against a shell-only profile"
+            );
+        }
+        // No profile (fixed selection) permits everything, including the
+        // routing step the command loop exempts separately.
+        assert!(kind_permitted(None, "shell"));
+        assert!(kind_permitted(None, "probe_subcommand"));
+        // Unknown kinds never match a profile.
+        assert!(!kind_permitted(Some(shell_only.as_slice()), "run_shell"));
+    }
+
+    #[test]
+    fn audit19_qualification_action_permitted_uses_action_types() {
+        let answer_only = vec!["answer".to_string()];
+        let answer = crate::action::ProposedAction::Answer {
+            text: "done".into(),
+        };
+        let shell = crate::action::ProposedAction::Shell {
+            command: "true".into(),
+            metadata: crate::action::ProposalMetadata::default(),
+            stdin_mode: crate::action::StdinMode::None,
+        };
+        assert!(action_permitted(Some(&answer_only), &answer));
+        assert!(!action_permitted(Some(&answer_only), &shell));
+        assert!(action_permitted(None, &shell));
+        assert!(executable_action_kind("answer") && executable_action_kind("parent_shell"));
+        assert!(!executable_action_kind("probe_subcommand"));
+        assert!(!executable_action_kind("run_shell"));
     }
 }
