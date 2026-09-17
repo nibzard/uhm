@@ -463,11 +463,41 @@ class ResumeTests(unittest.TestCase):
                 self.checkpoint_event(2, "judgment_completed", {"record": judged}),
             ])
 
+    def test_audit_pause_resume_accepts_ineligible_semantic_records(self):
+        # A failed candidate call leaves a client-invalid semantic record; the
+        # judge phase marks it synthetic without ever deriving a verdict.
+        # Such checkpoints are legitimate and must resume.
+        record = self.candidate_record()
+        record["client_valid"] = False
+        judged = copy.deepcopy(record)
+        judged["synthetic_outcome"] = "invalid_or_unsampled_deterministic_failure"
+        events = [
+            self.checkpoint_event(0, "run_started", self.started_payload()),
+            self.checkpoint_event(1, "candidate_completed", {"record": record}),
+            self.checkpoint_event(2, "judgment_completed", {"record": judged}),
+        ]
+        path = self.write_checkpoint(events)
+        prior = BENCH.load_checkpoint(path, self.FINGERPRINT)
+        records, judged_keys, completed = BENCH.rebuild_resume_state(prior)
+        self.assertEqual(len(records), 1)
+        self.assertTrue(judged_keys and completed)
+        # A judged semantic record WITH judgments but no verdict is still bad.
+        tampered = copy.deepcopy(judged)
+        tampered["judgments"] = [
+            {"valid": True, "synthetic": False, "verdict": "pass", "critical_error": False}
+        ]
+        with self.assertRaisesRegex(ValueError, "lacks its derived verdict"):
+            BENCH.rebuild_resume_state([
+                self.checkpoint_event(1, "candidate_completed", {"record": record}),
+                self.checkpoint_event(2, "judgment_completed", {"record": tampered}),
+            ])
+
     def test_resume_reuses_completed_work_without_new_provider_calls(self):
         # A mid-judgment checkpoint: both candidates are complete, only the
-        # first is judged. The rebuilt skip sets are exactly what the runner
-        # loops consult, so a resume neither re-calls the provider for the
-        # completed candidate nor re-judges the judged record.
+        # first is judged. The production filters the runner loops consult
+        # must exclude the completed job and the judged record, so a resume
+        # neither re-calls the provider for the completed candidate nor
+        # re-judges the judged record.
         first = self.candidate_record(task_id="task-a")
         second = self.candidate_record(task_id="task-b", stratum="executable", tool="run_shell")
         first_key = ("task-a", 1, "openai", "gpt-5.6-terra")
@@ -484,10 +514,21 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(completed, {first_key, second_key})
         self.assertEqual(judged, {first_key})
         self.assertEqual(len(records), 2)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        task_a = {"id": "task-a"}
+        task_b = {"id": "task-b"}
+        jobs = [
+            (1, task_a, ("openai", "gpt-5.6-terra")),
+            (1, task_b, ("openai", "gpt-5.6-terra")),
+        ]
+        self.assertEqual(BENCH.pending_candidate_jobs(jobs, completed), [])
+        self.assertEqual(
+            BENCH.pending_candidate_jobs(jobs, {first_key}),
+            [(1, task_b, ("openai", "gpt-5.6-terra"))],
+        )
+        self.assertEqual(
+            BENCH.pending_judge_jobs([(records[0], task_a), (records[1], task_b)], judged),
+            [(records[1], task_b)],
+        )
 
 
 class QualificationInteroperabilityTests(unittest.TestCase):
@@ -548,3 +589,7 @@ class QualificationInteroperabilityTests(unittest.TestCase):
         manifest = json.loads((ROOT / "model-qualification-manifest.json").read_text())
         self.assertEqual(manifest["entries"], [])
 
+
+
+if __name__ == "__main__":
+    unittest.main()

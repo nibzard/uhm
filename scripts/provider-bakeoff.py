@@ -1431,12 +1431,35 @@ def resume_conflict(candidate: dict[str, Any], judged: dict[str, Any]) -> str | 
     judged_base = {name: value for name, value in judged.items() if name not in DERIVED_JUDGMENT_FIELDS}
     if base != judged_base:
         return "candidate evidence changed between events"
-    if judged.get("stratum") == "semantic":
-        if "semantic_acceptable" not in judged:
-            return "semantic judgment record lacks its derived verdict"
+    if judged.get("stratum") != "semantic":
+        return None
+    if "semantic_acceptable" in judged:
         if bool(judged["semantic_acceptable"]) != semantic_verdict(judged.get("judgments", [])):
             return "derived semantic verdict is inconsistent with its judgments"
+        return None
+    # No derived verdict: legitimate only for a record the judge phase deemed
+    # ineligible (a synthetic outcome with no judgments at all). A judged
+    # semantic record that carries judgments must also carry its verdict.
+    if judged.get("judgments") or not judged.get("synthetic_outcome"):
+        return "semantic judgment record lacks its derived verdict"
     return None
+
+
+def job_key(job: tuple) -> tuple:
+    """The resume identity of one candidate job: (task, trial, provider, model)."""
+    trial, task, candidate = job
+    return (task["id"], trial, candidate[0], candidate[1])
+
+
+def pending_candidate_jobs(jobs: list[tuple], completed_candidate_keys: set[tuple]) -> list[tuple]:
+    """The jobs a resume must still run; completed ones never call a provider again."""
+    return [job for job in jobs if job_key(job) not in completed_candidate_keys]
+
+
+def pending_judge_jobs(judge_jobs: list[tuple], judged_keys: set[tuple]) -> list[tuple]:
+    """The judged records a resume must still judge; judged ones are never re-judged."""
+    record_key = lambda record: (record["task_id"], record["trial"], record["candidate"]["provider"], record["candidate"]["model"])
+    return [(record, task) for record, task in judge_jobs if record_key(record) not in judged_keys]
 
 
 def rebuild_resume_state(prior_events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], set[tuple], set[tuple]]:
@@ -1734,10 +1757,9 @@ def main() -> int:
     random.Random(args.seed).shuffle(jobs)
     records, judged_keys, completed_candidate_keys = rebuild_resume_state(prior_events)
     total = len(jobs)
-    for index, (trial, task, (provider, model)) in enumerate(jobs, 1):
+    resumed_jobs = pending_candidate_jobs(jobs, completed_candidate_keys)
+    for index, (trial, task, (provider, model)) in enumerate(resumed_jobs, 1):
         key = (task["id"], trial, provider, model)
-        if key in completed_candidate_keys:
-            continue
         print(
             f"candidate {index}/{total}: {provider}:{model} {task['id']} trial={trial}",
             file=sys.stderr,
@@ -1873,10 +1895,8 @@ def main() -> int:
     total_judgments = sum(eligible(record) for record, _ in judge_jobs) * len(args.judge)
     judge_index = 0
     judge_schema = [judgment_tool()]
-    for record, task in judge_jobs:
+    for record, task in pending_judge_jobs(judge_jobs, judged_keys):
         key = (record["task_id"], record["trial"], record["candidate"]["provider"], record["candidate"]["model"])
-        if key in judged_keys:
-            continue
         if not eligible(record):
             record["synthetic_outcome"] = "invalid_or_unsampled_deterministic_failure"
             save_checkpoint("judgment_completed", {"record": record})
