@@ -1,3 +1,6 @@
+// ABOUTME: Strict ingestion gateway for the uhm CLI's enum-only telemetry events.
+// ABOUTME: Accepts the three released payload shapes and never buffers an oversized body.
+
 const MAX_BODY = 2048;
 
 const KEYS_V1 = [
@@ -6,6 +9,7 @@ const KEYS_V1 = [
   "cache", "interactive", "notice_revision",
 ];
 const KEYS_V2 = [...KEYS_V1, "parent_action"];
+const KEYS_V2_EXPANDED = [...KEYS_V2, "expansion_outcome"];
 
 const ENUMS = Object.freeze({
   event: ["interaction_summary", "feedback_summary"],
@@ -24,16 +28,32 @@ const ENUMS = Object.freeze({
   parent_action: ["not_applicable", "unknown", "applied", "failed"],
 });
 
+const EXPANSION_OUTCOMES = ["none", "probed", "probe_empty", "invalid_probe"];
+
+// The exact released payload shapes this gateway accepts: v1, legacy v2 with
+// parent_action, and expanded v2 with parent_action and expansion_outcome.
+// A shape is chosen by version plus the presence of expansion_outcome; the
+// exact-key-set comparison below then rejects unknown or optional extras,
+// and expansion_outcome on an older shape fails as a key mismatch.
+function expectedKeys(value) {
+  if (value.v === 1) return KEYS_V1;
+  if (value.v !== 2) return [];
+  return Object.hasOwn(value, "expansion_outcome") ? KEYS_V2_EXPANDED : KEYS_V2;
+}
+
 export function validateEvent(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const keys = Object.keys(value).sort();
-  const expected = value.v === 1 ? KEYS_V1 : value.v === 2 ? KEYS_V2 : [];
+  const expected = expectedKeys(value);
   if (keys.length !== expected.length || keys.some((key, index) => key !== [...expected].sort()[index])) return false;
   if ((value.v === 1 && ![1, 2].includes(value.notice_revision)) || (value.v === 2 && ![3, 4, 5].includes(value.notice_revision)) || typeof value.interactive !== "boolean") return false;
   if (typeof value.release !== "string" || !/^\d+\.\d+$/.test(value.release)) return false;
-  return Object.entries(ENUMS).filter(([key]) => key !== "parent_action" || value.v === 2).every(([key, allowed]) =>
+  const enumsOk = Object.entries(ENUMS).filter(([key]) => key !== "parent_action" || value.v === 2).every(([key, allowed]) =>
     typeof value[key] === "string" && allowed.includes(value[key]),
   );
+  const expansionOk = typeof value.expansion_outcome === "undefined"
+    || (typeof value.expansion_outcome === "string" && EXPANSION_OUTCOMES.includes(value.expansion_outcome));
+  return enumsOk && expansionOk;
 }
 
 export function eventToPoint(event) {
@@ -43,6 +63,7 @@ export function eventToPoint(event) {
       event.release, event.os, event.arch, event.shell, event.mode, event.route, event.decision,
       event.effects, event.proposal_outcome, event.execution_outcome, event.user_feedback,
       event.latency, event.cache, event.parent_action || "not_applicable",
+      event.expansion_outcome || "none",
     ],
     doubles: [event.interactive ? 1 : 0, event.notice_revision, event.v],
   };
@@ -55,6 +76,41 @@ function response(status) {
   });
 }
 
+function concat(chunks, total) {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+// Read the request body incrementally, stopping the moment the strictly
+// below-limit contract is violated: the chunk that crosses the limit is not
+// accumulated, the reader is cancelled so the sender stops, and the caller
+// answers 413 without parsing. Bodies at or above the limit are therefore
+// never consumed to completion. A read failure maps to the same bounded
+// error as malformed JSON; body bytes are never logged.
+async function readBodyBounded(request, limit) {
+  if (!request.body) return { ok: true, bytes: new Uint8Array(0) };
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const step = await reader.read();
+    if (step.done) {
+      return { ok: true, bytes: concat(chunks, total) };
+    }
+    total += step.value.byteLength;
+    if (total >= limit) {
+      await reader.cancel();
+      return { ok: false };
+    }
+    chunks.push(step.value);
+  }
+}
+
 export async function handle(request, env) {
   if (request.method !== "POST" || new URL(request.url).pathname !== "/v1/events") return response(404);
   if (env.ENABLED !== "true") return response(503);
@@ -65,11 +121,16 @@ export async function handle(request, env) {
   const allowed = await env.RATE_LIMITER.limit({ key: "events-v1" });
   if (!allowed.success) return response(429);
 
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength >= MAX_BODY) return response(413);
+  let body;
+  try {
+    body = await readBodyBounded(request, MAX_BODY);
+  } catch {
+    return response(400);
+  }
+  if (!body.ok) return response(413);
   let event;
   try {
-    event = JSON.parse(new TextDecoder().decode(bytes));
+    event = JSON.parse(new TextDecoder().decode(body.bytes));
   } catch {
     return response(400);
   }

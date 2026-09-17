@@ -78,6 +78,9 @@ jobs:
           cache: npm
           cache-dependency-path: telemetry-worker/package-lock.json
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Worker dependencies
         run: npm ci
         working-directory: telemetry-worker
@@ -85,6 +88,15 @@ jobs:
       - name: Test strict ingestion gateway
         run: npm test
         working-directory: telemetry-worker
+
+      - name: Build CLI for the telemetry contract
+        run: cargo build --locked --bin uhm
+
+      - name: Check real CLI payload against the local Worker
+        run: node scripts/test-telemetry-contract.mjs target/debug/uhm
+
+      - name: Check documentation drift
+        run: python3 scripts/check-docs.py
 
   provider-runner:
     name: Provider runner contract
