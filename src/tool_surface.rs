@@ -123,9 +123,12 @@ fn is_ubiquitous(name: &str) -> bool {
     UBIQUITOUS_TOOLS.contains(&name) || crate::context::TOOL_CATALOG.contains(&name)
 }
 
-/// Flags tried in order. The first successful, non-empty response wins. Every
-/// one is a request for self-description, never an operand.
-const HELP_FLAGS: [&str; 3] = ["--help", "help", "-h"];
+/// The only argv used to request a tool's self-description. Consent discloses
+/// exactly `--help`; a positional operand (`help`) or a short flag (`-h`) is a
+/// convention some tools honor, not a generic help request, so a tool that
+/// does not answer `--help` contributes no help rather than risk running an
+/// undisclosed operand.
+const HELP_FLAGS: [&str; 1] = ["--help"];
 
 const STORE_VERSION: u32 = 1;
 const STORE_FILE: &str = "tool-surface.json";
@@ -1125,6 +1128,208 @@ mod tests {
         let store = load(data.path());
         let record = store.tools.values().find(|record| record.allowed).unwrap();
         assert_eq!(record.subcommands.len(), 1, "upsert must not duplicate");
+    }
+
+    /// Install a probeable fake tool that appends the argv of every invocation
+    /// to `argv.log` beside it, so tests can prove exactly what ran.
+    #[cfg(unix)]
+    fn logging_tool(name: &str, body: &str) -> (tempfile::TempDir, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        let log = dir.path().join("argv.log");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{body}",
+            log.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, path)
+    }
+
+    /// One line per invocation of the logging tool: its exact argv.
+    #[cfg(unix)]
+    fn argv_log(dir: &tempfile::TempDir) -> Vec<String> {
+        std::fs::read_to_string(dir.path().join("argv.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_nonzero_exit_does_not_fall_back_to_positional_help() {
+        let (dir, _) = logging_tool(
+            "gotcha",
+            "if [ \"$1\" = \"--help\" ]; then exit 1; fi\n\
+             if [ \"$1\" = \"help\" ]; then echo 'usage: gotcha positional action'; exit 0; fi\n\
+             if [ \"$1\" = \"-h\" ]; then echo 'usage: gotcha short flag'; exit 0; fi\n\
+             exit 5\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "run gotcha now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            deadline(),
+            &mut |_| true,
+        );
+        assert!(
+            observed.is_empty(),
+            "a failing --help must yield no surface: {observed:?}"
+        );
+        assert_eq!(
+            argv_log(&dir),
+            vec!["--help"],
+            "only the disclosed --help argv may run"
+        );
+        let store = load(data.path());
+        assert!(
+            store.tools.values().all(|record| record.help.is_none()),
+            "a positional fallback must not be retained as help"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_empty_stdout_does_not_fall_back_to_positional_help() {
+        // `--help` succeeds with empty output; only guessed operands answer.
+        let (dir, _) = logging_tool(
+            "gotcha",
+            "if [ \"$1\" = \"help\" ]; then echo 'usage: gotcha positional action'; exit 0; fi\n\
+             if [ \"$1\" = \"-h\" ]; then echo 'usage: gotcha short flag'; exit 0; fi\n\
+             exit 0\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "run gotcha now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            deadline(),
+            &mut |_| true,
+        );
+        assert!(observed.is_empty(), "{observed:?}");
+        assert_eq!(argv_log(&dir), vec!["--help"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_working_help_is_retained_from_the_disclosed_flag_alone() {
+        let (dir, _) = logging_tool(
+            "probeme",
+            "if [ \"$1\" = \"--help\" ]; then echo 'usage: probeme <command>'; exit 0; fi\n\
+             echo 'an action operand ran'; exit 0\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "run probeme now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            deadline(),
+            &mut |_| true,
+        );
+        assert_eq!(observed.len(), 1, "{observed:?}");
+        assert!(observed[0].help.contains("usage: probeme"));
+        assert!(!observed[0].help.contains("an action operand ran"));
+        assert_eq!(argv_log(&dir), vec!["--help"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_subcommand_probe_never_tries_a_positional_operand() {
+        let (dir, _) = logging_tool(
+            "probeme",
+            "if [ \"$1\" = \"--help\" ]; then echo 'usage: probeme sessions'; exit 0; fi\n\
+             if [ \"$1\" = \"sessions\" ]; then\n\
+             \tif [ \"$2\" = \"--help\" ]; then exit 1; fi\n\
+             \tif [ \"$2\" = \"help\" ]; then echo 'usage: probeme sessions positional'; exit 0; fi\n\
+             \tif [ \"$2\" = \"-h\" ]; then echo 'usage: probeme sessions short'; exit 0; fi\n\
+             fi\n\
+             exit 3\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        surface(
+            "run probeme now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            deadline(),
+            &mut |_| true,
+        );
+        let outcome = probe_subcommand(
+            data.path(),
+            &[dir.path().to_path_buf()],
+            "probeme",
+            "sessions",
+            deadline(),
+            &mut |_| {},
+        );
+        assert_eq!(outcome, ProbeResult::Empty);
+        assert_eq!(
+            argv_log(&dir),
+            vec!["--help", "sessions --help"],
+            "the subcommand probe may use only the disclosed --help argv"
+        );
+        let store = load(data.path());
+        let record = store.tools.values().find(|record| record.allowed).unwrap();
+        assert!(
+            record.subcommands.is_empty(),
+            "a positional fallback must not persist: {:?}",
+            record.subcommands
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_subcommand_working_help_still_probes() {
+        let (dir, _) = logging_tool(
+            "probeme",
+            "if [ \"$1\" = \"--help\" ]; then echo 'usage: probeme sessions'; exit 0; fi\n\
+             if [ \"$1\" = \"sessions\" ] && [ \"$2\" = \"--help\" ]; then\n\
+             \techo 'usage: probeme sessions <verb>'; exit 0\n\
+             fi\n\
+             echo 'an action operand ran'; exit 0\n",
+        );
+        let data = tempfile::tempdir().unwrap();
+        surface(
+            "run probeme now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            deadline(),
+            &mut |_| true,
+        );
+        let outcome = probe_subcommand(
+            data.path(),
+            &[dir.path().to_path_buf()],
+            "probeme",
+            "sessions",
+            deadline(),
+            &mut |_| {},
+        );
+        assert_eq!(outcome, ProbeResult::Probed);
+        assert_eq!(argv_log(&dir), vec!["--help", "sessions --help"]);
+        let store = load(data.path());
+        let record = store.tools.values().find(|record| record.allowed).unwrap();
+        assert_eq!(record.subcommands.len(), 1);
+        assert!(record.subcommands[0].help.contains("<verb>"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit19_help_a_declined_tool_is_never_executed() {
+        let (dir, _) = logging_tool("nope", "echo 'usage: nope'; exit 0\n");
+        let data = tempfile::tempdir().unwrap();
+        surface(
+            "run nope now",
+            data.path(),
+            &[dir.path().to_path_buf()],
+            deadline(),
+            &mut |_| false,
+        );
+        assert!(
+            argv_log(&dir).is_empty(),
+            "a declined tool must not run at all"
+        );
     }
 
     #[cfg(unix)]
