@@ -95,7 +95,7 @@ exist, pass, and are included in the relevant automated gate.
 | Package | Review coverage | Work | Priority | Effort / fix risk | Depends on | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | W01 | Finding 1 | Remove action operands from automatic help probing | P1 | S / LOW | Baseline | DONE |
-| W02 | Finding 2 | Complete managed-write and snapshot durability barriers | P1 | M / MED | Baseline | TODO |
+| W02 | Finding 2 | Complete managed-write and snapshot durability barriers | P1 | M / MED | Baseline | DONE |
 | W03 | Finding 6a | Resume partial commits containing creations | P2 | S / LOW | W02 | TODO |
 | W04 | Finding 6b | Reconcile undo interrupted after a filesystem mutation | P2 | M / MED | W02, W03 | TODO |
 | W05 | Finding 3 | Preserve history-export parent permissions | P2 | S / LOW | Baseline | TODO |

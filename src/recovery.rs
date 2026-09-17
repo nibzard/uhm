@@ -196,7 +196,6 @@ struct PreparedItem {
 #[derive(Debug)]
 pub struct Coordinator {
     data_dir: PathBuf,
-    run_dir: PathBuf,
     manifest: RecoveryManifest,
     prepared: Vec<PreparedItem>,
     // A live coordinator owns the recovery inventory until commit or Drop.
@@ -311,7 +310,7 @@ pub fn exclusive_guard(data: &Path) -> Result<File, String> {
     lock(data)
 }
 
-fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_private_atomic(operation: &'static str, path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("private file has no parent")?;
     dirs::ensure_private_dir(parent)?;
     let mut temporary = tempfile::Builder::new()
@@ -329,10 +328,12 @@ fn write_private_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .as_file()
         .sync_all()
         .map_err(|error| error.to_string())?;
-    temporary
-        .persist(path)
-        .map_err(|error| format!("publish recovery file: {}", error.error))?;
-    sync_parent(parent)
+    durability_barrier(operation, path, move || {
+        temporary
+            .persist(path)
+            .map_err(|error| format!("publish recovery file: {}", error.error))?;
+        sync_parent(parent)
+    })
 }
 
 fn sync_parent(parent: &Path) -> Result<(), String> {
@@ -341,9 +342,105 @@ fn sync_parent(parent: &Path) -> Result<(), String> {
         .map_err(|error| format!("sync recovery directory {}: {error}", parent.display()))
 }
 
+// Names of the durability barriers crash-consistency depends on, shared by the
+// wrapped call sites and the test probe below.
+mod barrier_ops {
+    pub const ANCESTRY_DIR: &str = "ancestry-dir-sync";
+    pub const SNAPSHOT_FILE: &str = "snapshot-file-sync";
+    pub const SNAPSHOT_DIR: &str = "snapshot-dir-sync";
+    pub const STAGED_FILE: &str = "staged-file-sync";
+    pub const DESTINATION_DIR: &str = "destination-dir-sync";
+    pub const MANIFEST_PUBLISH: &str = "manifest-publish";
+    pub const MARKER_PUBLISH: &str = "marker-publish";
+}
+
+/// Test-only observation of the durability barriers: every attempted barrier
+/// under a subtree, in order, plus fault injection scoped to one subtree so
+/// concurrent tests cannot affect each other. Faults and events accumulate for
+/// the life of the process; every query is filtered by a unique root path.
+#[cfg(test)]
+pub(crate) mod durability_probe {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static EVENTS: Mutex<Vec<(&'static str, PathBuf)>> = Mutex::new(Vec::new());
+    static FAULTS: Mutex<Vec<(&'static str, PathBuf)>> = Mutex::new(Vec::new());
+
+    pub(crate) fn fail_on(operation: &'static str, under: &Path) {
+        FAULTS
+            .lock()
+            .unwrap()
+            .push((operation, under.to_path_buf()));
+    }
+
+    /// Drop every fault scoped under `under` without touching other tests'.
+    pub(crate) fn clear_faults(under: &Path) {
+        FAULTS
+            .lock()
+            .unwrap()
+            .retain(|(_, prefix)| !under.starts_with(prefix));
+    }
+
+    pub(crate) fn note(operation: &'static str, path: &Path) {
+        EVENTS.lock().unwrap().push((operation, path.to_path_buf()));
+    }
+
+    pub(crate) fn raise(operation: &'static str, path: &Path) -> Result<(), String> {
+        let inject = FAULTS
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(fault, prefix)| *fault == operation && path.starts_with(prefix));
+        if inject {
+            return Err(format!("injected durability fault: {operation}"));
+        }
+        Ok(())
+    }
+
+    /// Ordered barrier names recorded under `under`.
+    pub(crate) fn ops(under: &Path) -> Vec<&'static str> {
+        EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.starts_with(under))
+            .map(|(operation, _)| *operation)
+            .collect()
+    }
+
+    /// Ordered (operation, path) pairs recorded under `under`.
+    pub(crate) fn pairs(under: &Path) -> Vec<(&'static str, PathBuf)> {
+        EVENTS
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.starts_with(under))
+            .map(|(operation, path)| (*operation, path.clone()))
+            .collect()
+    }
+}
+
+/// Run one durability operation under its barrier name. Production executes
+/// the operation directly; tests observe the ordering and can inject a
+/// failure at this exact barrier.
+fn durability_barrier(
+    operation: &'static str,
+    path: &Path,
+    perform: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    #[cfg(test)]
+    durability_probe::note(operation, path);
+    #[cfg(test)]
+    durability_probe::raise(operation, path)?;
+    #[cfg(not(test))]
+    let _ = (operation, path);
+    perform()
+}
+
 fn write_manifest(data: &Path, manifest: &RecoveryManifest) -> Result<(), String> {
     validate_manifest_shape(data, manifest)?;
     write_private_atomic(
+        barrier_ops::MANIFEST_PUBLISH,
         &manifest_path(data, &manifest.run_id),
         &serde_json::to_vec_pretty(manifest).map_err(|error| error.to_string())?,
     )
@@ -417,13 +514,21 @@ pub fn capture_requested(data: &Path, config: &RecoveryConfig, one_job: bool) ->
 pub fn enable(data: &Path) -> Result<(), String> {
     let _guard = lock(data)?;
     let _ = std::fs::remove_file(data.join(DISABLED_MARKER));
-    write_private_atomic(&data.join(ENABLED_MARKER), b"recovery-consent-v1\n")
+    write_private_atomic(
+        barrier_ops::MARKER_PUBLISH,
+        &data.join(ENABLED_MARKER),
+        b"recovery-consent-v1\n",
+    )
 }
 
 pub fn disable(data: &Path) -> Result<(), String> {
     let _guard = lock(data)?;
     let _ = std::fs::remove_file(data.join(ENABLED_MARKER));
-    write_private_atomic(&data.join(DISABLED_MARKER), b"recovery-disabled-v1\n")
+    write_private_atomic(
+        barrier_ops::MARKER_PUBLISH,
+        &data.join(DISABLED_MARKER),
+        b"recovery-disabled-v1\n",
+    )
 }
 
 pub fn classify(
@@ -568,6 +673,12 @@ pub fn prepare_with_lease(
     if outputs.is_empty() || outputs.len() > 16 {
         return Err("recovery capture requires 1..16 managed outputs".into());
     }
+    // Record which recovery ancestors already exist before anything below can
+    // create them, so newly created ones are durably linked into their
+    // parents. The check must precede the prune and lock, both of which may
+    // create the data root.
+    let data_existed = data.exists();
+    let runs_existed = runs_dir(data).exists();
     // Enforce age before admitting another capture. The subsequent locked
     // usage calculation still fails closed if another process changes usage
     // between this prune and our lock acquisition.
@@ -601,6 +712,22 @@ pub fn prepare_with_lease(
     if manifest_path(data, run).exists() {
         return Err("a recovery manifest already exists for this run".into());
     }
+    // Durably link the recovery ancestry before anything below names it: the
+    // run directory into `runs` (always new for this run), and each ancestor
+    // this capture created into its own parent. Publication of the first
+    // manifest then syncs the run directory itself, which links the snapshots
+    // entry and the manifest entry.
+    if !data_existed {
+        if let Some(owner) = data.parent() {
+            durability_barrier(barrier_ops::ANCESTRY_DIR, owner, || sync_parent(owner))?;
+        }
+    }
+    if !runs_existed {
+        durability_barrier(barrier_ops::ANCESTRY_DIR, data, || sync_parent(data))?;
+    }
+    durability_barrier(barrier_ops::ANCESTRY_DIR, &runs_dir(data), || {
+        sync_parent(&runs_dir(data))
+    })?;
     let now = crate::history::now_secs();
     let mut manifest = RecoveryManifest {
         schema_version: SCHEMA_VERSION,
@@ -718,6 +845,11 @@ pub fn prepare_with_lease(
                 return Err("snapshot hash verification failed".into());
             }
             manifest.items[index].preimage_hash = Some(hash);
+            // The snapshot's directory entry is durable before the manifest
+            // calls the snapshot ready.
+            durability_barrier(barrier_ops::SNAPSHOT_DIR, &snapshots, || {
+                sync_parent(&snapshots)
+            })?;
         }
         manifest.items[index].state = ItemState::SnapshotReady;
         manifest.updated_at = crate::history::now_secs();
@@ -733,7 +865,6 @@ pub fn prepare_with_lease(
     write_manifest(data, &manifest)?;
     Ok(Coordinator {
         data_dir: data.into(),
-        run_dir: run_path,
         manifest,
         prepared,
         ownership_guard: Some(ownership_guard),
@@ -842,7 +973,18 @@ impl Coordinator {
                 )?;
                 return Err("staged artifacts exceed the workspace byte limit".into());
             }
-            let hash = hash_file(staged, max_total)?;
+            let hash = hash_file(
+                staged.try_clone().map_err(|error| error.to_string())?,
+                max_total,
+            )?;
+            // The staged bytes are durable before any destination rename can
+            // publish them; the sync uses the validated descriptor itself,
+            // never a path reopen.
+            durability_barrier(
+                barrier_ops::STAGED_FILE,
+                &self.manifest.items[index].staging,
+                || staged.sync_all().map_err(|error| error.to_string()),
+            )?;
             self.manifest.items[index].staged_hash = Some(hash);
             self.manifest.items[index].postimage_mode = Some(identity.mode);
             self.manifest.items[index].state = ItemState::Staged;
@@ -896,14 +1038,15 @@ impl Coordinator {
             self.manifest.items[index].postimage_mode = Some(identity.mode);
             self.manifest.items[index].state = ItemState::Committed;
             self.manifest.updated_at = crate::history::now_secs();
-            sync_directory_handle(&prepared.parent)?;
+            durability_barrier(barrier_ops::DESTINATION_DIR, &prepared.parent_path, || {
+                sync_directory_handle(&prepared.parent)
+            })?;
             write_manifest(&self.data_dir, &self.manifest)?;
             committed.push(self.manifest.items[index].destination.clone());
         }
         transition(&mut self.manifest, RecoveryState::Available)?;
         self.manifest.reason = None;
         write_manifest(&self.data_dir, &self.manifest)?;
-        let _ = sync_parent(&self.run_dir);
         Ok(committed)
     }
 
@@ -1656,11 +1799,12 @@ pub fn resume_commit(
             continue;
         }
         let item = manifest.items[index].clone();
-        let parent = open_parent(
-            item.destination
-                .parent()
-                .ok_or("destination has no parent")?,
-        )?;
+        let parent_path = item
+            .destination
+            .parent()
+            .ok_or("destination has no parent")?
+            .to_path_buf();
+        let parent = open_parent(&parent_path)?;
         let staging_name = leaf_name(&item.staging)?;
         match openat_read(&parent, &staging_name) {
             Ok(_) => {}
@@ -1669,7 +1813,9 @@ pub fn resume_commit(
                 let mode = current_mode(&item, config.max_file_bytes)?;
                 if observed.as_deref() == item.staged_hash.as_deref() && mode == item.postimage_mode
                 {
-                    sync_directory_handle(&parent)?;
+                    durability_barrier(barrier_ops::DESTINATION_DIR, &parent_path, || {
+                        sync_directory_handle(&parent)
+                    })?;
                     manifest.items[index].postimage_hash = observed;
                     manifest.items[index].state = ItemState::Committed;
                     write_manifest(data, &manifest)?;
@@ -1728,10 +1874,18 @@ pub fn resume_commit(
             if identity.len > config.max_total_bytes {
                 return Err("resume staging file exceeds the configured recovery bound".into());
             }
-            let hash = hash_file(staged, config.max_total_bytes)?;
+            let hash = hash_file(
+                staged.try_clone().map_err(|error| error.to_string())?,
+                config.max_total_bytes,
+            )?;
             if Some(hash.as_str()) != item.staged_hash.as_deref() {
                 return Err("resume staging hash differs from the preflighted staged hash".into());
             }
+            // Same ordering as a first commit: the surviving staged evidence
+            // is durable before the rename loop can publish it.
+            durability_barrier(barrier_ops::STAGED_FILE, &item.staging, || {
+                staged.sync_all().map_err(|error| error.to_string())
+            })?;
         }
         prepared.push(value);
     }
@@ -1765,7 +1919,9 @@ pub fn resume_commit(
         }
         manifest.items[index].postimage_hash = Some(observed);
         manifest.items[index].state = ItemState::Committed;
-        sync_directory_handle(&prepared.parent)?;
+        durability_barrier(barrier_ops::DESTINATION_DIR, &prepared.parent_path, || {
+            sync_directory_handle(&prepared.parent)
+        })?;
         write_manifest(data, &manifest)?;
     }
     transition(&mut manifest, RecoveryState::Available)?;
@@ -2317,7 +2473,9 @@ fn copy_snapshot(source: &mut File, destination: &Path, max: u64) -> Result<Stri
             .write_all(&buffer[..count])
             .map_err(|error| error.to_string())?;
     }
-    output.sync_all().map_err(|error| error.to_string())?;
+    durability_barrier(barrier_ops::SNAPSHOT_FILE, destination, || {
+        output.sync_all().map_err(|error| error.to_string())
+    })?;
     Ok(hasher.finalize().to_hex().to_string())
 }
 
@@ -3661,5 +3819,364 @@ mod tests {
         );
         assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
         eprintln!("8 MiB capture, commit, and undo: {elapsed:?}");
+    }
+
+    // Plan 19 W02: durability barriers are ordered before the mutations they
+    // guard, and a failed required sync never produces a success receipt.
+
+    #[test]
+    fn audit19_durability_commit_orders_barriers_before_each_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let (doc, doc_stage) = paths(root.path(), "doc.txt");
+        let (made, made_stage) = paths(root.path(), "made.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            "run-00000021",
+            &config,
+            &[
+                (doc.clone(), doc_stage.clone()),
+                (made.clone(), made_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&doc_stage, b"new one").unwrap();
+        std::fs::write(&made_stage, b"new two").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+
+        let ops = durability_probe::ops(root.path());
+        // The recovery ancestry is durably linked before anything names it.
+        let first_publish = ops
+            .iter()
+            .position(|op| *op == barrier_ops::MANIFEST_PUBLISH)
+            .unwrap();
+        assert!(
+            ops[..first_publish]
+                .iter()
+                .all(|op| *op == barrier_ops::ANCESTRY_DIR),
+            "ancestry must be synced before the first publication: {ops:?}"
+        );
+        // Each snapshot file is synced, then its containing directory, then
+        // the manifest that calls it ready.
+        let file_sync = ops
+            .iter()
+            .position(|op| *op == barrier_ops::SNAPSHOT_FILE)
+            .unwrap();
+        let dir_sync = ops
+            .iter()
+            .position(|op| *op == barrier_ops::SNAPSHOT_DIR)
+            .unwrap();
+        assert!(file_sync < dir_sync, "{ops:?}");
+        assert_eq!(
+            ops.get(dir_sync + 1),
+            Some(&barrier_ops::MANIFEST_PUBLISH),
+            "the snapshot-ready publication follows its directory sync: {ops:?}"
+        );
+        // Every staged output is file-synced before the first rename takes
+        // effect; the first destination-directory sync follows a rename.
+        assert_eq!(
+            ops.iter()
+                .filter(|op| **op == barrier_ops::STAGED_FILE)
+                .count(),
+            2,
+            "both staged outputs must be file-synced: {ops:?}"
+        );
+        let last_staged_sync = ops
+            .iter()
+            .rposition(|op| *op == barrier_ops::STAGED_FILE)
+            .unwrap();
+        let first_rename_effect = ops
+            .iter()
+            .position(|op| *op == barrier_ops::DESTINATION_DIR)
+            .unwrap();
+        assert!(
+            last_staged_sync < first_rename_effect,
+            "all staged evidence is synced before the first rename: {ops:?}"
+        );
+        assert_eq!(
+            ops.get(first_rename_effect - 1),
+            Some(&barrier_ops::MANIFEST_PUBLISH),
+            "the commit-partial intent is published after the staged syncs: {ops:?}"
+        );
+        assert_eq!(
+            ops.get(first_rename_effect + 1),
+            Some(&barrier_ops::MANIFEST_PUBLISH),
+            "each rename is followed by its directory sync and publication: {ops:?}"
+        );
+        assert_eq!(
+            *ops.last().unwrap(),
+            barrier_ops::MANIFEST_PUBLISH,
+            "the available manifest is the final publication: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn audit19_durability_staged_file_sync_precedes_every_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            "run-00000022",
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        durability_probe::fail_on(barrier_ops::STAGED_FILE, &second_stage);
+        let error = coordinator.commit(config.max_total_bytes).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        // No destination moved, even though the first staging file was fine:
+        // every staged output is synced before the first rename.
+        assert_eq!(std::fs::read(&first).unwrap(), b"one");
+        assert_eq!(std::fs::read(&second).unwrap(), b"two");
+        drop(coordinator);
+        // No commit intent was published; the durable capture honestly says
+        // it never left preparation.
+        assert_eq!(
+            read_manifest(&data, "run-00000022").unwrap().state,
+            RecoveryState::Preparing
+        );
+    }
+
+    #[test]
+    fn audit19_durability_destination_dir_sync_failure_stays_resumable() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000023";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"before").unwrap();
+        let mut coordinator =
+            prepare(&data, run, &config, &[(doc.clone(), stage.clone())]).unwrap();
+        std::fs::write(&stage, b"after").unwrap();
+        durability_probe::fail_on(barrier_ops::DESTINATION_DIR, root.path());
+        let error = coordinator.commit(config.max_total_bytes).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        drop(coordinator);
+        // The rename already happened but no completion was published, so the
+        // journal stays resumable instead of claiming success.
+        assert_eq!(std::fs::read(&doc).unwrap(), b"after");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::CommitPartial);
+        assert_eq!(manifest.items[0].state, ItemState::Staged);
+        durability_probe::clear_faults(root.path());
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(&doc).unwrap(), b"after");
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::Available
+        );
+    }
+
+    #[test]
+    fn audit19_durability_snapshot_dir_sync_failure_fails_capture_honestly() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000024";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        durability_probe::fail_on(barrier_ops::SNAPSHOT_DIR, root.path());
+        let error = prepare(&data, run, &config, &[(doc.clone(), stage)]).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        // The original destination is untouched and the durable manifest
+        // honestly reports an incomplete capture.
+        assert_eq!(std::fs::read(&doc).unwrap(), b"one");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::Preparing);
+        assert_eq!(manifest.items[0].state, ItemState::Preparing);
+    }
+
+    #[test]
+    fn audit19_durability_capture_links_new_ancestry_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000025";
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        let mut coordinator =
+            prepare(&data, run, &config, &[(doc.clone(), stage.clone())]).unwrap();
+        std::fs::write(&stage, b"after").unwrap();
+        coordinator.commit(config.max_total_bytes).unwrap();
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::Available
+        );
+        // A fresh data root must durably link every ancestor it created —
+        // the data root into its owner, runs into the data root, and this
+        // run into runs — before the first publication.
+        let pairs = durability_probe::pairs(root.path());
+        let first_publish = pairs
+            .iter()
+            .position(|(op, _)| *op == barrier_ops::MANIFEST_PUBLISH)
+            .unwrap();
+        let ancestry: Vec<&PathBuf> = pairs[..first_publish]
+            .iter()
+            .map(|(_, path)| path)
+            .collect();
+        assert!(
+            pairs[..first_publish]
+                .iter()
+                .all(|(op, _)| *op == barrier_ops::ANCESTRY_DIR),
+            "every pre-publication barrier is an ancestry sync: {pairs:?}"
+        );
+        let synced: Vec<PathBuf> = ancestry.into_iter().cloned().collect();
+        assert!(
+            synced.contains(&runs_dir(&data)),
+            "this run's entry in runs is durably linked: {synced:?}"
+        );
+        assert!(
+            synced.contains(&data),
+            "the runs directory is durably linked into the data root: {synced:?}"
+        );
+        assert!(
+            synced.contains(&data.parent().unwrap().to_path_buf()),
+            "a newly created data root is linked into its owner: {synced:?}"
+        );
+    }
+
+    #[test]
+    fn audit19_durability_manifest_publication_failure_leaves_destinations_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let (doc, stage) = paths(root.path(), "doc.txt");
+        std::fs::write(&doc, b"one").unwrap();
+        durability_probe::fail_on(barrier_ops::MANIFEST_PUBLISH, root.path());
+        let error = prepare(&data, "run-00000026", &config, &[(doc.clone(), stage)]).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        assert_eq!(std::fs::read(&doc).unwrap(), b"one");
+        assert!(
+            !manifest_path(&data, "run-00000026").exists(),
+            "a failed publication must leave no manifest behind"
+        );
+    }
+
+    #[test]
+    fn audit19_durability_resumed_commit_syncs_staged_evidence_in_order() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000027";
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        for (index, stage) in [&first_stage, &second_stage].iter().enumerate() {
+            coordinator.manifest.items[index].staged_hash =
+                Some(hash_file(File::open(stage).unwrap(), config.max_total_bytes).unwrap());
+            coordinator.manifest.items[index].postimage_mode =
+                Some(std::fs::metadata(stage).unwrap().permissions().mode() & 0o7777);
+            coordinator.manifest.items[index].state = ItemState::Staged;
+        }
+        transition(&mut coordinator.manifest, RecoveryState::CommitPartial).unwrap();
+        write_manifest(&data, &coordinator.manifest).unwrap();
+        let prepared = &coordinator.prepared[0];
+        rename_replace(
+            &prepared.parent,
+            &prepared.staging_name,
+            &prepared.destination_name,
+        )
+        .unwrap();
+        drop(coordinator);
+
+        assert_eq!(resume_commit(&data, run, &config).unwrap(), run);
+        assert_eq!(std::fs::read(first).unwrap(), b"new one");
+        assert_eq!(std::fs::read(second).unwrap(), b"new two");
+        // The resume suffix, in order: reconcile the already-renamed item
+        // (directory sync, publication), file-sync the surviving staged
+        // evidence, then rename it (directory sync, publication), then
+        // publish the available manifest.
+        let ops = durability_probe::ops(root.path());
+        let suffix = [
+            barrier_ops::DESTINATION_DIR,
+            barrier_ops::MANIFEST_PUBLISH,
+            barrier_ops::STAGED_FILE,
+            barrier_ops::DESTINATION_DIR,
+            barrier_ops::MANIFEST_PUBLISH,
+            barrier_ops::MANIFEST_PUBLISH,
+        ];
+        assert!(
+            ops.ends_with(&suffix),
+            "resumed commit barrier order: {ops:?}"
+        );
+        assert_eq!(
+            read_manifest(&data, run).unwrap().state,
+            RecoveryState::Available
+        );
+    }
+
+    #[test]
+    fn audit19_durability_staged_sync_failure_in_resume_refuses_before_rename() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let config = RecoveryConfig::default();
+        let run = "run-00000028";
+        let (first, first_stage) = paths(root.path(), "first");
+        let (second, second_stage) = paths(root.path(), "second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let mut coordinator = prepare(
+            &data,
+            run,
+            &config,
+            &[
+                (first.clone(), first_stage.clone()),
+                (second.clone(), second_stage.clone()),
+            ],
+        )
+        .unwrap();
+        std::fs::write(&first_stage, b"new one").unwrap();
+        std::fs::write(&second_stage, b"new two").unwrap();
+        for (index, stage) in [&first_stage, &second_stage].iter().enumerate() {
+            coordinator.manifest.items[index].staged_hash =
+                Some(hash_file(File::open(stage).unwrap(), config.max_total_bytes).unwrap());
+            coordinator.manifest.items[index].postimage_mode =
+                Some(std::fs::metadata(stage).unwrap().permissions().mode() & 0o7777);
+            coordinator.manifest.items[index].state = ItemState::Staged;
+        }
+        transition(&mut coordinator.manifest, RecoveryState::CommitPartial).unwrap();
+        write_manifest(&data, &coordinator.manifest).unwrap();
+        let prepared = &coordinator.prepared[0];
+        rename_replace(
+            &prepared.parent,
+            &prepared.staging_name,
+            &prepared.destination_name,
+        )
+        .unwrap();
+        drop(coordinator);
+
+        durability_probe::fail_on(barrier_ops::STAGED_FILE, &second_stage);
+        let error = resume_commit(&data, run, &config).unwrap_err();
+        assert!(error.contains("injected durability fault"), "{error}");
+        assert_eq!(std::fs::read(first).unwrap(), b"new one");
+        assert_eq!(std::fs::read(second).unwrap(), b"two");
+        let manifest = read_manifest(&data, run).unwrap();
+        assert_eq!(manifest.state, RecoveryState::CommitPartial);
+        assert_eq!(manifest.items[1].state, ItemState::Staged);
     }
 }

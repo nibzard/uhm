@@ -922,7 +922,9 @@ fn commit_outputs(values: Vec<StagedOutput>, max: u64) -> Result<Vec<PathBuf>, S
         std::fs::rename(&value.staging, &value.destination)
             .map_err(|e| format!("commit artifact {}: {e}", value.destination.display()))?;
         if let Some(parent) = value.destination.parent() {
-            let _ = File::open(parent).and_then(|f| f.sync_all());
+            File::open(parent)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| format!("sync artifact directory: {e}"))?;
         }
         committed.push(value.destination.clone());
     }
@@ -2091,5 +2093,35 @@ mod tests {
                 |diagnostic| diagnostic.code == "write_resource_not_consumed"
                     && diagnostic.severity == DiagnosticSeverity::HardError
             ));
+    }
+
+    // Plan 19 W02: a failed destination-directory sync after the rename must
+    // surface as an error, never as a silent success.
+    #[cfg(unix)]
+    #[test]
+    fn audit19_durability_commit_outputs_propagates_directory_sync_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("out.txt");
+        let staging = root.path().join(".uhm-stage-out.txt");
+        std::fs::write(&staging, b"committed").unwrap();
+        // Write and traverse without directory read: the staging file and the
+        // rename still work, but opening the directory itself to sync it
+        // fails, which is exactly the error that must propagate.
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o333)).unwrap();
+        let result = commit_outputs(
+            vec![StagedOutput {
+                destination: destination.clone(),
+                staging,
+                cleanup: false,
+            }],
+            1024,
+        );
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let error = result.unwrap_err();
+        assert!(error.contains("sync artifact directory"), "{error}");
+        // The rename happened; only the directory sync failed. The caller
+        // sees an error instead of a success receipt.
+        assert_eq!(std::fs::read(&destination).unwrap(), b"committed");
     }
 }
