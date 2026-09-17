@@ -1281,3 +1281,52 @@ fn one_invocation_reports_identical_history_corruption_once() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(stderr.matches("history corruption at line 1").count(), 1);
 }
+
+// Plan 19 W05: exporting history must never change the permissions of a
+// directory the user already owns.
+#[cfg(unix)]
+fn audit19_mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+#[cfg(unix)]
+#[test]
+fn audit19_export_preserves_existing_parent_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let yaml = "history:\n  detail: full\naliases:\n  sentinel-intent-marker: true\n";
+    assert!(configured(temp.path(), yaml, &["sentinel-intent-marker"])
+        .status
+        .success());
+    for mode in [0o755u32, 0o770] {
+        let export_dir = temp.path().join(format!("exports-{mode:o}"));
+        fs::create_dir(&export_dir).unwrap();
+        fs::set_permissions(&export_dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        let output = export_dir.join("uhm-history.redacted.jsonl");
+        let run = configured(
+            temp.path(),
+            yaml,
+            &["history", "export", "--output", output.to_str().unwrap()],
+        );
+        assert!(
+            run.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert_eq!(
+            audit19_mode(&export_dir),
+            mode,
+            "the export directory keeps the permissions the user gave it"
+        );
+        assert_eq!(audit19_mode(&output), 0o600);
+        let text = fs::read_to_string(&output).unwrap();
+        assert!(!text.is_empty());
+        for line in text.lines() {
+            assert!(
+                serde_json::from_str::<serde_json::Value>(line).is_ok(),
+                "every export line is JSON: {line}"
+            );
+        }
+    }
+}

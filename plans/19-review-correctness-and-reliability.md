@@ -98,7 +98,7 @@ exist, pass, and are included in the relevant automated gate.
 | W02 | Finding 2 | Complete managed-write and snapshot durability barriers | P1 | M / MED | Baseline | DONE |
 | W03 | Finding 6a | Resume partial commits containing creations | P2 | S / LOW | W02 | DONE |
 | W04 | Finding 6b | Reconcile undo interrupted after a filesystem mutation | P2 | M / MED | W02, W03 | DONE |
-| W05 | Finding 3 | Preserve history-export parent permissions | P2 | S / LOW | Baseline | TODO |
+| W05 | Finding 3 | Preserve history-export parent permissions | P2 | S / LOW | Baseline | DONE |
 | W06 | Findings 4 and 10 | Repair telemetry schema interoperability and bounded reads | P2 | M / LOW | Baseline | TODO |
 | W07 | Finding 5 | Preserve the question in clarification follow-ups | P2 | S / LOW | Baseline | TODO |
 | W08 | Finding 7a/7b | Bound Python inventory and context/help subprocesses | P2 | M / MED | W01 | TODO |

@@ -84,6 +84,43 @@ pub fn ensure_private_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Create a directory and its missing ancestors privately. Unlike
+/// `ensure_private_dir`, a directory that already exists — including one
+/// reached through a symlink — keeps its permissions: privacy applies only
+/// to what this call creates. Publication into a user-selected directory
+/// uses this so an export never closes a directory the user shares.
+pub fn create_private_new(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    if path.exists() {
+        return Err(format!(
+            "private directory path {} exists and is not a directory",
+            path.display()
+        ));
+    }
+    let mut missing = Vec::new();
+    let mut current = path.to_path_buf();
+    while !current.is_dir() {
+        missing.push(current.clone());
+        current = current
+            .parent()
+            .ok_or_else(|| format!("private directory {} has no parent", path.display()))?
+            .to_path_buf();
+    }
+    for dir in missing.iter().rev() {
+        std::fs::create_dir(dir)
+            .map_err(|e| format!("create private directory {}: {}", dir.display(), e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("set private permissions on {}: {}", dir.display(), e))?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
