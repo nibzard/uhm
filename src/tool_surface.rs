@@ -123,6 +123,22 @@ fn is_ubiquitous(name: &str) -> bool {
     UBIQUITOUS_TOOLS.contains(&name) || crate::context::TOOL_CATALOG.contains(&name)
 }
 
+/// Directories that hold the operating system's own binaries. Their
+/// interfaces are standard and known to the model, and on macOS many of their
+/// names are ordinary English words ("what", "time", "say"), so a binary found
+/// directly in one of them is never probed.
+const SYSTEM_BIN_DIRS: &[&str] = &["/bin", "/sbin", "/usr/bin", "/usr/sbin"];
+
+/// A binary that the operating system supplies, found directly in one of
+/// `SYSTEM_BIN_DIRS`.
+fn is_system_binary(path: &Path) -> bool {
+    path.parent().is_some_and(|dir| {
+        SYSTEM_BIN_DIRS
+            .iter()
+            .any(|system| dir == Path::new(system))
+    })
+}
+
 /// The only argv used to request a tool's self-description. Consent discloses
 /// exactly `--help`; a positional operand (`help`) or a short flag (`-h`) is a
 /// convention some tools honor, not a generic help request, so a tool that
@@ -337,6 +353,7 @@ pub fn surface(
         .filter(|name| !is_ubiquitous(name))
         .filter_map(|name| {
             crate::context::resolve_in(search, &name)
+                .filter(|path| !is_system_binary(path))
                 .and_then(|path| Identity::resolve(&name, &path))
         })
         .take(MAX_TOOLS)
@@ -897,6 +914,43 @@ mod tests {
             &mut |identity| panic!("a catalog tool must not prompt: {}", identity.name),
         );
         assert!(observed.is_empty(), "{observed:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_operating_system_binary_is_never_asked_about_or_probed() {
+        // Prose words such as "what" and "time" resolve to operating-system
+        // binaries on macOS. `true` is not on a skip list and exists in a
+        // system directory on every supported platform, so it stands in for them.
+        let search = vec![PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
+        assert!(
+            crate::context::resolve_in(&search, "true").is_some(),
+            "precondition: `true` resolves in a system directory"
+        );
+        let data = tempfile::tempdir().unwrap();
+        let observed = surface(
+            "what is the time, true or false",
+            data.path(),
+            &search,
+            &mut ProbeBudget::new(std::time::Duration::from_secs(10)),
+            &mut |identity| panic!("a system binary must not prompt: {}", identity.name),
+        );
+        assert!(observed.is_empty(), "{observed:?}");
+        assert!(
+            !data.path().join(STORE_FILE).exists(),
+            "a skipped tool must leave no record"
+        );
+    }
+
+    #[test]
+    fn only_binaries_directly_in_a_system_directory_are_system_binaries() {
+        assert!(is_system_binary(Path::new("/usr/bin/what")));
+        assert!(is_system_binary(Path::new("/bin/date")));
+        assert!(is_system_binary(Path::new("/usr/sbin/sysctl")));
+        assert!(!is_system_binary(Path::new("/opt/homebrew/bin/jq")));
+        assert!(!is_system_binary(Path::new("/usr/local/bin/steel")));
+        assert!(!is_system_binary(Path::new("/Users/n/.steel/bin/steel")));
+        assert!(!is_system_binary(Path::new("/usr/bin/nested/tool")));
     }
 
     #[cfg(unix)]

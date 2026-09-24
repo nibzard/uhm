@@ -99,7 +99,7 @@ fn tool_probe_consent(
         return tool_surface::Consent::Unavailable;
     }
     let prompt = format!(
-        "Run `{} --help` to learn its interface? [y/N] ",
+        "Run `{} --help` to learn its interface? [Y/n] ",
         ansi::sanitize_untrusted_inline(identity_name)
     );
     if ask_user(&prompt) {
@@ -194,7 +194,7 @@ pub fn handle(
         // machine budget suspends while a human answers; each probe deadline
         // is created after consent from what remains.
         let interactive = tty_available() && !args.json;
-        let mut ask_tool = |prompt: &str| ask(prompt);
+        let mut ask_tool = |prompt: &str| ask_default_yes(prompt);
         let mut budget =
             tool_surface::ProbeBudget::new(Duration::from_millis(config.context_timeout_ms));
         let observed = tool_surface::surface(
@@ -2227,6 +2227,16 @@ fn ask(prompt: &str) -> bool {
     let _ = std::io::stderr().flush();
     tty::read_line_cooked().is_some_and(|v| matches!(v.as_str(), "y" | "yes"))
 }
+/// Read a terminal answer for a prompt whose default is yes. An empty line
+/// accepts; a closed terminal gives no answer, and no answer is never a yes.
+fn ask_default_yes(prompt: &str) -> bool {
+    eprint!("{}", prompt);
+    let _ = std::io::stderr().flush();
+    accepts_default_yes(tty::read_line_cooked().as_deref())
+}
+fn accepts_default_yes(answer: Option<&str>) -> bool {
+    answer.is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "" | "y" | "yes"))
+}
 fn tty_available() -> bool {
     std::io::stderr().is_terminal()
 }
@@ -2604,7 +2614,7 @@ mod tests {
         );
         assert_eq!(
             *calls.borrow(),
-            ["Run `unsafe\\u{7}name --help` to learn its interface? [y/N] "]
+            ["Run `unsafe\\u{7}name --help` to learn its interface? [Y/n] "]
         );
 
         fn decline(_: &str) -> bool {
@@ -2613,6 +2623,20 @@ mod tests {
         assert_eq!(
             tool_probe_consent(true, "git", &mut decline),
             tool_surface::Consent::Decline
+        );
+    }
+
+    #[test]
+    fn a_default_yes_answer_accepts_empty_and_yes_only() {
+        assert!(accepts_default_yes(Some("")));
+        assert!(accepts_default_yes(Some("y")));
+        assert!(accepts_default_yes(Some("Yes")));
+        assert!(!accepts_default_yes(Some("n")));
+        assert!(!accepts_default_yes(Some("no")));
+        assert!(!accepts_default_yes(Some("sure")));
+        assert!(
+            !accepts_default_yes(None),
+            "a closed terminal is no answer, not a yes"
         );
     }
 
