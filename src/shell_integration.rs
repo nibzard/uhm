@@ -1120,6 +1120,87 @@ esac
     }
     #[cfg(unix)]
     #[test]
+    fn zsh_wrapper_passes_unmatched_wildcards_and_expands_matching_ones() {
+        use std::os::unix::fs::PermissionsExt;
+        if std::process::Command::new("zsh")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: no zsh on this runner");
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        let work = d.path().join("work");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        for name in ["a.md", "b.md"] {
+            std::fs::write(work.join(name), "x").unwrap();
+        }
+        // The fake records each argument that follows the control nonce, one
+        // call per line, so the test sees exactly what the binary receives.
+        let fake = bin.join("uhm");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\ncase \"$*\" in\n*shell-history-enabled*) exit 1;;\n*shell-control-open*) p=$(mktemp -d); printf '%s\\t%s\\n' \"$p\" nonce; exit 0;;\n*shell-clean*) exit 0;;\nesac\nshift 4\nfor a in \"$@\"; do printf '[%s]' \"$a\"; done\nprintf '\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let init = d.path().join("init.zsh");
+        std::fs::write(&init, template(ShellFamily::Zsh)).unwrap();
+        // Each call is on its own line of a script file: zsh expands an alias
+        // only in lines that it reads after the alias is defined, and `zsh -c`
+        // reads its whole argument first. Sourcing twice is what a reloaded
+        // ~/.zshrc does.
+        let script = d.path().join("session.zsh");
+        let lines = [
+            "source \"$UHM_INIT\"",
+            "source \"$UHM_INIT\"",
+            "uhm What result do you need?",
+            "uhm summarize *.md",
+            "uhm 'summarize *.md'",
+            "uhm fix '(bar' 'x['",
+            "false",
+            "uhm status",
+        ];
+        std::fs::write(&script, lines.join("\n") + "\n").unwrap();
+        let output = std::process::Command::new("zsh")
+            .arg("-f")
+            .arg(&script)
+            .current_dir(&work)
+            .env("UHM_INIT", &init)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "",
+            "no shell diagnostic may appear"
+        );
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .collect::<Vec<_>>(),
+            [
+                "[What][result][do][you][need?]",
+                "[summarize][a.md][b.md]",
+                "[summarize *.md]",
+                "[fix][(bar][x[]",
+                "[status]",
+            ]
+        );
+    }
+    #[cfg(unix)]
+    #[test]
     fn bash_wrapper_enforces_validation_and_application_status_precedence() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();

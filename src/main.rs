@@ -1434,7 +1434,13 @@ fn management(
             let report = if environment_only {
                 doctor::environment(config)
             } else {
-                doctor::gather(config, network, all_providers, telemetry_policy)
+                doctor::gather(
+                    config,
+                    network,
+                    all_providers,
+                    telemetry_policy,
+                    integration.is_some(),
+                )
             };
             let code = if doctor::healthy(&report) {
                 0

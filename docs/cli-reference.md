@@ -140,7 +140,7 @@ Stores one enum on the latest local metadata receipt (or the named run). No free
 uhm shell-init bash|zsh|fish
 ```
 
-Emit the optional wrapper that can apply one accepted typed parent-shell action (`cd`, `export`, …). Installs no prompt, pre-command, daemon, or background hooks. See [parent-shell integration](shell-integration.md).
+Emit the optional wrapper that can apply one accepted typed parent-shell action (`cd`, `export`, …). The Zsh wrapper also defines `alias uhm='noglob uhm'` and expands only the words that match files, so a word such as `need?` reaches `uhm` as typed. Installs no prompt, pre-command, daemon, or background hooks. See [parent-shell integration](shell-integration.md).
 
 ### doctor — local and network checks
 

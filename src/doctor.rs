@@ -20,11 +20,14 @@ pub struct Report {
     pub checks: Vec<Check>,
 }
 
+/// `integrated` is true when this run came through the `uhm shell-init`
+/// wrapper.
 pub fn gather(
     config: &Config,
     network: bool,
     all_providers: bool,
     telemetry_policy: &telemetry::Policy,
+    integrated: bool,
 ) -> Report {
     let supported = matches!(std::env::consts::OS, "linux" | "macos")
         && matches!(std::env::consts::ARCH, "x86_64" | "aarch64");
@@ -79,7 +82,10 @@ pub fn gather(
             ),
             next: Some("inspect: uhm telemetry status; preview: uhm telemetry preview".into()),
         },
-        shell_check(),
+        shell_check(
+            &std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
+            integrated,
+        ),
         python_check(config.program.enabled),
         clipboard_check(),
         environment_check(config),
@@ -381,21 +387,34 @@ fn private_permissions(_: &Path) -> bool {
     true
 }
 
-fn shell_check() -> Check {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let name = Path::new(&shell)
+/// `shell` is the user's login shell path. `integrated` is true when this run
+/// came through the `uhm shell-init` wrapper.
+fn shell_check(shell: &str, integrated: bool) -> Check {
+    let name = Path::new(shell)
         .file_name()
         .and_then(|v| v.to_str())
-        .unwrap_or(&shell);
+        .unwrap_or(shell);
     let supported = matches!(name, "sh" | "bash" | "zsh" | "fish" | "pwsh" | "powershell");
+    let status = if supported { "ok" } else { "unsupported" };
+    if integrated {
+        return Check {
+            name: "shell",
+            status,
+            detail: format!("{shell} (shell integration active)"),
+            next: None,
+        };
+    }
+    let next = match name {
+        "zsh" => r#"add `eval "$(uhm shell-init zsh)"` to ~/.zshrc: it applies parent cwd/export/alias changes and lets words such as `need?` reach uhm without quotes"#,
+        "bash" => r#"add `eval "$(uhm shell-init bash)"` to ~/.bashrc to apply parent cwd/export/alias changes"#,
+        "fish" => "add `uhm shell-init fish | source` to ~/.config/fish/config.fish to apply parent cwd/export/alias changes",
+        _ => "parent cwd/export/alias changes are generated but not applied by the base binary",
+    };
     Check {
         name: "shell",
-        status: if supported { "ok" } else { "unsupported" },
-        detail: shell,
-        next: Some(
-            "parent cwd/export/alias changes are generated but not applied by the base binary"
-                .into(),
-        ),
+        status,
+        detail: shell.to_owned(),
+        next: Some(next.into()),
     }
 }
 
@@ -527,6 +546,33 @@ fn transport_check(error: crate::http::HttpError) -> Check {
 mod tests {
     use super::*;
     #[test]
+    fn shell_check_names_the_integration_line_until_the_wrapper_is_active() {
+        let zsh = shell_check("/bin/zsh", false);
+        let next = zsh.next.unwrap();
+        assert!(next.contains(r#"eval "$(uhm shell-init zsh)""#), "{next}");
+        assert!(next.contains("~/.zshrc"), "{next}");
+        assert!(
+            next.contains("need?"),
+            "zsh names the wildcard benefit: {next}"
+        );
+
+        let bash = shell_check("/bin/bash", false).next.unwrap();
+        assert!(bash.contains(r#"eval "$(uhm shell-init bash)""#), "{bash}");
+        assert!(!bash.contains("need?"), "only zsh gains wildcard handling");
+
+        let fish = shell_check("/opt/homebrew/bin/fish", false).next.unwrap();
+        assert!(fish.contains("uhm shell-init fish | source"), "{fish}");
+
+        let active = shell_check("/bin/zsh", true);
+        assert_eq!(active.status, "ok");
+        assert!(active.next.is_none());
+        assert!(active.detail.contains("shell integration active"));
+
+        let other = shell_check("/bin/tcsh", false);
+        assert_eq!(other.status, "unsupported");
+    }
+
+    #[test]
     fn report_never_contains_a_key_value() {
         std::env::set_var("OPENAI_API_KEY", "doctor-secret-sentinel");
         let root = tempfile::tempdir().unwrap();
@@ -543,6 +589,7 @@ mod tests {
                 enabled: false,
                 reason: "test",
             },
+            false,
         );
         assert!(!serde_json::to_string(&report)
             .unwrap()
@@ -566,6 +613,7 @@ mod tests {
                 enabled: false,
                 reason: "test",
             },
+            false,
         );
         let rendered = serde_json::to_string(&report).unwrap();
         assert!(rendered.contains(crate::provider::openai::ENDPOINT));

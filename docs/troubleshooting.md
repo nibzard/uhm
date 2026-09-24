@@ -82,7 +82,7 @@ zsh — the macOS default shell — expands `?`, `*`, and `!` before `uhm` recei
 uhm 'how many paragraphs are in README.md?'
 ```
 
-zsh users who prefer to skip quoting can add `alias uhm='noglob uhm'` to `~/.zshrc`, which disables glob expansion for `uhm` invocations; an unpaired apostrophe still needs a quoted intent.
+zsh users who prefer to skip quoting can install the [Zsh wrapper](shell-integration.md#zsh-wildcards-in-an-intent) with `eval "$(uhm shell-init zsh)"` in `~/.zshrc`. With the wrapper, a word that matches no file reaches `uhm` as typed, and a word that matches files still expands. An unpaired apostrophe still needs a quoted intent. Do not use a plain `alias uhm='noglob uhm'`: then `*.md` reaches the model as text, and the model must find the files from a partial directory listing.
 
 ## A job pauses before starting (piped stdin)
 

@@ -34,6 +34,22 @@ uhm shell-init fish | source
 
 Restart the shell or source its startup file. SSH and tmux need no separate hook; each interactive shell loads its ordinary startup configuration.
 
+### Zsh: wildcards in an intent
+
+Without the wrapper, zsh stops a command that contains a wildcard word with no matching file, for example `need?`. The Zsh wrapper prevents this. It adds `alias uhm='noglob uhm'`, and then expands each word itself:
+
+- A word that matches files expands to the file names, as usual. `*.md` becomes `README.md PRIVACY.md …`.
+- A word that matches no file goes to UHM as you typed it. `need?` stays `need?`.
+
+Both of these work without quotes:
+
+```text
+uhm What result do you need?
+uhm summarize *.md
+```
+
+Quotes do not stop the expansion of a single word that matches files, because zsh removes the quotes before the wrapper gets the word. To send a pattern as text, quote the complete intent: `uhm 'summarize *.md'`. An unpaired apostrophe (`what's`) and `!` still need quotes, because zsh reads them before any alias applies.
+
 ## 3. Verify it
 
 Request a harmless directory change:

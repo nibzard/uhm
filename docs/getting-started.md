@@ -33,7 +33,7 @@ Quote the intent whenever it contains `?`, `'`, `*`, or `!` — the shell expand
 uhm 'how many paragraphs are in README.md?'
 ```
 
-zsh users who prefer to skip quoting can add `alias uhm='noglob uhm'` to `~/.zshrc`; an unpaired apostrophe still needs a quoted intent.
+zsh users who prefer to skip quoting can add `eval "$(uhm shell-init zsh)"` to `~/.zshrc` (see [Zsh wildcards](shell-integration.md#zsh-wildcards-in-an-intent)); an unpaired apostrophe still needs a quoted intent.
 
 ## 3. Preview before it runs
 
