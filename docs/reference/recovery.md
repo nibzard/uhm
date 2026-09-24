@@ -15,7 +15,7 @@ Recovery schema version 1 covers eligible regular-file outputs committed through
 
 ## Eligibility
 
-Verified capture accepts current-user-owned, single-link regular files on the supported local-filesystem allowlist and within the configured per-file limit. It rejects symlinks, hard links, unsupported types or mounts, ACLs, extended attributes/resource forks, and other metadata it cannot restore faithfully.
+Verified capture accepts current-user-owned, single-link regular files on the supported local-filesystem allowlist and within the configured per-file limit. It rejects symlinks, hard links, unsupported types or mounts, ACLs, extended attributes/resource forks, and other metadata it cannot restore faithfully. One exception applies: on macOS, `com.apple.provenance` does not make a file ineligible. macOS attaches this attribute to all files that terminal applications write, and it attaches it again to each file that `uhm` restores. It does not contain file content. Other attributes, for example `com.apple.quarantine`, still make a file ineligible.
 
 Version 1 restores bytes and Unix permission bits. It does not restore ownership, timestamps, ACLs, extended attributes, sparse layout, or link identity.
 

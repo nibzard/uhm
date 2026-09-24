@@ -2936,36 +2936,86 @@ fn validate_private_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Extended attributes that the operating system itself attaches to files and
+/// that carry no file content. Recovery ignores them because it cannot lose
+/// them: the kernel attaches them again to every file that `uhm` creates,
+/// restored files included. Every other attribute makes a file ineligible.
+/// Add a name only with evidence that the system manages it and that a
+/// restored file gets it back without `uhm`.
+///
+/// `com.apple.provenance`: macOS attaches it to files that processes of a
+/// tracked application write, which includes every terminal application. It
+/// identifies that application, not the file content, and the kernel attaches
+/// it again after `xattr -d` removes it.
+#[cfg(target_os = "macos")]
+const SYSTEM_MANAGED_XATTRS: &[&[u8]] = &[b"com.apple.provenance"];
 #[cfg(target_os = "linux")]
-fn has_extended_metadata(file: &File) -> Result<bool, String> {
-    let count = unsafe { libc::flistxattr(file.as_raw_fd(), std::ptr::null_mut(), 0) };
-    if count < 0 {
-        Err(format!(
-            "inspect extended attributes: {}",
-            std::io::Error::last_os_error()
-        ))
-    } else {
-        Ok(count > 0)
-    }
+const SYSTEM_MANAGED_XATTRS: &[&[u8]] = &[];
+
+/// Attempts to read a file's attribute names. The list can grow between the
+/// size query and the read; after this many attempts the check fails closed.
+const XATTR_LIST_ATTEMPTS: usize = 4;
+
+/// Whether a NUL-separated attribute name list, as `flistxattr` returns it,
+/// names any attribute that `managed` does not contain. Names match exactly.
+fn has_unmanaged_xattr(names: &[u8], managed: &[&[u8]]) -> bool {
+    names
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .any(|name| !managed.contains(&name))
 }
 
-#[cfg(target_os = "macos")]
 fn has_extended_metadata(file: &File) -> Result<bool, String> {
-    let count = unsafe { libc::flistxattr(file.as_raw_fd(), std::ptr::null_mut(), 0, 0) };
-    if count < 0 {
-        return Err(format!(
-            "inspect extended attributes: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    if count > 0 {
+    if has_unmanaged_xattr(&xattr_names(file)?, SYSTEM_MANAGED_XATTRS) {
         return Ok(true);
     }
-    macos_has_acl(file)
+    has_acl(file)
+}
+
+fn xattr_names(file: &File) -> Result<Vec<u8>, String> {
+    let fd = file.as_raw_fd();
+    for _ in 0..XATTR_LIST_ATTEMPTS {
+        let size = list_xattr(fd, &mut [])
+            .map_err(|error| format!("inspect extended attributes: {error}"))?;
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        let mut names = vec![0u8; size];
+        match list_xattr(fd, &mut names) {
+            Ok(length) => {
+                names.truncate(length);
+                return Ok(names);
+            }
+            Err(error) if error.raw_os_error() == Some(libc::ERANGE) => continue,
+            Err(error) => return Err(format!("inspect extended attributes: {error}")),
+        }
+    }
+    Err("inspect extended attributes: the attribute list kept changing".into())
+}
+
+/// One `flistxattr` call. An empty buffer asks for the size of the list.
+fn list_xattr(fd: libc::c_int, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let pointer = if buffer.is_empty() {
+        std::ptr::null_mut()
+    } else {
+        buffer.as_mut_ptr().cast()
+    };
+    #[cfg(target_os = "linux")]
+    let count = unsafe { libc::flistxattr(fd, pointer, buffer.len()) };
+    #[cfg(target_os = "macos")]
+    let count = unsafe { libc::flistxattr(fd, pointer, buffer.len(), 0) };
+    usize::try_from(count).map_err(|_| std::io::Error::last_os_error())
+}
+
+#[cfg(target_os = "linux")]
+fn has_acl(_file: &File) -> Result<bool, String> {
+    // A Linux POSIX ACL is stored as a `system.posix_acl_*` extended
+    // attribute, so the attribute check already refuses it.
+    Ok(false)
 }
 
 #[cfg(target_os = "macos")]
-fn macos_has_acl(file: &File) -> Result<bool, String> {
+fn has_acl(file: &File) -> Result<bool, String> {
     type Acl = *mut libc::c_void;
     unsafe extern "C" {
         fn acl_get_fd(fd: libc::c_int) -> Acl;
@@ -3393,6 +3443,63 @@ mod tests {
             &data,
             root.path(),
             &["tagged".into()],
+            &RecoveryConfig::default(),
+            true,
+            true,
+        )
+        .all_eligible());
+    }
+
+    #[test]
+    fn only_listed_system_managed_attributes_are_ignored() {
+        let managed: &[&[u8]] = &[b"com.apple.provenance"];
+        assert!(!has_unmanaged_xattr(b"", managed));
+        assert!(!has_unmanaged_xattr(b"com.apple.provenance\0", managed));
+        assert!(has_unmanaged_xattr(b"com.apple.quarantine\0", managed));
+        assert!(has_unmanaged_xattr(
+            b"com.apple.provenance\0user.note\0",
+            managed
+        ));
+        assert!(
+            has_unmanaged_xattr(b"com.apple.provenance.extra\0", managed),
+            "a name is matched exactly, not by prefix"
+        );
+        assert!(
+            has_unmanaged_xattr(b"com.apple.provenance", &[]),
+            "an empty list ignores nothing, and a missing final NUL still names an attribute"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn eligibility_rejects_a_quarantine_attribute_next_to_provenance() {
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("data");
+        let path = root.path().join("downloaded");
+        std::fs::write(&path, b"value").unwrap();
+        let file = File::open(&path).unwrap();
+        let name = CString::new("com.apple.quarantine").unwrap();
+        let value = b"0081;00000000;uhm-test;";
+        let result = unsafe {
+            libc::fsetxattr(
+                file.as_raw_fd(),
+                name.as_ptr(),
+                value.as_ptr().cast(),
+                value.len(),
+                0,
+                0,
+            )
+        };
+        assert_eq!(
+            result,
+            0,
+            "set test xattr: {}",
+            std::io::Error::last_os_error()
+        );
+        assert!(!classify(
+            &data,
+            root.path(),
+            &["downloaded".into()],
             &RecoveryConfig::default(),
             true,
             true,
