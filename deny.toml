@@ -4,10 +4,11 @@
 # CI runs the same via .github/workflows/deps.yml (a decoupled, non-gating job
 # that is intentionally NOT wired into ci.yml or the release gate).
 #
-# Baseline (verified against Cargo.lock on 2026-08-06):
-#   - 103 package entries, single crate (no [workspace]).
+# Baseline (verified against Cargo.lock on 2026-10-12):
+#   - 113 package entries, single crate (no [workspace]).
 #   - No RUSTSEC advisories (security or unmaintained) after rustls-pemfile was
-#     migrated to rustls::pki_types::pem::PemObject and dropped from the tree.
+#     migrated to rustls::pki_types::pem::PemObject, and serde_yaml_ng was
+#     migrated to serde-saphyr (unsafe-libyaml, RUSTSEC-2024-0449).
 #   - Duplicate versions (syn 2/3, webpki-roots 0.26/1.0, windows-sys x3) warn only.
 #
 # Coverage gap: cargo-deny validates advisories / licenses / bans / sources, but

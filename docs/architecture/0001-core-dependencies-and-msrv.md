@@ -16,7 +16,7 @@ Correctness boundaries use focused maintained crates:
 |---|---|
 | CLI grammar | Keep the small product-specific parser, with an explicit opaque-intent boundary and contract tests. A conventional subcommand parser cannot express this boundary more clearly. |
 | JSON | `serde` and `serde_json`; delete the local JSON parser. |
-| YAML | `serde_yaml_ng`; it is a maintained Serde parser with a declared Rust 1.64 MSRV. Delete the local YAML parser. |
+| YAML | `serde-saphyr`; it is a maintained pure-Rust Serde parser with a declared Rust 1.89 MSRV. Migrated 2026-10 from `serde_yaml_ng`, whose `unsafe-libyaml` backend became unmaintained (RUSTSEC-2024-0449). Delete the local YAML parser. |
 | Temporary files | `tempfile`; cache writes use private same-directory temporary files and atomic persistence. Plan 1 also removes the raw editor and its hand-rolled temporary file. |
 | File locking | `std::fs::File` inherent advisory locking (`lock`/`lock_shared`/`unlock`, stable 1.89); the in-repo `file_lock` module over `libc::flock(2)` is deleted. JSONL receipt appends take an exclusive cross-process lock. Revisit if Plan 2 selects SQLite. |
 | Unix process/signal behavior | Standard `ExitStatusExt` is sufficient for the Plan 1 child-status contract. Consider `rustix` only when process-group control is implemented. |
@@ -25,7 +25,7 @@ Correctness boundaries use focused maintained crates:
 | PTY tests | Keep the Plan 1 interaction surface cooked and `/dev/tty` based. Add `portable-pty` only when a raw interactive surface returns. |
 | HTTP/TLS | Retain `ureq` 2 with rustls until Plan 2 replaces the Chat Completions transport. |
 
-Direct and transitive dependencies use permissive MIT, Apache-2.0, ISC, BSD, Unicode-3.0, CC0, CDLA-Permissive, or compatible combinations. The lockfile is checked in. BLAKE3 and tempfile are pinned to releases compatible with Cargo 1.89; compatible transitive URL/IDNA, indexmap, and zeroize releases are locked for the same reason. CI builds the MSRV and runs the full stable suite on Linux and macOS, plus a musl release build.
+Direct and transitive dependencies use permissive MIT, Apache-2.0, ISC, BSD, Unicode-3.0, CC0, CDLA-Permissive, or compatible combinations. The lockfile is checked in. BLAKE3 and tempfile are pinned to releases compatible with Cargo 1.89; compatible transitive URL/IDNA and zeroize releases are locked for the same reason. CI builds the MSRV and runs the full stable suite on Linux and macOS, plus a musl release build.
 
 Verification on 2026-08-01:
 

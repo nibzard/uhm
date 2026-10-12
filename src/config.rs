@@ -507,7 +507,7 @@ pub fn load(
     let mut config = Config::defaults(paths.clone());
     match std::fs::read_to_string(&paths.config_file) {
         Ok(text) => {
-            let file: FileConfig = serde_yaml_ng::from_str(&text)
+            let file: FileConfig = serde_saphyr::from_str(&text)
                 .map_err(|e| format!("invalid config {}: {}", paths.config_file.display(), e))?;
             apply_file(&mut config, file);
         }
@@ -796,13 +796,13 @@ mod tests {
     }
     #[test]
     fn rejects_removed_provider_base_url() {
-        assert!(serde_yaml_ng::from_str::<FileConfig>("base_url: http://example.test").is_err());
-        assert!(serde_yaml_ng::from_str::<FileConfig>("api_key: secret").is_err());
+        assert!(serde_saphyr::from_str::<FileConfig>("base_url: http://example.test").is_err());
+        assert!(serde_saphyr::from_str::<FileConfig>("api_key: secret").is_err());
     }
 
     #[test]
     fn provider_configuration_is_strict_and_does_not_infer_from_model() {
-        let file: FileConfig = serde_yaml_ng::from_str(
+        let file: FileConfig = serde_saphyr::from_str(
             "provider: cerebras\nmodel: gpt-5.6-terra\nselection:\n  mode: fixed\n  alternate: null\n  fallback_on: []\n",
         )
         .unwrap();
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(config.provider, ProviderId::Cerebras);
         assert_eq!(config.model, "gpt-5.6-terra");
 
-        let invalid: FileConfig = serde_yaml_ng::from_str(
+        let invalid: FileConfig = serde_saphyr::from_str(
             "selection:\n  mode: fixed\n  alternate: null\n  fallback_on: [auth]\n",
         )
         .unwrap();
