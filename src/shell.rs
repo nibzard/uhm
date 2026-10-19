@@ -77,6 +77,18 @@ pub struct Request<'a> {
     pub containment: crate::containment::Mode,
 }
 
+/// Only simple, noninteractive search invocations opt into terminal stderr teeing.
+/// Compound commands and arbitrary programs retain their terminal semantics.
+pub(crate) fn is_simple_search(command: &str) -> bool {
+    if command.contains(['\n', ';', '|', '&', '`', '$', '(', ')', '<', '>']) {
+        return false;
+    }
+    matches!(
+        command.split_whitespace().next(),
+        Some("rg" | "grep" | "fd" | "fdfind")
+    )
+}
+
 pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
     let execution = crate::execution_signal::acquire()?;
     let started = Instant::now();
@@ -91,6 +103,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
     };
     let out_tty = std::io::stdout().is_terminal();
     let err_tty = std::io::stderr().is_terminal();
+    let inherit_stderr = err_tty && !is_simple_search(req.command);
     let cwd = std::env::current_dir().map_err(|e| format!("resolve working directory: {e}"))?;
     let arguments = vec![flag.into(), req.command.into()];
     let mut cmd = crate::containment::command(
@@ -110,7 +123,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
     } else {
         Stdio::piped()
     });
-    cmd.stderr(if err_tty {
+    cmd.stderr(if inherit_stderr {
         Stdio::inherit()
     } else {
         Stdio::piped()
@@ -145,7 +158,7 @@ pub fn execute(req: Request<'_>) -> std::result::Result<Result, String> {
     }
     let cancel_readers = Arc::new(AtomicBool::new(false));
     let mut stdout_sink = (!out_tty).then(std::io::stdout);
-    let mut stderr_sink = (!err_tty).then(std::io::stderr);
+    let mut stderr_sink = (!inherit_stderr).then(std::io::stderr);
     let mut sink_fds = Vec::with_capacity(2);
     if let Some(sink) = &stdout_sink {
         sink_fds.push(sink.as_raw_fd());
@@ -477,6 +490,61 @@ fn terminate(target: i32, signal: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_capture_is_limited_to_simple_searches() {
+        assert!(is_simple_search("rg -l -w -- health ."));
+        assert!(is_simple_search("fd -t f health"));
+        for command in [
+            "vim file",
+            "rg health; vim file",
+            "rg health | less",
+            "find . -exec vim {} +",
+            "rg $(other)",
+        ] {
+            assert!(!is_simple_search(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn terminal_search_errors_are_displayed_and_retained() {
+        const CHILD: &str = "UHM_TEST_SEARCH_TEE_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(std::io::stderr().is_terminal());
+            let result = execute(Request {
+                shell: "/bin/sh",
+                command: "grep health /uhm-test-nonexistent-search-input",
+                stdin: None,
+                timeout: Duration::from_secs(2),
+                diagnostic_bytes: 4096,
+                deny_common_env: false,
+                deny_env: &[],
+                containment: crate::containment::Mode::Off,
+            })
+            .unwrap();
+            assert_eq!(result.code, 2);
+            let diagnostic = String::from_utf8_lossy(result.stderr_tail.as_ref().unwrap());
+            assert!(diagnostic.contains("uhm-test-nonexistent-search-input"));
+            return;
+        }
+        let executable = std::env::current_exe().unwrap();
+        let mut command = std::process::Command::new("script");
+        if cfg!(target_os = "macos") {
+            command.args(["-q", "/dev/null"]).arg(executable).args([
+                "--exact",
+                "shell::tests::terminal_search_errors_are_displayed_and_retained",
+                "--nocapture",
+            ]);
+        } else {
+            let quoted = executable.to_string_lossy().replace('\'', "'\"'\"'");
+            command.args(["-qefc", &format!("'{quoted}' --exact shell::tests::terminal_search_errors_are_displayed_and_retained --nocapture"), "/dev/null"]);
+        }
+        let output = command.env(CHILD, "1").output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{text}");
+        assert!(text.contains("uhm-test-nonexistent-search-input"), "{text}");
+        assert!(text.contains("1 passed"), "{text}");
+    }
+
     #[test]
     fn exact_stdin_and_status() {
         let r = execute(Request {

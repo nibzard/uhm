@@ -1535,3 +1535,24 @@ fn audit19_runtime_a_sleeping_shim_does_not_stall_a_local_alias() {
         "the normal request path must probe Python exactly once, got {probes:?}"
     );
 }
+
+#[test]
+fn tty_interrupted_shell_status_never_offers_repair() {
+    let temp = tempfile::tempdir().unwrap();
+    drop(configured_command(
+        temp.path(),
+        "aliases:\n  interrupted: \"/bin/sh -c 'exit 130'\"\n",
+        &[],
+    ));
+    // Supplying N also lets the old repair prompt finish, so the regression
+    // fails on the unwanted prompt instead of hanging the test runner.
+    let output = reviewed_with_keystrokes(temp.path(), "n\\n", "--plain --force interrupted");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(!text.contains("Repair"), "{text}");
+    let direct = configured(
+        temp.path(),
+        "aliases:\n  interrupted: \"/bin/sh -c 'exit 130'\"\n",
+        &["--force", "interrupted"],
+    );
+    assert_eq!(direct.status.code(), Some(130));
+}

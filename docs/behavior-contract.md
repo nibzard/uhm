@@ -61,13 +61,19 @@ Telemetry runs after useful output has been written. Its current-send budget is 
 
 `--plain`, `UHM_PLAIN=1`, and `TERM=dumb` select cooked ASCII-safe presentation. Plain output has no ANSI, OSC, cursor, alternate-screen, or animation sequences. `NO_COLOR` disables styling without forcing cooked input. `--no-motion` and `NO_MOTION=1` disable animation without disabling color or Unicode.
 
-Important state has a text label and never depends on color. Layout measures display cells rather than bytes, including wide CJK and emoji glyphs and zero-width combining marks. Ctrl-C cancels the current interaction; Ctrl-D exits an input session.
+Important state has a text label and never depends on color. Layout measures display cells rather than bytes, including wide CJK and emoji glyphs and zero-width combining marks. Ctrl-C cancels the current interaction; Ctrl-D exits an input session. Interrupted child commands return their status without offering repair, including statuses 130 and 143. Execution timeouts remain eligible for user-triggered repair.
 
 ## One replacement slot
 
 A job makes at most two provider calls. The second slot is consumed by one explicitly configured pre-proposal transport fallback, clarification, requested revision, or user-triggered failure repair; these are mutually exclusive. Fallback is sequential and typed-error-driven, never a quality judgment, and cannot occur after an accepted proposal or execution. A repair can produce at most a second execution and never happens automatically. Each follow-up is a fresh stateless request to the accepted provider/model reconstructed from bounded inputs; no provider conversation ID or hidden reasoning is retained.
 
-Redirected child streams are teed byte-for-byte while bounded diagnostic tails are retained independently. Terminal-attached streams are inherited and have no automatic diagnostic promise. Ordinary child exit status wins. The wall deadline includes redirected-stream drainage: pending output may drain until that deadline, while a descendant that still holds a pipe open at the deadline makes the execution time out. Shell and program execution share one signal owner through child reaping and local cleanup; signals map to `128 + signal`. Provider/private control secrets are removed from the child environment.
+Redirected child streams are teed byte-for-byte while bounded diagnostic tails are retained independently. Terminal-attached streams are normally inherited and have no automatic diagnostic promise. Simple commands beginning with `rg`, `grep`, `fd`, or `fdfind` instead tee stderr to the terminal and retain a bounded diagnostic tail; compound commands keep the inherited behavior. These searches show their proposal summary on stderr before execution unless review already showed it or `--json` is active. Ordinary child exit status wins. The wall deadline includes redirected-stream drainage: pending output may drain until that deadline, while a descendant that still holds a pipe open at the deadline makes the execution time out. Shell and program execution share one signal owner through child reaping and local cleanup; signals map to `128 + signal`. Provider/private control secrets are removed from the child environment.
+
+## Search proposals
+
+The model is instructed to distinguish contents, filenames, and directory names in its summary and name the search root. Searches default to respecting ignore files and skipping Git internals, dependencies, virtual environments, and caches unless the request explicitly includes them. Content searches prefer installed `rg`, with `-l` for matching filenames and `-w` for a word; filename and directory searches prefer installed `fd`/`fdfind`, with portable `find` pruning as fallback. These are proposal-generation defaults, not a deterministic rewrite of commands. Use `--review` to inspect the exact command.
+
+Retained search errors containing `Permission denied` also produce a search-incomplete notice. Permission errors remain visible and preserve the child failure status: matching output does not establish that every file was searched. Searches do not automatically suppress errors or retry with elevated privileges.
 
 ## Program execution
 

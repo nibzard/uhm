@@ -932,7 +932,7 @@ pub fn handle(
                         return app_error(args, outcome::NOT_EXECUTED, "program_error", &error);
                     }
                 };
-                if result.code != 0
+                if repairable_exit(result.code, result.signal, result.timed_out)
                     && budget.can_replace()
                     && budget.executions < 2
                     && tty_available()
@@ -1467,6 +1467,9 @@ pub fn handle(
                         ),
                     );
                 }
+                if !args.json && !review && shell::is_simple_search(&command) {
+                    eprintln!("uhm: {}", ansi::sanitize_untrusted(&metadata.summary));
+                }
                 let child_stdin = (stdin_mode == StdinMode::Original).then(|| stdin.bytes());
                 if !budget.execute() {
                     interaction.decision("unavailable");
@@ -1494,7 +1497,10 @@ pub fn handle(
                     }
                 };
                 let detected = classification.effects.clone();
-                if result.code != 0
+                if search_permission_failure(&command, result.code, result.stderr_tail.as_deref()) {
+                    eprintln!("uhm: search incomplete: some paths could not be read");
+                }
+                if repairable_exit(result.code, result.signal, result.timed_out)
                     && budget.can_replace()
                     && budget.executions < 2
                     && tty_available()
@@ -1891,6 +1897,21 @@ const CLARIFICATION_RETRY: &str = "uhm: re-run the request with that detail incl
 /// if it were child output.
 const NO_RETAINED_DIAGNOSTICS: &str =
     "diagnostics unavailable because stderr was attached to the terminal";
+
+/// Only diagnose the specific search error we can establish from retained output.
+fn search_permission_failure(command: &str, code: i32, stderr: Option<&[u8]>) -> bool {
+    code != 0
+        && shell::is_simple_search(command)
+        && stderr.is_some_and(|bytes| String::from_utf8_lossy(bytes).contains("Permission denied"))
+}
+
+/// Interrupts end the job, including shells that encode SIGINT only as 130.
+fn repairable_exit(code: i32, signal: Option<i32>, timed_out: bool) -> bool {
+    code != 0
+        && (timed_out
+            || (!matches!(code, 130 | 143)
+                && !matches!(signal, Some(libc::SIGINT | libc::SIGTERM))))
+}
 
 fn shell_repair_payload(
     command: &str,
@@ -3005,6 +3026,31 @@ mod tests {
             )),
             "an explicit --recoverable this route cannot honor must stop before any receipt"
         );
+    }
+
+    #[test]
+    fn incomplete_search_requires_observed_permission_error() {
+        let denied = Some(b"private.log: Permission denied (os error 13)".as_slice());
+        assert!(search_permission_failure("rg -l health .", 2, denied));
+        assert!(!search_permission_failure("rg -l health .", 0, denied));
+        assert!(!search_permission_failure("rg -l health .", 2, None));
+        assert!(!search_permission_failure(
+            "rg -l health .",
+            2,
+            Some(b"invalid regex")
+        ));
+        assert!(!search_permission_failure("other", 2, denied));
+    }
+
+    #[test]
+    fn interrupted_commands_do_not_offer_repair() {
+        assert!(!repairable_exit(130, None, false));
+        assert!(!repairable_exit(143, None, false));
+        assert!(!repairable_exit(137, Some(libc::SIGINT), false));
+        assert!(!repairable_exit(143, Some(libc::SIGTERM), false));
+        assert!(!repairable_exit(0, None, false));
+        assert!(repairable_exit(2, None, false));
+        assert!(repairable_exit(124, Some(libc::SIGTERM), true));
     }
 
     fn failed_shell_result(stderr_tail: Option<&[u8]>) -> shell::Result {
